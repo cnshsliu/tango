@@ -1,0 +1,151 @@
+import type {
+  CompletionRequest,
+  ContentBlock,
+  Message,
+  ModelAdapter,
+  ModelSpec,
+  StreamEvent,
+  Usage
+} from '../types.js';
+import { resolveApiKey, sseLines } from './util.js';
+
+function toAnthropicMessages(messages: Message[]) {
+  return messages.map((m) => ({
+    role: m.role,
+    content: m.content
+      .filter((b) => b.type !== 'thinking' || b.signature) // drop unsigned thinking on replay
+      .map((b) => {
+        switch (b.type) {
+          case 'text':
+            return { type: 'text', text: b.text };
+          case 'image':
+            return {
+              type: 'image',
+              source: { type: 'base64', media_type: b.mimeType, data: b.data }
+            };
+          case 'tool_call':
+            return { type: 'tool_use', id: b.id, name: b.name, input: b.input ?? {} };
+          case 'tool_result':
+            return {
+              type: 'tool_result',
+              tool_use_id: b.toolCallId,
+              is_error: b.isError ?? false,
+              content: b.content.map((c) =>
+                c.type === 'text'
+                  ? { type: 'text', text: c.text }
+                  : { type: 'image', source: { type: 'base64', media_type: c.mimeType, data: c.data } }
+              )
+            };
+          case 'thinking':
+            return { type: 'thinking', thinking: b.text, signature: b.signature };
+        }
+      })
+  }));
+}
+
+export const anthropicAdapter: ModelAdapter = {
+  async *stream(spec: ModelSpec, req: CompletionRequest): AsyncIterable<StreamEvent> {
+    const body: Record<string, unknown> = {
+      model: spec.model,
+      max_tokens: req.maxTokens ?? spec.maxTokens ?? 8192,
+      system: req.system,
+      messages: toAnthropicMessages(req.messages),
+      stream: true
+    };
+    if (req.tools.length) {
+      body.tools = req.tools.map((t) => ({
+        name: t.name,
+        description: t.description,
+        input_schema: t.input
+      }));
+    }
+
+    const res = await fetch(`${spec.baseUrl.replace(/\/$/, '')}/messages`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-api-key': resolveApiKey(spec),
+        'anthropic-version': '2023-06-01'
+      },
+      body: JSON.stringify(body),
+      signal: req.signal
+    });
+    if (!res.ok || !res.body) {
+      throw new Error(`${spec.id}: HTTP ${res.status} ${await res.text()}`);
+    }
+
+    const blocks: ContentBlock[] = [];
+    const partialJson = new Map<number, string>();
+    const usage: Usage = { input: 0, output: 0 };
+    let stopReason: Message['stopReason'] = 'stop';
+
+    for await (const data of sseLines(res.body)) {
+      const ev = JSON.parse(data);
+      switch (ev.type) {
+        case 'message_start':
+          usage.input = ev.message?.usage?.input_tokens ?? 0;
+          usage.cacheRead = ev.message?.usage?.cache_read_input_tokens;
+          usage.cacheWrite = ev.message?.usage?.cache_creation_input_tokens;
+          break;
+        case 'content_block_start': {
+          const cb = ev.content_block;
+          if (cb.type === 'text') blocks[ev.index] = { type: 'text', text: '' };
+          else if (cb.type === 'thinking') blocks[ev.index] = { type: 'thinking', text: '' };
+          else if (cb.type === 'tool_use') {
+            blocks[ev.index] = { type: 'tool_call', id: cb.id, name: cb.name, input: {} };
+            partialJson.set(ev.index, '');
+            yield { type: 'tool_call_start', id: cb.id, name: cb.name };
+          }
+          break;
+        }
+        case 'content_block_delta': {
+          const d = ev.delta;
+          const b = blocks[ev.index];
+          if (d.type === 'text_delta' && b?.type === 'text') {
+            b.text += d.text;
+            yield { type: 'text', delta: d.text };
+          } else if (d.type === 'thinking_delta' && b?.type === 'thinking') {
+            b.text += d.thinking;
+            yield { type: 'thinking', delta: d.thinking };
+          } else if (d.type === 'signature_delta' && b?.type === 'thinking') {
+            b.signature = d.signature;
+          } else if (d.type === 'input_json_delta' && b?.type === 'tool_call') {
+            partialJson.set(ev.index, (partialJson.get(ev.index) ?? '') + d.partial_json);
+            yield { type: 'tool_call_delta', id: b.id, delta: d.partial_json };
+          }
+          break;
+        }
+        case 'content_block_stop': {
+          const b = blocks[ev.index];
+          if (b?.type === 'tool_call') {
+            const raw = partialJson.get(ev.index) ?? '';
+            b.input = raw.trim() ? JSON.parse(raw) : {};
+          }
+          break;
+        }
+        case 'message_delta':
+          usage.output = ev.usage?.output_tokens ?? usage.output;
+          stopReason =
+            ev.delta?.stop_reason === 'tool_use'
+              ? 'tool_use'
+              : ev.delta?.stop_reason === 'max_tokens'
+                ? 'length'
+                : 'stop';
+          break;
+        case 'error':
+          throw new Error(`${spec.id}: ${JSON.stringify(ev.error)}`);
+      }
+    }
+
+    yield {
+      type: 'done',
+      message: {
+        role: 'assistant',
+        content: blocks.filter(Boolean),
+        usage,
+        model: spec.id,
+        stopReason
+      }
+    };
+  }
+};
