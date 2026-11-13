@@ -8,8 +8,12 @@ out of the box with a single API key, no proxy.
 ## Status
 
 Core loop is working: agent loop, JSONL sessions with compaction, Anthropic + OpenAI-compatible
-adapters, four built-in tools (read / write / edit / bash), AGENTS.md + skills context assembly,
-typed event bus, cost tracking. CLI REPL only; TUI, message bridges and scheduler come later.
+adapters, built-in tools (read / write / edit / bash / grep / find / ls), a permission gate,
+AGENTS.md + skills context assembly, typed event bus, cost tracking. CLI REPL only; TUI,
+message bridges and scheduler come later.
+
+Known blocker: the tknet.ai gateway currently drops `tools` from requests, so models behind it
+can chat but not call tools. Fix in progress on the gateway side.
 
 ## Quick start
 
@@ -34,7 +38,21 @@ tango -m <model>       pick model            tango --models
 tango --sessions       list sessions         --cwd <dir>
 ```
 
-REPL commands: `/model`, `/models`, `/sessions`, `/compact`, `/cost`, `/new`, `/help`, `/exit`.
+REPL commands: `/model`, `/models`, `/mode`, `/sessions`, `/compact`, `/cost`, `/new`, `/help`, `/exit`.
+
+## Permissions
+
+Three modes, set with flags or `/mode`:
+
+| mode | flag | behaviour |
+| --- | --- | --- |
+| `ask` | (default) | reads and writes inside cwd run; deletes, `git push`/`reset --hard`, `sudo`, `curl … \| sh`, writes outside cwd and unknown tools ask first |
+| `auto` | `-y` / `--yes` | everything runs |
+| `readonly` | `--readonly` | reads only; writes and shell are refused |
+
+In the REPL, answer `y`, `n` or `a` (always, switches to `auto` for the session). One-shot runs
+can't ask, so risky calls are refused there unless `--yes` is given. The gate is a `before_tool`
+handler in `src/core/permissions.ts`.
 
 ## Config
 
@@ -60,8 +78,9 @@ src/core/
   session.ts    append-only JSONL store, compaction = summary entry
   context.ts    system prompt = base + AGENTS.md (upward + global) + skills + env
   config.ts     ~/.tango loading, model picking, key availability
+  permissions.ts  ask / auto / readonly gate on before_tool
   models/       anthropic-messages + openai-completions adapters, presets, cost
-  tools/        registry + read/write/edit/bash
+  tools/        registry + read/write/edit/bash + grep/find/ls
 src/cli.ts      REPL / one-shot entry
 ```
 

@@ -15,6 +15,8 @@ import { SessionStore, type SessionSummary } from './core/session.js';
 import { ToolRegistry } from './core/tools/registry.js';
 import { bashTool } from './core/tools/bash.js';
 import { editTool, readTool, writeTool } from './core/tools/fs.js';
+import { findTool, grepTool, lsTool } from './core/tools/search.js';
+import { installPermissionGate, type AskFn, type PermissionMode } from './core/permissions.js';
 import type { Message, ModelSpec, ToolCallBlock } from './core/types.js';
 
 const VERSION = '0.0.1';
@@ -31,11 +33,18 @@ usage:
   tango --sessions       list sessions, newest first
 options:
   --cwd <dir>            work in <dir> (default: current directory)
-  -h / --help, -V / --version`;
+  -y / --yes             run risky commands without asking
+  --readonly             block all writes and shell commands
+  -h / --help, -V / --version
+
+permissions (default "ask"): reads and edits inside the working directory run freely;
+deletes, git push/reset, sudo, writes outside cwd and similar ask first. One-shot runs
+cannot ask, so those calls are refused unless --yes is given.`;
 
 const CMD_HELP = `commands:
   /model <id>  switch model (saved as default)
   /models      list models
+  /mode [ask|auto|readonly]  show or change permission mode
   /sessions    list sessions, newest first
   /compact     summarize and drop older context
   /cost        session cost
@@ -57,13 +66,30 @@ interface Args {
   model?: string;
   cwd?: string;
   input?: string;
+  yes: boolean;
+  readonly: boolean;
 }
 
 function parseArgs(argv: string[]): Args {
-  const a: Args = { help: false, version: false, listModels: false, listSessions: false, continue: false };
+  const a: Args = {
+    help: false,
+    version: false,
+    listModels: false,
+    listSessions: false,
+    continue: false,
+    yes: false,
+    readonly: false
+  };
   const rest: string[] = [];
   for (let i = 0; i < argv.length; i++) {
     switch (argv[i]) {
+      case '-y':
+      case '--yes':
+        a.yes = true;
+        break;
+      case '--readonly':
+        a.readonly = true;
+        break;
       case '-h':
       case '--help':
         a.help = true;
@@ -103,12 +129,12 @@ function parseArgs(argv: string[]): Args {
 
 function buildTools(): ToolRegistry {
   const tools = new ToolRegistry();
-  tools.register(readTool);
-  tools.register(writeTool);
-  tools.register(editTool);
-  tools.register(bashTool);
+  for (const t of [readTool, writeTool, editTool, bashTool, grepTool, findTool, lsTool]) tools.register(t);
   return tools;
 }
+
+/** Process-wide permission state; the REPL installs `ask`, one-shot runs leave it unset. */
+const perm: { mode: PermissionMode; ask?: AskFn } = { mode: 'ask' };
 
 function toolSummary(call: ToolCallBlock): string {
   const input = (call.input ?? {}) as Record<string, unknown>;
@@ -126,6 +152,8 @@ function textOf(m: Message): string {
 
 function makeAgent(model: ModelSpec, store: SessionStore, cwd: string): Agent {
   const events = new EventBus();
+  // gate first: a vetoed call is never announced as running
+  installPermissionGate(events, { mode: () => perm.mode, cwd, ask: (c, r) => (perm.ask ? perm.ask(c, r) : Promise.resolve(false)) });
   events.on('before_tool', ({ call }) => {
     if (process.stdout.isTTY) process.stdout.write(dim(`⚙ ${call.name} ${toolSummary(call)}\n`));
   });
@@ -197,7 +225,7 @@ async function runOnce(agent: Agent, input: string): Promise<void> {
 }
 
 async function interactive(agent: Agent, store: SessionStore): Promise<void> {
-  console.log(dim(`tango ${VERSION} · ${agent.model.id} · session ${store.id.slice(0, 8)} · ${store.meta()?.cwd ?? ''}`));
+  console.log(dim(`tango ${VERSION} · ${agent.model.id} · ${perm.mode} · session ${store.id.slice(0, 8)} · ${store.meta()?.cwd ?? ''}`));
   console.log(dim('/help for commands\n'));
 
   const cfg = await loadConfig();
@@ -206,9 +234,34 @@ async function interactive(agent: Agent, store: SessionStore): Promise<void> {
 
   let running = false;
   let pumping = false;
+  let closed = false;
   const queue: string[] = [];
+  // a pending y/n answer takes the next input line instead of the prompt queue
+  let answer: ((line: string) => void) | undefined;
+
+  perm.ask = (call, reason) =>
+    new Promise((resolveAsk) => {
+      process.stdout.write(`\n${red('?')} ${call.name}: ${toolSummary(call)}\n  ${dim(reason)} — allow? [y/N/a=always] `);
+      answer = (line) => {
+        answer = undefined;
+        const a = line.trim().toLowerCase();
+        if (a === 'a' || a === 'always') {
+          perm.mode = 'auto';
+          console.log(dim('permission mode → auto for this session'));
+        }
+        resolveAsk(a === 'y' || a === 'yes' || a === 'a' || a === 'always');
+      };
+    });
+
+  rl.on('close', () => {
+    closed = true;
+  });
 
   rl.on('SIGINT', () => {
+    if (answer) {
+      answer('n');
+      return;
+    }
     if (running) {
       agent.abort();
       console.log(dim('\n^C — interrupting…'));
@@ -246,6 +299,12 @@ async function interactive(agent: Agent, store: SessionStore): Promise<void> {
         }
         return true;
       }
+      case 'mode': {
+        if (arg === 'ask' || arg === 'auto' || arg === 'readonly') perm.mode = arg;
+        else if (arg) console.log(red('mode must be ask, auto or readonly'));
+        console.log(dim(`permission mode: ${perm.mode}`));
+        return true;
+      }
       case 'sessions':
         printSessions(await SessionStore.list(sessionsDir()));
         return true;
@@ -272,7 +331,10 @@ async function interactive(agent: Agent, store: SessionStore): Promise<void> {
   async function handle(line: string): Promise<void> {
     if (!line.trim()) return;
     if (line.startsWith('/')) {
-      if (!(await handleCommand(line))) rl.close();
+      if (!(await handleCommand(line))) {
+        queue.length = 0;
+        rl.close();
+      }
       return;
     }
     running = true;
@@ -300,19 +362,24 @@ async function interactive(agent: Agent, store: SessionStore): Promise<void> {
     while (queue.length) {
       const line = queue.shift();
       if (line !== undefined) await handle(line);
-      if (rl.line === undefined) break;
-      rl.prompt();
+      if (!closed) rl.prompt();
     }
     pumping = false;
   }
 
   rl.on('line', (raw) => {
+    if (answer) return answer(raw);
     queue.push(raw);
     void pump();
   });
 
   rl.prompt();
   await new Promise<void>((resolve) => rl.once('close', resolve));
+  // piped input: readline closes at EOF while queued lines may still be pending
+  while (pumping || queue.length) {
+    if (!pumping) await pump();
+    else await new Promise((r) => setImmediate(r));
+  }
   if (running) agent.abort();
   console.log(dim(`bye ($${agent.totalCostUsd.toFixed(4)} this session)`));
 }
@@ -325,6 +392,8 @@ async function main(): Promise<void> {
   if (args.listModels) return printModels(await loadModels(), (await loadConfig()).model);
   if (args.listSessions) return printSessions(await SessionStore.list(sessionsDir()));
 
+  if (args.yes && args.readonly) throw new Error('--yes and --readonly cannot be combined');
+  perm.mode = args.yes ? 'auto' : args.readonly ? 'readonly' : 'ask';
   const { agent, store } = await openAgent(args);
   if (args.input) return runOnce(agent, args.input);
   await interactive(agent, store);
