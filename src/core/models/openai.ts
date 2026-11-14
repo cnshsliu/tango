@@ -58,7 +58,8 @@ export function toOpenAIMessages(system: string, messages: Message[]) {
           return {
             id: c.id,
             type: 'function',
-            function: { name: c.name, arguments: JSON.stringify(argsObject(c.input)) }
+            function: { name: c.name, arguments: JSON.stringify(argsObject(c.input)) },
+            ...(c.extra ? { extra_content: c.extra } : {})
           };
         });
       }
@@ -73,10 +74,12 @@ export const openaiAdapter: ModelAdapter = {
     const body: Record<string, unknown> = {
       model: spec.model,
       messages: toOpenAIMessages(req.system, req.messages),
-      max_tokens: req.maxTokens ?? spec.maxTokens ?? 8192,
       stream: true,
       stream_options: { include_usage: true }
     };
+    // OpenAI's reasoning models reject max_tokens; other compatible APIs don't all accept the new name.
+    const maxKey = /api\.openai\.com/.test(spec.baseUrl) ? 'max_completion_tokens' : 'max_tokens';
+    body[maxKey] = req.maxTokens ?? spec.maxTokens ?? 8192;
     if (req.tools.length) {
       body.tools = req.tools.map((t) => ({
         type: 'function',
@@ -94,7 +97,7 @@ export const openaiAdapter: ModelAdapter = {
 
     let text = '';
     let thinking = '';
-    const calls = new Map<number, { id: string; name: string; args: string }>();
+    const calls = new Map<number, { id: string; name: string; args: string; extra?: unknown }>();
     const usage: Usage = { input: 0, output: 0 };
     let finish: string | undefined;
 
@@ -128,6 +131,7 @@ export const openaiAdapter: ModelAdapter = {
         }
         if (tc.id) c.id = tc.id;
         if (tc.function?.name) c.name = tc.function.name;
+        if (tc.extra_content) c.extra = tc.extra_content;
         if (tc.function?.arguments) {
           c.args += tc.function.arguments;
           yield { type: 'tool_call_delta', id: c.id, delta: tc.function.arguments };
@@ -144,7 +148,8 @@ export const openaiAdapter: ModelAdapter = {
         type: 'tool_call',
         id: c.id,
         name: c.name,
-        input: parseArgs(c.args)
+        input: parseArgs(c.args),
+        ...(c.extra ? { extra: c.extra } : {})
       });
     }
     const stopReason: Message['stopReason'] =

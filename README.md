@@ -32,7 +32,10 @@ prices come from pricing groups, which tango doesn't see). If
 | International | `tknet/*` (tknet.ai, Tencent Cloud Silicon Valley) | `TKNET_API_KEY` |
 | | `kimi-intl/kimi-k3.1-pro` (moonshot.ai) | `KIMI_API_KEY` |
 | | `qwen-us/*` (dashscope-us) | `DASHSCOPE_US_API_KEY` |
-| | `anthropic/*`, `openai/*` | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` |
+| | `anthropic/claude-opus-5-5`, `anthropic/claude-haiku-5-5` | `ANTHROPIC_API_KEY` |
+| | `openai/gpt-6-astra`, `openai/gpt-6.1-terra` | `OPENAI_API_KEY` |
+| | `google/gemini-4-carbon`, `google/gemini-3.8-flash` | `GEMINI_API_KEY` |
+| | `xai/grok-4.7`, `xai/grok-build-0.1` | `XAI_API_KEY` |
 
 China and international accounts of the same vendor use different keys. `kimi/kimi-k3.1-pro` and
 `kimi-intl/kimi-k3.1-pro` both read `KIMI_API_KEY`, so only the one matching your account works;

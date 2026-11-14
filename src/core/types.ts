@@ -7,7 +7,14 @@
 
 export type TextBlock = { type: 'text'; text: string };
 export type ImageBlock = { type: 'image'; mimeType: string; data: string }; // base64
-export type ToolCallBlock = { type: 'tool_call'; id: string; name: string; input: unknown };
+export type ToolCallBlock = {
+  type: 'tool_call';
+  id: string;
+  name: string;
+  input: unknown;
+  /** vendor data that must be echoed back unchanged, e.g. Gemini's thought_signature */
+  extra?: unknown;
+};
 export type ToolResultBlock = {
   type: 'tool_result';
   toolCallId: string;

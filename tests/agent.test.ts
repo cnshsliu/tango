@@ -95,6 +95,15 @@ test('openai messages: thinking is sent back as reasoning_content', async () => 
   assert.equal(msgs[1].tool_calls.length, 1);
 });
 
+test('openai messages: vendor extra on tool calls is echoed back as extra_content', async () => {
+  const { toOpenAIMessages } = await import('../src/core/models/openai.js');
+  const extra = { google: { thought_signature: 'sig' } };
+  const msgs = toOpenAIMessages('sys', [
+    { role: 'assistant', content: [{ type: 'tool_call', id: 'c1', name: 'ls', input: {}, extra }] }
+  ] as any);
+  assert.deepEqual(msgs[1].tool_calls[0].extra_content, extra);
+});
+
 test('malformed tool arguments become a tool error the model can see, not a crash', async () => {
   const bodies: any[] = [];
   const server = createServer((req, res) => {

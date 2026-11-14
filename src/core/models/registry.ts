@@ -209,30 +209,114 @@ export const presets: ModelSpec[] = [
     contextWindow: 128000,
     maxTokens: 16384
   },
+  // US presets checked against official docs on 2026-11-14. Costs are the base tier
+  // (OpenAI <272K, xAI <200K, Haiku <100K prompt tokens); longer prompts cost more.
   {
-    id: 'anthropic/claude-sonnet-4-5',
+    id: 'anthropic/claude-opus-5-5',
     region: 'intl',
     provider: 'anthropic',
-    model: 'claude-sonnet-4-5',
+    model: 'claude-opus-5-5',
     api: 'anthropic-messages',
     baseUrl: 'https://api.anthropic.com/v1',
     apiKey: 'ANTHROPIC_API_KEY',
-    contextWindow: 200000,
-    maxTokens: 16384,
+    contextWindow: 1000000,
+    maxTokens: 32768,
     reasoning: true,
-    cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }
+    cost: { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 }
   },
   {
-    id: 'openai/gpt-4.1',
+    id: 'anthropic/claude-haiku-5-5',
+    region: 'intl',
+    provider: 'anthropic',
+    model: 'claude-haiku-5-5',
+    api: 'anthropic-messages',
+    baseUrl: 'https://api.anthropic.com/v1',
+    apiKey: 'ANTHROPIC_API_KEY',
+    contextWindow: 1000000,
+    maxTokens: 32768,
+    reasoning: true,
+    cost: { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125 }
+  },
+  {
+    id: 'openai/gpt-6-astra',
     region: 'intl',
     provider: 'openai',
-    model: 'gpt-4.1',
+    model: 'gpt-6-astra',
     api: 'openai-completions',
     baseUrl: 'https://api.openai.com/v1',
     apiKey: 'OPENAI_API_KEY',
-    contextWindow: 1000000,
+    contextWindow: 1050000,
     maxTokens: 32768,
-    cost: { input: 2, output: 8, cacheRead: 0.5 }
+    reasoning: true,
+    cost: { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 }
+  },
+  {
+    // GPT-6 Luna is cheaper, but on Chat Completions it only calls tools with reasoning_effort "none".
+    id: 'openai/gpt-6.1-terra',
+    region: 'intl',
+    provider: 'openai',
+    model: 'gpt-6.1-terra',
+    api: 'openai-completions',
+    baseUrl: 'https://api.openai.com/v1',
+    apiKey: 'OPENAI_API_KEY',
+    contextWindow: 1050000,
+    maxTokens: 32768,
+    reasoning: true,
+    cost: { input: 1, output: 5, cacheRead: 0.05, cacheWrite: 1.25 }
+  },
+  {
+    // Vertex AI list prices; through 2026-11-30 Google refunds 50% as credits.
+    id: 'google/gemini-4-carbon',
+    region: 'intl',
+    provider: 'google',
+    model: 'gemini-4-carbon',
+    api: 'openai-completions',
+    baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+    apiKey: 'GEMINI_API_KEY',
+    contextWindow: 1048576,
+    maxTokens: 32768,
+    reasoning: true,
+    cost: { input: 4, output: 20, cacheRead: 0.2 }
+  },
+  {
+    // introductory price through 2026-12-31, then $1.5 / $7.5
+    id: 'google/gemini-3.8-flash',
+    region: 'intl',
+    provider: 'google',
+    model: 'gemini-3.8-flash',
+    api: 'openai-completions',
+    baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+    apiKey: 'GEMINI_API_KEY',
+    contextWindow: 1048576,
+    maxTokens: 32768,
+    reasoning: true,
+    cost: { input: 0.75, output: 3.75 }
+  },
+  {
+    id: 'xai/grok-4.7',
+    region: 'intl',
+    provider: 'xai',
+    model: 'grok-4.7',
+    api: 'openai-completions',
+    baseUrl: 'https://api.x.ai/v1',
+    apiKey: 'XAI_API_KEY',
+    contextWindow: 500000,
+    maxTokens: 32768,
+    reasoning: true,
+    cost: { input: 2, output: 6, cacheRead: 0.5 }
+  },
+  {
+    id: 'xai/grok-build-0.1',
+    region: 'intl',
+    provider: 'xai',
+    model: 'grok-build-0.1',
+    api: 'openai-completions',
+    baseUrl: 'https://api.x.ai/v1',
+    apiKey: 'XAI_API_KEY',
+    contextWindow: 256000,
+    maxTokens: 32768,
+    reasoning: true,
+    cost: { input: 1, output: 2, cacheRead: 0.2 }
   }
 ];
 
