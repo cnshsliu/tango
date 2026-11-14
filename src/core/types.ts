@@ -57,6 +57,8 @@ export interface ModelSpec {
   reasoning?: boolean;
   /** USD per million tokens */
   cost?: { input: number; output: number; cacheRead?: number; cacheWrite?: number };
+  /** where the model is served: inside mainland China, or outside it */
+  region?: 'cn' | 'intl';
 }
 
 export interface ToolSchema {

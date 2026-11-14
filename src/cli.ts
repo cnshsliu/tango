@@ -170,10 +170,19 @@ function makeAgent(model: ModelSpec, store: SessionStore, cwd: string): Agent {
 }
 
 function printModels(models: ModelSpec[], current?: string): void {
-  for (const m of models) {
-    const mark = hasKey(m) ? '✓' : '·';
-    const note = hasKey(m) ? '' : `  (${keyProblem(m)})`;
-    console.log(`${mark} ${m.id}${m.id === current ? cyan('  (current)') : ''}${dim(note)}`);
+  const groups: [string, ModelSpec[]][] = [
+    ['China (mainland endpoints)', models.filter((m) => m.region === 'cn')],
+    ['International (outside mainland China)', models.filter((m) => m.region === 'intl')],
+    ['Other (from models.json, no region)', models.filter((m) => !m.region)]
+  ];
+  for (const [title, list] of groups) {
+    if (!list.length) continue;
+    console.log(cyan(title));
+    for (const m of list) {
+      const mark = hasKey(m) ? '✓' : '·';
+      const note = hasKey(m) ? '' : `  (${keyProblem(m)})`;
+      console.log(`  ${mark} ${m.id}${m.id === current ? cyan('  (current)') : ''}${dim(note)}`);
+    }
   }
   console.log(dim(`\nconfig: ${tangoDir()}/config.json · model overrides: ${tangoDir()}/models.json`));
 }

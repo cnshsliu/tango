@@ -14,12 +14,15 @@ export function adapterFor(spec: ModelSpec): ModelAdapter {
 }
 
 /**
- * Built-in presets. China-first: these work with a single API key, no proxy.
+ * Built-in presets. `region` is where the endpoint is served: `cn` (mainland China, no proxy
+ * needed) or `intl`. Array order decides the default (first preset with a key); tknet stays
+ * first because it is the user's own gateway. `--models` lists them grouped by region.
  * Users override or extend via ~/.tango/models.json.
  */
 export const presets: ModelSpec[] = [
   {
     id: 'tknet/qwen3.8-flash-next',
+    region: 'intl',
     provider: 'tknet',
     model: 'qwen3.8-flash-next',
     api: 'openai-completions',
@@ -31,6 +34,7 @@ export const presets: ModelSpec[] = [
   },
   {
     id: 'tknet/deepseek-v4.1-flash',
+    region: 'intl',
     provider: 'tknet',
     model: 'deepseek-v4.1-flash',
     api: 'openai-completions',
@@ -42,6 +46,7 @@ export const presets: ModelSpec[] = [
   },
   {
     id: 'tknet/deepseek-v4-pro',
+    region: 'intl',
     provider: 'tknet',
     model: 'deepseek-v4-pro',
     api: 'openai-completions',
@@ -53,6 +58,7 @@ export const presets: ModelSpec[] = [
   },
   {
     id: 'deepseek/deepseek-chat',
+    region: 'cn',
     provider: 'deepseek',
     model: 'deepseek-chat',
     api: 'openai-completions',
@@ -64,6 +70,7 @@ export const presets: ModelSpec[] = [
   },
   {
     id: 'deepseek/deepseek-reasoner',
+    region: 'cn',
     provider: 'deepseek',
     model: 'deepseek-reasoner',
     api: 'openai-completions',
@@ -76,6 +83,7 @@ export const presets: ModelSpec[] = [
   },
   {
     id: 'kimi/kimi-k2',
+    region: 'cn',
     provider: 'kimi',
     model: 'kimi-k2-0905-preview',
     api: 'openai-completions',
@@ -87,6 +95,7 @@ export const presets: ModelSpec[] = [
   },
   {
     id: 'qwen/qwen3-coder-plus',
+    region: 'cn',
     provider: 'qwen',
     model: 'qwen3-coder-plus',
     api: 'openai-completions',
@@ -97,6 +106,7 @@ export const presets: ModelSpec[] = [
   },
   {
     id: 'zhipu/glm-4.6',
+    region: 'cn',
     provider: 'zhipu',
     model: 'glm-4.6',
     api: 'openai-completions',
@@ -106,7 +116,43 @@ export const presets: ModelSpec[] = [
     maxTokens: 16384
   },
   {
+    id: 'kimi-intl/kimi-k3.1-pro',
+    region: 'intl',
+    provider: 'kimi-intl',
+    model: 'kimi-k3.1-pro',
+    api: 'openai-completions',
+    baseUrl: 'https://api.moonshot.ai/v1',
+    apiKey: '$KIMI_INTL_API_KEY',
+    contextWindow: 256000,
+    maxTokens: 16384,
+    reasoning: true
+  },
+  {
+    id: 'qwen-us/qwen3.8-max',
+    region: 'intl',
+    provider: 'qwen-us',
+    model: 'qwen3.8-max',
+    api: 'openai-completions',
+    baseUrl: 'https://dashscope-us.aliyuncs.com/compatible-mode/v1',
+    apiKey: '$DASHSCOPE_US_API_KEY',
+    contextWindow: 256000,
+    maxTokens: 16384,
+    reasoning: true
+  },
+  {
+    id: 'qwen-us/qwen3-coder-flash',
+    region: 'intl',
+    provider: 'qwen-us',
+    model: 'qwen3-coder-flash',
+    api: 'openai-completions',
+    baseUrl: 'https://dashscope-us.aliyuncs.com/compatible-mode/v1',
+    apiKey: '$DASHSCOPE_US_API_KEY',
+    contextWindow: 128000,
+    maxTokens: 16384
+  },
+  {
     id: 'anthropic/claude-sonnet-4-5',
+    region: 'intl',
     provider: 'anthropic',
     model: 'claude-sonnet-4-5',
     api: 'anthropic-messages',
@@ -119,6 +165,7 @@ export const presets: ModelSpec[] = [
   },
   {
     id: 'openai/gpt-4.1',
+    region: 'intl',
     provider: 'openai',
     model: 'gpt-4.1',
     api: 'openai-completions',

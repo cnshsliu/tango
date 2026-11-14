@@ -13,10 +13,28 @@ AGENTS.md + skills context assembly, typed event bus, cost tracking. CLI REPL on
 message bridges and scheduler come later.
 
 Through the tknet.ai gateway, tool calling works end to end with `tknet/qwen3.8-flash-next` (the
-default) and `tknet/deepseek-v4-pro` (checked 2026-11-14: one-shot, REPL with permission prompts,
-`-c`, `-r`). Costs are tknet list prices, which is what tknet bills (it has no per-account discounts; custom
+default), `tknet/deepseek-v4.1-flash` and `tknet/deepseek-v4-pro` (checked 2026-11-14: one-shot,
+REPL with permission prompts, `-c`, `-r`). Costs are tknet list prices, which is what tknet bills (it has no per-account discounts; custom
 prices come from pricing groups, which tango doesn't see). If
 `http(s)_proxy` is set, tango routes its requests through it.
+
+## Model presets
+
+`tango --models` lists presets in two groups by where the endpoint is served:
+
+| Group | Presets | Key variable |
+|---|---|---|
+| China (mainland endpoints, no proxy) | `deepseek/*` | `DEEPSEEK_API_KEY` |
+| | `kimi/kimi-k2` (moonshot.cn) | `KIMI_API_KEY` |
+| | `qwen/qwen3-coder-plus` (dashscope.aliyuncs.com) | `DASHSCOPE_API_KEY` |
+| | `zhipu/glm-4.6` (bigmodel.cn) | `Z_API_KEY` |
+| International | `tknet/*` (tknet.ai, Tencent Cloud Silicon Valley) | `TKNET_API_KEY` |
+| | `kimi-intl/kimi-k3.1-pro` (moonshot.ai) | `KIMI_INTL_API_KEY` |
+| | `qwen-us/*` (dashscope-us) | `DASHSCOPE_US_API_KEY` |
+| | `anthropic/*`, `openai/*` | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` |
+
+China and international accounts of the same vendor use different keys, so each region reads its
+own variable. The default model is the first preset with a key set, which is `tknet/qwen3.8-flash-next`.
 
 ## Quick start
 
