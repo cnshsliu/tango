@@ -1,9 +1,11 @@
 import { spawn } from 'node:child_process';
-import { readFile, stat } from 'node:fs/promises';
+import { readFile, stat, writeFile } from 'node:fs/promises';
 import { extname, resolve } from 'node:path';
 import type { Tool, ToolContext } from '../../types.js';
 import { error, text, truncate } from '../registry.js';
 import { docxToText, parseRange, pptxToText, xlsxToText, type Range } from './ooxml.js';
+import { textToDocx } from './docx-write.js';
+import { sheetsToXlsx, parseTsv, type Sheet } from './xlsx-write.js';
 import { Zip } from './zip.js';
 
 const MAX_FILE_BYTES = 200 * 1024 * 1024;
@@ -148,6 +150,62 @@ export const officeReadTool: Tool<Input> = {
       return text(truncate(await officeText(resolve(ctx.cwd, path), opts, ctx)));
     } catch (e: any) {
       return error(`office_read failed: ${e.message}`);
+    }
+  }
+};
+
+// ---------- write ----------
+
+interface WriteInput {
+  path: string;
+  content: string | Sheet[];
+}
+
+function toSheets(content: string | Sheet[]): Sheet[] {
+  if (Array.isArray(content)) {
+    const sheets = content.map((s) => ({ name: s.name, rows: typeof s.rows === 'string' ? parseTsv(s.rows) : s.rows }));
+    if (!sheets.length) throw new Error('sheets array is empty');
+    return sheets;
+  }
+  const lines = content.split(/\r?\n/).filter((l) => l.trim());
+  if (lines.length > 5 && !content.includes('\t'))
+    throw new Error('xlsx content looks like plain prose, not tab-separated rows; pass one sheet per row of tab-separated cells (what office_read prints)');
+  return [{ name: 'Sheet1', rows: parseTsv(content) }];
+}
+
+export const officeWriteTool: Tool<WriteInput> = {
+  name: 'office_write',
+  description:
+    'Create a Word .docx or Excel .xlsx file. For .docx, content is markdown-ish text (# headings, - lists, | tables |, **bold**). ' +
+    'For .xlsx, content is tab-separated rows (one sheet), or an array of {name, rows} objects for several sheets. ' +
+    'Overwrites the file. Use the write tool for plain text.',
+  input: {
+    type: 'object',
+    properties: {
+      path: { type: 'string', description: 'Output path (.docx or .xlsx), absolute or relative to cwd' },
+      content: {
+        description: '.docx: markdown-ish text. .xlsx: tab-separated rows, or [{name, rows: tab-separated text}] per sheet.',
+        oneOf: [{ type: 'string' }, { type: 'array', items: { type: 'object', properties: { name: { type: 'string' }, rows: { type: 'string' } }, required: ['rows'] } }]
+      }
+    },
+    required: ['path', 'content']
+  },
+  async execute({ path, content }, ctx) {
+    try {
+      const file = resolve(ctx.cwd, path);
+      const ext = extname(file).toLowerCase();
+      let buf: Buffer;
+      if (ext === '.docx') {
+        buf = textToDocx(typeof content === 'string' ? content : content.map((s) => s.rows).join('\n'));
+      } else if (ext === '.xlsx') {
+        buf = sheetsToXlsx(toSheets(content));
+      } else {
+        return error(`office_write writes .docx and .xlsx only, got "${ext}"`);
+      }
+      await writeFile(file, buf);
+      return text(`wrote ${buf.length} bytes → ${file}`);
+    } catch (e: any) {
+      return error(`office_write failed: ${e.message}`);
     }
   }
 };

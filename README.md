@@ -111,6 +111,11 @@ Both tools count as reads for permissions.
 Old binary .xls/.ppt are refused with a hint to re-save as .xlsx/.pptx. `brew install poppler`
 gives much better PDF output than the PDFKit fallback. Counts as a read for permissions.
 
+`office_write` creates .docx (markdown-ish text: `#` headings, lists, `| tables |`, **bold**)
+and .xlsx (tab-separated rows, or `[{name, rows}]` for several sheets — the same shape
+`office_read` prints, so read → edit → write round-trips). No dependencies; the generated files
+open in Word, WPS, Numbers and macOS textutil. Counts as a write for permissions.
+
 ## Config
 
 All user state lives in `~/.tango/` (override with `TANGO_HOME`):

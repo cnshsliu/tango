@@ -22,7 +22,7 @@ import { editTool, readTool, writeTool } from './core/tools/fs.js';
 import { findTool, grepTool, lsTool } from './core/tools/search.js';
 import { webSearchTool } from './core/tools/web-search.js';
 import { webFetchTool } from './core/tools/web-fetch.js';
-import { officeReadTool } from './core/tools/office/index.js';
+import { officeReadTool, officeWriteTool } from './core/tools/office/index.js';
 import { installPermissionGate, type AskFn, type PermissionMode } from './core/permissions.js';
 import type { Message, ModelSpec, ToolCallBlock } from './core/types.js';
 
@@ -141,7 +141,7 @@ function parseArgs(argv: string[]): Args {
 
 function buildTools(): ToolRegistry {
   const tools = new ToolRegistry();
-  for (const t of [readTool, writeTool, editTool, bashTool, grepTool, findTool, lsTool, webSearchTool, webFetchTool, officeReadTool])
+  for (const t of [readTool, writeTool, editTool, bashTool, grepTool, findTool, lsTool, webSearchTool, webFetchTool, officeReadTool, officeWriteTool])
     tools.register(t);
   return tools;
 }

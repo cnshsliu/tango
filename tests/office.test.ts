@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { Zip } from '../src/core/tools/office/zip.js';
 import { decodeXml, resolvePart } from '../src/core/tools/office/xml.js';
 import { parseRange } from '../src/core/tools/office/ooxml.js';
-import { officeReadTool } from '../src/core/tools/office/index.js';
+import { officeReadTool, officeWriteTool } from '../src/core/tools/office/index.js';
 
 const ctx = { cwd: mkdtempSync(join(tmpdir(), 'tango-office-')), signal: new AbortController().signal };
 const out = (r: { content: any[] }) => r.content[0].text as string;
@@ -152,6 +152,30 @@ test('pptx: slides in presentation order with notes; fields skipped; slide range
   assert.ok(s.indexOf('第一页') < s.indexOf('Second'));
   const only2 = out(await officeReadTool.execute({ path: p, pages: '2' }, ctx));
   assert.doesNotMatch(only2, /第一页/);
+});
+
+test('office_write: docx and xlsx round-trip through office_read', async () => {
+  const md = '# 月报\n\n本月 **营收** 增长 12%。\n\n- 北京\n  - 朝阳\n\n| 名称 | 数量 |\n| --- | --- |\n| a\\|b | 2 |';
+  const d = await officeWriteTool.execute({ path: 'out.docx', content: md }, ctx);
+  assert.ok(!d.isError, out(d));
+  const rd = out(await officeReadTool.execute({ path: 'out.docx' }, ctx));
+  assert.match(rd, /^# 月报$/m);
+  assert.match(rd, /营收 增长 12%/);
+  assert.match(rd, /^ {2}- 朝阳$/m);
+  assert.match(rd, /\| 名称 \| 数量 \|\n\| --- \| --- \|\n\| a\\\|b \| 2 \|/);
+
+  const x = await officeWriteTool.execute(
+    { path: 'out.xlsx', content: [{ name: '销售', rows: '城市\t金额\n北京\t1234.5' }, { name: 'Other', rows: 'k\tv' }] },
+    ctx
+  );
+  assert.ok(!x.isError, out(x));
+  const rx = out(await officeReadTool.execute({ path: 'out.xlsx' }, ctx));
+  assert.match(rx, /^1\t城市\t金额$/m);
+  assert.match(rx, /^2\t北京\t1234\.5$/m);
+  assert.match(rx, /## Other\n1\tk\tv/);
+
+  assert.match(out(await officeWriteTool.execute({ path: 'bad.txt', content: 'x' }, ctx)), /\.docx and \.xlsx/);
+  assert.match(out(await officeWriteTool.execute({ path: 'bad2.xlsx', content: 'a\nb\nc\nd\ne\nf' }, ctx)), /tab-separated/);
 });
 
 test('errors: unsupported types, old binaries, wrong container, missing file', async () => {
