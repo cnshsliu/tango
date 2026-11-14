@@ -27,7 +27,7 @@ export const presets: ModelSpec[] = [
     model: 'qwen3.8-flash-next',
     api: 'openai-completions',
     baseUrl: 'https://tknet.ai/api/v1',
-    apiKey: '$TKNET_API_KEY',
+    apiKey: 'TKNET_API_KEY',
     contextWindow: 200000,
     maxTokens: 16384,
     cost: { input: 0.075, output: 0.235, cacheRead: 0.008 }
@@ -39,7 +39,7 @@ export const presets: ModelSpec[] = [
     model: 'deepseek-v4.1-flash',
     api: 'openai-completions',
     baseUrl: 'https://tknet.ai/api/v1',
-    apiKey: '$TKNET_API_KEY',
+    apiKey: 'TKNET_API_KEY',
     contextWindow: 1000000,
     maxTokens: 16384,
     cost: { input: 0.135, output: 0.54, cacheRead: 0.003 }
@@ -51,7 +51,7 @@ export const presets: ModelSpec[] = [
     model: 'deepseek-v4-pro',
     api: 'openai-completions',
     baseUrl: 'https://tknet.ai/api/v1',
-    apiKey: '$TKNET_API_KEY',
+    apiKey: 'TKNET_API_KEY',
     contextWindow: 128000,
     maxTokens: 16384,
     cost: { input: 0.6525, output: 1.305, cacheRead: 0.005438 }
@@ -63,7 +63,7 @@ export const presets: ModelSpec[] = [
     model: 'deepseek-chat',
     api: 'openai-completions',
     baseUrl: 'https://api.deepseek.com/v1',
-    apiKey: '$DEEPSEEK_API_KEY',
+    apiKey: 'DEEPSEEK_API_KEY',
     contextWindow: 128000,
     maxTokens: 8192,
     cost: { input: 0.27, output: 1.1, cacheRead: 0.07 }
@@ -75,7 +75,7 @@ export const presets: ModelSpec[] = [
     model: 'deepseek-reasoner',
     api: 'openai-completions',
     baseUrl: 'https://api.deepseek.com/v1',
-    apiKey: '$DEEPSEEK_API_KEY',
+    apiKey: 'DEEPSEEK_API_KEY',
     contextWindow: 128000,
     maxTokens: 16384,
     reasoning: true,
@@ -88,7 +88,7 @@ export const presets: ModelSpec[] = [
     model: 'kimi-k2-0905-preview',
     api: 'openai-completions',
     baseUrl: 'https://api.moonshot.cn/v1',
-    apiKey: '$KIMI_API_KEY',
+    apiKey: 'KIMI_API_KEY',
     contextWindow: 256000,
     maxTokens: 16384,
     cost: { input: 0.6, output: 2.5 }
@@ -100,7 +100,7 @@ export const presets: ModelSpec[] = [
     model: 'qwen3-coder-plus',
     api: 'openai-completions',
     baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-    apiKey: '$DASHSCOPE_API_KEY',
+    apiKey: 'DASHSCOPE_API_KEY',
     contextWindow: 128000,
     maxTokens: 16384
   },
@@ -111,7 +111,7 @@ export const presets: ModelSpec[] = [
     model: 'glm-4.6',
     api: 'openai-completions',
     baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
-    apiKey: '$Z_API_KEY',
+    apiKey: 'Z_API_KEY',
     contextWindow: 200000,
     maxTokens: 16384
   },
@@ -122,7 +122,7 @@ export const presets: ModelSpec[] = [
     model: 'kimi-k3.1-pro',
     api: 'openai-completions',
     baseUrl: 'https://api.moonshot.ai/v1',
-    apiKey: '$KIMI_INTL_API_KEY',
+    apiKey: 'KIMI_INTL_API_KEY',
     contextWindow: 256000,
     maxTokens: 16384,
     reasoning: true
@@ -134,7 +134,7 @@ export const presets: ModelSpec[] = [
     model: 'qwen3.8-max',
     api: 'openai-completions',
     baseUrl: 'https://dashscope-us.aliyuncs.com/compatible-mode/v1',
-    apiKey: '$DASHSCOPE_US_API_KEY',
+    apiKey: 'DASHSCOPE_US_API_KEY',
     contextWindow: 256000,
     maxTokens: 16384,
     reasoning: true
@@ -146,7 +146,7 @@ export const presets: ModelSpec[] = [
     model: 'qwen3-coder-flash',
     api: 'openai-completions',
     baseUrl: 'https://dashscope-us.aliyuncs.com/compatible-mode/v1',
-    apiKey: '$DASHSCOPE_US_API_KEY',
+    apiKey: 'DASHSCOPE_US_API_KEY',
     contextWindow: 128000,
     maxTokens: 16384
   },
@@ -157,7 +157,7 @@ export const presets: ModelSpec[] = [
     model: 'claude-sonnet-4-5',
     api: 'anthropic-messages',
     baseUrl: 'https://api.anthropic.com/v1',
-    apiKey: '$ANTHROPIC_API_KEY',
+    apiKey: 'ANTHROPIC_API_KEY',
     contextWindow: 200000,
     maxTokens: 16384,
     reasoning: true,
@@ -170,7 +170,7 @@ export const presets: ModelSpec[] = [
     model: 'gpt-4.1',
     api: 'openai-completions',
     baseUrl: 'https://api.openai.com/v1',
-    apiKey: '$OPENAI_API_KEY',
+    apiKey: 'OPENAI_API_KEY',
     contextWindow: 1000000,
     maxTokens: 32768,
     cost: { input: 2, output: 8, cacheRead: 0.5 }

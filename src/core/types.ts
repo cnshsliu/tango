@@ -50,7 +50,7 @@ export interface ModelSpec {
   model: string;
   api: ApiKind;
   baseUrl: string;
-  /** literal, "$ENV_NAME", or undefined (then provider env var is used) */
+  /** env var name if UPPER_SNAKE (e.g. "DEEPSEEK_API_KEY"), otherwise the literal key */
   apiKey?: string;
   contextWindow?: number;
   maxTokens?: number;

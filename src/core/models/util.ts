@@ -1,13 +1,23 @@
 import type { ModelSpec } from '../types.js';
 
+/** An apiKey written in UPPER_SNAKE (letters, digits, underscores) names an environment variable. */
+const ENV_NAME = /^[A-Z_][A-Z0-9_]*$/;
+
+/** The environment variable a spec reads its key from, or undefined for a literal key. */
+export function keyEnvName(spec: ModelSpec): string | undefined {
+  return spec.apiKey && ENV_NAME.test(spec.apiKey) ? spec.apiKey : undefined;
+}
+
 export function resolveApiKey(spec: ModelSpec): string {
-  const raw = spec.apiKey;
-  if (raw?.startsWith('$')) {
-    const v = process.env[raw.slice(1)];
-    if (!v) throw new Error(`${spec.id}: environment variable ${raw.slice(1)} is not set`);
+  if (spec.apiKey?.startsWith('$'))
+    throw new Error(`${spec.id}: apiKey "${spec.apiKey}": write the variable name without "$" (${spec.apiKey.slice(1)})`);
+  const env = keyEnvName(spec);
+  if (env) {
+    const v = process.env[env];
+    if (!v) throw new Error(`${spec.id}: environment variable ${env} is not set`);
     return v;
   }
-  if (raw) return raw;
+  if (spec.apiKey) return spec.apiKey;
   throw new Error(`${spec.id}: no apiKey configured`);
 }
 
@@ -39,7 +49,13 @@ export async function postJson(
   }
   if (!res.ok || !res.body) {
     const text = (await res.text().catch(() => '')).slice(0, 2000);
-    throw new Error(`${spec.id}: HTTP ${res.status} ${text}`.trim());
+    const env = keyEnvName(spec);
+    const hint =
+      res.status === 401 || res.status === 403
+        ? `\n${new URL(url).host} rejected the key ${env ? `from ${env}` : 'set in apiKey'}. ` +
+          'China and international accounts use different keys; check the key matches this endpoint.'
+        : '';
+    throw new Error(`${spec.id}: HTTP ${res.status} ${text}`.trim() + hint);
   }
   return res;
 }

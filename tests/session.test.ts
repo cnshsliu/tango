@@ -87,3 +87,20 @@ test('lastModel falls back to the model that last answered when no switch was re
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test('apiKey: UPPER_SNAKE reads that env var, anything else is literal, "$X" is rejected', async () => {
+  const { resolveApiKey, keyEnvName } = await import('../src/core/models/util.js');
+  const spec = (apiKey?: string) => ({ id: 't/m', provider: 't', model: 'm', api: 'openai-completions', baseUrl: 'http://x', apiKey }) as ModelSpec;
+  process.env.TANGO_TEST_KEY_1 = 'from-env';
+  try {
+    assert.equal(keyEnvName(spec('TANGO_TEST_KEY_1')), 'TANGO_TEST_KEY_1');
+    assert.equal(resolveApiKey(spec('TANGO_TEST_KEY_1')), 'from-env');
+    assert.throws(() => resolveApiKey(spec('TANGO_UNSET_KEY_9')), /TANGO_UNSET_KEY_9 is not set/);
+    assert.equal(keyEnvName(spec('sk-abc123')), undefined);
+    assert.equal(resolveApiKey(spec('sk-abc123')), 'sk-abc123');
+    assert.throws(() => resolveApiKey(spec('$TANGO_TEST_KEY_1')), /without "\$"/);
+    assert.throws(() => resolveApiKey(spec()), /no apiKey/);
+  } finally {
+    delete process.env.TANGO_TEST_KEY_1;
+  }
+});

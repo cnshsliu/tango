@@ -12,6 +12,7 @@ import {
   tangoDir
 } from './core/config.js';
 import { EventBus } from './core/events.js';
+import { keyEnvName } from './core/models/util.js';
 import { SessionStore, type SessionSummary } from './core/session.js';
 import { ToolRegistry } from './core/tools/registry.js';
 import { bashTool } from './core/tools/bash.js';
@@ -180,7 +181,8 @@ function printModels(models: ModelSpec[], current?: string): void {
     console.log(cyan(title));
     for (const m of list) {
       const mark = hasKey(m) ? '✓' : '·';
-      const note = hasKey(m) ? '' : `  (${keyProblem(m)})`;
+      const source = keyEnvName(m) ?? (m.apiKey ? 'literal key' : 'no key');
+      const note = hasKey(m) ? `  ${source}` : `  (${keyProblem(m)})`;
       console.log(`  ${mark} ${m.id}${m.id === current ? cyan('  (current)') : ''}${dim(note)}`);
     }
   }

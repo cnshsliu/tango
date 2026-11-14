@@ -112,7 +112,9 @@ All user state lives in `~/.tango/` (override with `TANGO_HOME`):
 | `skills/<name>/SKILL.md` | global skills (project-level: `<cwd>/.tango/skills/`) |
 | `sessions/*.jsonl` | append-only sessions, one line per entry |
 
-Model specs resolve keys from env: `"apiKey": "$DEEPSEEK_API_KEY"`.
+`apiKey` is either an environment variable name or the key itself. A value made only of uppercase
+letters, digits and underscores (`"DEEPSEEK_API_KEY"`) is read from that variable; anything else is
+used as the literal key. Nothing is inferred. `tango --models` shows which variable each preset reads.
 
 ## Layout
 
