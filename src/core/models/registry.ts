@@ -116,13 +116,25 @@ export const presets: ModelSpec[] = [
     maxTokens: 16384
   },
   {
+    id: 'kimi-code/kimi-for-coding',
+    region: 'cn',
+    provider: 'kimi-code',
+    model: 'kimi-for-coding',
+    api: 'openai-completions',
+    baseUrl: 'https://api.kimi.com/coding/v1',
+    apiKey: 'KIMI_CODE_API_KEY',
+    contextWindow: 1048576,
+    maxTokens: 32768,
+    reasoning: true
+  },
+  {
     id: 'kimi-intl/kimi-k3.1-pro',
     region: 'intl',
     provider: 'kimi-intl',
     model: 'kimi-k3.1-pro',
     api: 'openai-completions',
     baseUrl: 'https://api.moonshot.ai/v1',
-    apiKey: 'KIMI_INTL_API_KEY',
+    apiKey: 'KIMI_API_KEY',
     contextWindow: 256000,
     maxTokens: 16384,
     reasoning: true
