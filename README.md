@@ -25,7 +25,7 @@ prices come from pricing groups, which tango doesn't see). If
 | Group | Presets | Key variable |
 |---|---|---|
 | China (mainland endpoints, no proxy) | `deepseek/deepseek-flash`, `deepseek/deepseek-v4-pro` | `DEEPSEEK_API_KEY` |
-| | `kimi/kimi-k3.1-pro` (moonshot.cn) | `KIMI_API_KEY` |
+| | `kimi/kimi-k3.1-pro`, `kimi/kimi-k3.1-pro-highspeed` (moonshot.cn) | `KIMI_API_KEY` |
 | | `kimi-code/kimi-for-coding` (api.kimi.com/coding, Kimi Code plan) | `KIMI_CODE_API_KEY` |
 | | `qwen/qwen3.8-max`, `qwen/qwen3.8-flash` (dashscope.aliyuncs.com) | `DASHSCOPE_API_KEY` |
 | | `zhipu/glm-5.3`, `zhipu/glm-5.3-flash` (bigmodel.cn) | `Z_API_KEY` |

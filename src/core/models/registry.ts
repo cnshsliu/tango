@@ -98,6 +98,19 @@ export const presets: ModelSpec[] = [
     cost: { input: 1.945, output: 10.172, cacheRead: 0.1945, cacheWrite: 1.945 }
   },
   {
+    id: 'kimi/kimi-k3.1-pro-highspeed',
+    region: 'cn',
+    provider: 'kimi',
+    model: 'kimi-k3.1-pro-highspeed',
+    api: 'openai-completions',
+    baseUrl: 'https://api.moonshot.cn/v1',
+    apiKey: 'KIMI_API_KEY',
+    contextWindow: 1048576,
+    maxTokens: 32768,
+    reasoning: true,
+    cost: { input: 3.889, output: 20.344, cacheRead: 0.1945, cacheWrite: 3.889 }
+  },
+  {
     id: 'qwen/qwen3.8-max',
     region: 'cn',
     provider: 'qwen',
