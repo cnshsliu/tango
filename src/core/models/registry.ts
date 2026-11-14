@@ -111,6 +111,19 @@ export const presets: ModelSpec[] = [
     cost: { input: 1.795, output: 5.385 }
   },
   {
+    id: 'qwen/qwen3.8-flash',
+    region: 'cn',
+    provider: 'qwen',
+    model: 'qwen3.8-flash',
+    api: 'openai-completions',
+    baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+    apiKey: 'DASHSCOPE_API_KEY',
+    contextWindow: 1000000,
+    maxTokens: 32768,
+    reasoning: true,
+    cost: { input: 0.12, output: 0.404 }
+  },
+  {
     id: 'zhipu/glm-5.3',
     region: 'cn',
     provider: 'zhipu',
@@ -122,6 +135,19 @@ export const presets: ModelSpec[] = [
     maxTokens: 32768,
     reasoning: true,
     cost: { input: 1.197, output: 4.189, cacheRead: 0.299 }
+  },
+  {
+    id: 'zhipu/glm-5.3-flash',
+    region: 'cn',
+    provider: 'zhipu',
+    model: 'glm-5.3-flash',
+    api: 'openai-completions',
+    baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
+    apiKey: 'Z_API_KEY',
+    contextWindow: 1000000,
+    maxTokens: 32768,
+    reasoning: true,
+    cost: { input: 0.12, output: 0.419, cacheRead: 0.034 }
   },
   {
     id: 'kimi-code/kimi-for-coding',
