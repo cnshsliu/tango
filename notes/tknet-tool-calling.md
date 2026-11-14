@@ -23,15 +23,22 @@
   绕过口；`PROFIT_GUARD_EXEMPT_MODELS` 中的模型跳过整个地板。测试 64 项覆盖。
 - **部署后实测**（https://tknet.ai，1.0× key）：qwen3.8-flash-next 57 in / 42 out →
   billed $0.00001415 = 57×0.075/M + 42×0.235/M，**精确等于列表价 × 用量**。
-- **将来删列迁移方案（未执行）**：
-  1. 前置确认：`select count(*) from users where billing_rate <> 1.00` 与
-     `select count(*) from api_keys where multiplier <> 1.00` 均为 0；
-  2. `alter table users drop column billing_rate;`
-     `alter table api_keys drop column multiplier;`（均为带 default 的 notNull 列，
-     无外键/索引依赖，drop 即可；requests 历史行不引用这两列本身）；
-  3. 同步删 `src/lib/db/schema/users.ts` / `api-keys.ts` 的字段定义；
-  4. 因无代码读取，迁移可安全地在任意部署窗口执行（drizzle/ 编号顺延，
-     `apply-migration.ts` 手工应用）。
+- **删列已执行（2026-11-14，迁移 `drizzle/0061_drop_discount_columns.sql`，提交 `8a1f342`）**：
+  1. 前置检查：`users.billing_rate` 全为 1.00；`api_keys.multiplier` 仅 1 行非 1.00
+     （revoked 状态的 Test Key ×1.50，经批准按历史值直接继续）；无视图 / pg_depend /
+     索引依赖。
+  2. 备份：服务器 `~/backups/tknet-full-20261114-185602.sql.gz`（25M 全量 pg_dump，
+     经 Docker 容器 `tknetai-postgres-1` 导出）；两列全量值（14 users / 25 keys）导出至
+     `scripts/dropped-columns-backup-2026-11-14.json`。
+  3. schema 定义删除 + 全仓引用清零（i18n 孤儿键一并清理）；typecheck 0/0 ·
+     eslint 0 警告 · 1082 测试全过。
+  4. 部署顺序：deploy.sh 自动应用待定迁移（先迁移后重启），5 个进程
+     （2×cluster/worker/peer-gateway/collab-gateway）全部重启到新构建。
+  5. 迁移后验证：两列确认不存在（information_schema 复查 []）；实测对话
+     qwen3.8-flash-next 55 in / 31 out → billed $0.00001142 = 列表价 × 用量
+     （$0.075/$0.235 × 1.0）；admin/users、admin/api-keys、dashboard/keys、
+     dashboard/estimator 页面全部 200；pm2 日志重启以来零 `column does not exist`
+     （日志中仅有的两条 `relation "users" does not exist` 为数月前历史错误）。
 
 ---
 
