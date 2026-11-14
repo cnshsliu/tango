@@ -49,7 +49,7 @@ export const presets: ModelSpec[] = [
     apiKey: '$TKNET_API_KEY',
     contextWindow: 128000,
     maxTokens: 16384,
-    cost: { input: 0.6525, output: 1.305 }
+    cost: { input: 0.6525, output: 1.305, cacheRead: 0.005438 }
   },
   {
     id: 'deepseek/deepseek-chat',
