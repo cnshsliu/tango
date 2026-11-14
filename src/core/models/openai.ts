@@ -7,7 +7,7 @@ import type {
   StreamEvent,
   Usage
 } from '../types.js';
-import { resolveApiKey, sseLines } from './util.js';
+import { argsObject, parseArgs, parseEvent, postJson, resolveApiKey, sseLines } from './util.js';
 
 /** Flatten our message model into OpenAI chat-completions shape. */
 export function toOpenAIMessages(system: string, messages: Message[]) {
@@ -52,7 +52,7 @@ export function toOpenAIMessages(system: string, messages: Message[]) {
           return {
             id: c.id,
             type: 'function',
-            function: { name: c.name, arguments: JSON.stringify(c.input ?? {}) }
+            function: { name: c.name, arguments: JSON.stringify(argsObject(c.input)) }
           };
         });
       }
@@ -78,18 +78,13 @@ export const openaiAdapter: ModelAdapter = {
       }));
     }
 
-    const res = await fetch(`${spec.baseUrl.replace(/\/$/, '')}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        authorization: `Bearer ${resolveApiKey(spec)}`
-      },
-      body: JSON.stringify(body),
-      signal: req.signal
-    });
-    if (!res.ok || !res.body) {
-      throw new Error(`${spec.id}: HTTP ${res.status} ${await res.text()}`);
-    }
+    const res = await postJson(
+      spec,
+      `${spec.baseUrl.replace(/\/$/, '')}/chat/completions`,
+      { authorization: `Bearer ${resolveApiKey(spec)}` },
+      body,
+      req.signal
+    );
 
     let text = '';
     let thinking = '';
@@ -97,9 +92,10 @@ export const openaiAdapter: ModelAdapter = {
     const usage: Usage = { input: 0, output: 0 };
     let finish: string | undefined;
 
-    for await (const data of sseLines(res.body)) {
+    for await (const data of sseLines(res.body!)) {
       if (data === '[DONE]') break;
-      const ev = JSON.parse(data);
+      const ev = parseEvent(spec, data);
+      if (ev.error) throw new Error(`${spec.id}: ${JSON.stringify(ev.error)}`);
       if (ev.usage) {
         usage.input = ev.usage.prompt_tokens ?? 0;
         usage.output = ev.usage.completion_tokens ?? 0;
@@ -142,7 +138,7 @@ export const openaiAdapter: ModelAdapter = {
         type: 'tool_call',
         id: c.id,
         name: c.name,
-        input: c.args.trim() ? JSON.parse(c.args) : {}
+        input: parseArgs(c.args)
       });
     }
     const stopReason: Message['stopReason'] =

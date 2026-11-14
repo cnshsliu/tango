@@ -78,3 +78,78 @@ test('openai messages: tool-call-only assistant turns omit content instead of se
   assert.equal(msgs[1].tool_calls.length, 1);
   assert.equal(msgs[2].content, 'hi');
 });
+
+test('malformed tool arguments become a tool error the model can see, not a crash', async () => {
+  const bodies: any[] = [];
+  const server = createServer((req, res) => {
+    let raw = '';
+    req.on('data', (d) => (raw += d));
+    req.on('end', () => {
+      bodies.push(JSON.parse(raw));
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      if (bodies.length === 1) {
+        res.write(chunk({ tool_calls: [{ index: 0, id: 'c1', function: { name: 'bash', arguments: '{"command": "ls' } }] }, 'tool_calls'));
+      } else {
+        res.write(chunk({ content: 'retrying' }, 'stop'));
+      }
+      res.end('data: [DONE]\n\n');
+    });
+  });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  const port = (server.address() as AddressInfo).port;
+  const dir = await mkdtemp(join(tmpdir(), 'tango-agent-'));
+  try {
+    const store = await SessionStore.create(dir, dir);
+    const tools = new ToolRegistry();
+    tools.register(bashTool);
+    const agent = new Agent({
+      store,
+      tools,
+      cwd: dir,
+      model: { id: 'fake/m', provider: 'fake', model: 'm', api: 'openai-completions', baseUrl: `http://127.0.0.1:${port}/v1`, apiKey: 'test' }
+    });
+    const final = await agent.prompt('go');
+    assert.equal(final.stopReason, 'stop');
+    const toolMsg = bodies[1].messages.find((m: any) => m.role === 'tool');
+    assert.match(toolMsg.content, /invalid arguments for bash/);
+    const call = bodies[1].messages.find((m: any) => m.tool_calls);
+    assert.equal(call.tool_calls[0].function.arguments, '{}');
+  } finally {
+    server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('network failures name the cause instead of "fetch failed"', async () => {
+  const { describeNetError } = await import('../src/core/models/util.js');
+  assert.match(describeNetError({ cause: { code: 'ENOTFOUND' } }), /DNS lookup failed/);
+  assert.match(describeNetError({ cause: { code: 'ECONNREFUSED' } }), /refused/);
+});
+
+test('HTTP errors and non-JSON stream events surface readable messages', async () => {
+  const server = createServer((req, res) => {
+    req.resume();
+    req.on('end', () => {
+      if (req.url?.includes('bad')) {
+        res.writeHead(200, { 'content-type': 'text/event-stream' });
+        res.end('data: <html>gateway</html>\n\n');
+      } else {
+        res.writeHead(503);
+        res.end('No healthy upstream');
+      }
+    });
+  });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  const port = (server.address() as AddressInfo).port;
+  const { openaiAdapter } = await import('../src/core/models/openai.js');
+  const spec = (path: string) => ({ id: 'fake/m', provider: 'fake', model: 'm', api: 'openai-completions', baseUrl: `http://127.0.0.1:${port}/${path}`, apiKey: 'k' }) as any;
+  const drain = async (s: any) => {
+    for await (const _ of openaiAdapter.stream(s, { system: '', messages: [], tools: [] } as any)) void _;
+  };
+  try {
+    await assert.rejects(drain(spec('v1')), /HTTP 503 No healthy upstream/);
+    await assert.rejects(drain(spec('bad')), /malformed stream event/);
+  } finally {
+    server.close();
+  }
+});

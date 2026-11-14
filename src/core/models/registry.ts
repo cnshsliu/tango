@@ -30,6 +30,17 @@ export const presets: ModelSpec[] = [
     cost: { input: 0.075, output: 0.235, cacheRead: 0.008 }
   },
   {
+    id: 'tknet/deepseek-v4.1-flash',
+    provider: 'tknet',
+    model: 'deepseek-v4.1-flash',
+    api: 'openai-completions',
+    baseUrl: 'https://tknet.ai/api/v1',
+    apiKey: '$TKNET_API_KEY',
+    contextWindow: 1000000,
+    maxTokens: 16384,
+    cost: { input: 0.135, output: 0.54, cacheRead: 0.003 }
+  },
+  {
     id: 'tknet/deepseek-v4-pro',
     provider: 'tknet',
     model: 'deepseek-v4-pro',

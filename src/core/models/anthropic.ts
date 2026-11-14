@@ -7,7 +7,7 @@ import type {
   StreamEvent,
   Usage
 } from '../types.js';
-import { resolveApiKey, sseLines } from './util.js';
+import { argsObject, parseArgs, parseEvent, postJson, resolveApiKey, sseLines } from './util.js';
 
 function toAnthropicMessages(messages: Message[]) {
   return messages.map((m) => ({
@@ -24,7 +24,7 @@ function toAnthropicMessages(messages: Message[]) {
               source: { type: 'base64', media_type: b.mimeType, data: b.data }
             };
           case 'tool_call':
-            return { type: 'tool_use', id: b.id, name: b.name, input: b.input ?? {} };
+            return { type: 'tool_use', id: b.id, name: b.name, input: argsObject(b.input) };
           case 'tool_result':
             return {
               type: 'tool_result',
@@ -60,27 +60,21 @@ export const anthropicAdapter: ModelAdapter = {
       }));
     }
 
-    const res = await fetch(`${spec.baseUrl.replace(/\/$/, '')}/messages`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-api-key': resolveApiKey(spec),
-        'anthropic-version': '2023-06-01'
-      },
-      body: JSON.stringify(body),
-      signal: req.signal
-    });
-    if (!res.ok || !res.body) {
-      throw new Error(`${spec.id}: HTTP ${res.status} ${await res.text()}`);
-    }
+    const res = await postJson(
+      spec,
+      `${spec.baseUrl.replace(/\/$/, '')}/messages`,
+      { 'x-api-key': resolveApiKey(spec), 'anthropic-version': '2023-06-01' },
+      body,
+      req.signal
+    );
 
     const blocks: ContentBlock[] = [];
     const partialJson = new Map<number, string>();
     const usage: Usage = { input: 0, output: 0 };
     let stopReason: Message['stopReason'] = 'stop';
 
-    for await (const data of sseLines(res.body)) {
-      const ev = JSON.parse(data);
+    for await (const data of sseLines(res.body!)) {
+      const ev = parseEvent(spec, data);
       switch (ev.type) {
         case 'message_start':
           usage.input = ev.message?.usage?.input_tokens ?? 0;
@@ -119,7 +113,7 @@ export const anthropicAdapter: ModelAdapter = {
           const b = blocks[ev.index];
           if (b?.type === 'tool_call') {
             const raw = partialJson.get(ev.index) ?? '';
-            b.input = raw.trim() ? JSON.parse(raw) : {};
+            b.input = parseArgs(raw);
           }
           break;
         }

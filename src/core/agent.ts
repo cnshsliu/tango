@@ -173,6 +173,10 @@ export class Agent {
 
     const tool = this.tools.get(call.name);
     if (!tool) return fail(`unknown tool: ${call.name}`);
+    if (!call.input || typeof call.input !== 'object' || Array.isArray(call.input)) {
+      const raw = typeof call.input === 'string' ? call.input.slice(0, 300) : JSON.stringify(call.input);
+      return fail(`invalid arguments for ${call.name}: expected a JSON object, got ${raw}`);
+    }
 
     const veto = await this.events.emit('before_tool', { call, tool });
     if (veto && veto.block) return fail(`blocked: ${veto.reason}`);
