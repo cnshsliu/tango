@@ -172,6 +172,7 @@ function makeAgent(model: ModelSpec, store: SessionStore, cwd: string): Agent {
 
 function printModels(models: ModelSpec[], current?: string): void {
   const groups: [string, ModelSpec[]][] = [
+    ['tknet (own gateway)', models.filter((m) => m.region === 'gateway')],
     ['China (mainland endpoints)', models.filter((m) => m.region === 'cn')],
     ['International (outside mainland China)', models.filter((m) => m.region === 'intl')],
     ['Other (from models.json, no region)', models.filter((m) => !m.region)]

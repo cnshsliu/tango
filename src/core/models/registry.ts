@@ -1,4 +1,4 @@
-import type { ApiKind, ModelAdapter, ModelSpec } from '../types.js';
+import type { ApiKind, ModelAdapter, ModelSpec, Prices, Usage } from '../types.js';
 import { anthropicAdapter } from './anthropic.js';
 import { openaiAdapter } from './openai.js';
 
@@ -14,15 +14,16 @@ export function adapterFor(spec: ModelSpec): ModelAdapter {
 }
 
 /**
- * Built-in presets. `region` is where the endpoint is served: `cn` (mainland China, no proxy
- * needed) or `intl`. Array order decides the default (first preset with a key); tknet stays
- * first because it is the user's own gateway. `--models` lists them grouped by region.
+ * Built-in presets. `region` is where the endpoint is served: `gateway` (tknet, the user's own
+ * gateway), `cn` (mainland China, no proxy needed) or `intl`. Array order decides the default
+ * (first preset with a key); tknet stays first. `--models` lists them grouped by region.
+ * Long-input tiers follow each vendor's pricing page; see costUsd.
  * Users override or extend via ~/.tango/models.json.
  */
 export const presets: ModelSpec[] = [
   {
     id: 'tknet/qwen3.8-flash-next',
-    region: 'intl',
+    region: 'gateway',
     provider: 'tknet',
     model: 'qwen3.8-flash-next',
     api: 'openai-completions',
@@ -34,7 +35,7 @@ export const presets: ModelSpec[] = [
   },
   {
     id: 'tknet/deepseek-v4.1-flash',
-    region: 'intl',
+    region: 'gateway',
     provider: 'tknet',
     model: 'deepseek-v4.1-flash',
     api: 'openai-completions',
@@ -46,7 +47,7 @@ export const presets: ModelSpec[] = [
   },
   {
     id: 'tknet/deepseek-v4-pro',
-    region: 'intl',
+    region: 'gateway',
     provider: 'tknet',
     model: 'deepseek-v4-pro',
     api: 'openai-completions',
@@ -226,8 +227,8 @@ export const presets: ModelSpec[] = [
     reasoning: true,
     cost: { input: 0.164, output: 0.513 }
   },
-  // US presets checked against official docs on 2026-11-14. Costs are the base tier
-  // (OpenAI <272K, xAI <200K, Haiku <100K prompt tokens); longer prompts cost more.
+  // US presets checked against official docs on 2026-11-14. Long-prompt tiers: Haiku >100K,
+  // OpenAI >272K (2x input/cache, 1.5x output), xAI >=200K; the whole request moves up a tier.
   {
     id: 'anthropic/claude-opus-5-5',
     region: 'intl',
@@ -252,7 +253,13 @@ export const presets: ModelSpec[] = [
     contextWindow: 1000000,
     maxTokens: 32768,
     reasoning: true,
-    cost: { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125 }
+    cost: {
+      input: 0.1,
+      output: 0.5,
+      cacheRead: 0.01,
+      cacheWrite: 0.125,
+      tiers: [{ above: 100_000, input: 0.5, output: 2.5, cacheRead: 0.05, cacheWrite: 0.625 }]
+    }
   },
   {
     id: 'openai/gpt-6-astra',
@@ -265,7 +272,13 @@ export const presets: ModelSpec[] = [
     contextWindow: 1050000,
     maxTokens: 32768,
     reasoning: true,
-    cost: { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 }
+    cost: {
+      input: 10,
+      output: 50,
+      cacheRead: 1,
+      cacheWrite: 12.5,
+      tiers: [{ above: 272_000, input: 20, output: 75, cacheRead: 2, cacheWrite: 25 }]
+    }
   },
   {
     // GPT-6 Luna is cheaper, but on Chat Completions it only calls tools with reasoning_effort "none".
@@ -279,7 +292,13 @@ export const presets: ModelSpec[] = [
     contextWindow: 1050000,
     maxTokens: 32768,
     reasoning: true,
-    cost: { input: 1, output: 5, cacheRead: 0.05, cacheWrite: 1.25 }
+    cost: {
+      input: 1,
+      output: 5,
+      cacheRead: 0.05,
+      cacheWrite: 1.25,
+      tiers: [{ above: 272_000, input: 2, output: 7.5, cacheRead: 0.1, cacheWrite: 2.5 }]
+    }
   },
   {
     // Vertex AI list prices; through 2026-11-30 Google refunds 50% as credits.
@@ -296,7 +315,7 @@ export const presets: ModelSpec[] = [
     cost: { input: 4, output: 20, cacheRead: 0.2 }
   },
   {
-    // introductory price through 2026-12-31, then $1.5 / $7.5
+    // introductory price through 2026-12-31, then $1.5 / $0.15 / $7.5; same price above 200K
     id: 'google/gemini-3.8-flash',
     region: 'intl',
     provider: 'google',
@@ -307,7 +326,7 @@ export const presets: ModelSpec[] = [
     contextWindow: 1048576,
     maxTokens: 32768,
     reasoning: true,
-    cost: { input: 0.75, output: 3.75 }
+    cost: { input: 0.75, output: 3.75, cacheRead: 0.075 }
   },
   {
     id: 'xai/grok-4.7',
@@ -320,7 +339,7 @@ export const presets: ModelSpec[] = [
     contextWindow: 500000,
     maxTokens: 32768,
     reasoning: true,
-    cost: { input: 2, output: 6, cacheRead: 0.5 }
+    cost: { input: 2, output: 6, cacheRead: 0.5, tiers: [{ above: 199_999, input: 4, output: 12, cacheRead: 1 }] }
   },
   {
     id: 'xai/grok-build-0.1',
@@ -333,19 +352,20 @@ export const presets: ModelSpec[] = [
     contextWindow: 256000,
     maxTokens: 32768,
     reasoning: true,
-    cost: { input: 1, output: 2, cacheRead: 0.2 }
+    cost: { input: 1, output: 2, cacheRead: 0.2, tiers: [{ above: 199_999, input: 2, output: 4, cacheRead: 0.4 }] }
   }
 ];
 
-export function costUsd(spec: ModelSpec, u: { input: number; output: number; cacheRead?: number; cacheWrite?: number }) {
-  const c = spec.cost;
-  if (!c) return 0;
-  const cached = u.cacheRead ?? 0;
+/** Pick the tier from total prompt tokens (u.input), then bill every token in the request at it. */
+export function costUsd(spec: ModelSpec, u: Usage): number {
+  if (!spec.cost) return 0;
+  let p: Prices = spec.cost;
+  for (const t of spec.cost.tiers ?? []) if (u.input > t.above) p = t;
+  const read = u.cacheRead ?? 0;
+  const write = u.cacheWrite ?? 0;
+  const fresh = Math.max(0, u.input - read - write);
   return (
-    ((u.input - cached) * c.input +
-      cached * (c.cacheRead ?? c.input) +
-      u.output * c.output +
-      (u.cacheWrite ?? 0) * (c.cacheWrite ?? 0)) /
+    (fresh * p.input + read * (p.cacheRead ?? p.input) + write * (p.cacheWrite ?? p.input) + u.output * p.output) /
     1_000_000
   );
 }

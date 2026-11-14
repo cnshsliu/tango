@@ -20,17 +20,17 @@ prices come from pricing groups, which tango doesn't see). If
 
 ## Model presets
 
-`tango --models` lists presets in two groups by where the endpoint is served:
+`tango --models` lists presets in three groups: the tknet gateway, then by where the endpoint is served:
 
 | Group | Presets | Key variable |
 |---|---|---|
+| tknet (own gateway) | `tknet/qwen3.8-flash-next`, `tknet/deepseek-v4.1-flash`, `tknet/deepseek-v4-pro` (tknet.ai, Tencent Cloud Silicon Valley) | `TKNET_API_KEY` |
 | China (mainland endpoints, no proxy) | `deepseek/deepseek-flash`, `deepseek/deepseek-v4-pro` | `DEEPSEEK_API_KEY` |
 | | `kimi/kimi-k3.1-pro`, `kimi/kimi-k3.1-pro-highspeed` (moonshot.cn) | `KIMI_API_KEY` |
 | | `kimi-code/kimi-for-coding` (api.kimi.com/coding, Kimi Code plan) | `KIMI_CODE_API_KEY` |
 | | `qwen/qwen3.8-max`, `qwen/qwen3.8-flash` (dashscope.aliyuncs.com) | `DASHSCOPE_API_KEY` |
 | | `zhipu/glm-5.3`, `zhipu/glm-5.3-flash` (bigmodel.cn) | `Z_API_KEY` |
-| International | `tknet/*` (tknet.ai, Tencent Cloud Silicon Valley) | `TKNET_API_KEY` |
-| | `kimi-intl/kimi-k3.1-pro`, `kimi-intl/kimi-k3.1-pro-highspeed` (moonshot.ai) | `KIMI_API_KEY` |
+| International | `kimi-intl/kimi-k3.1-pro`, `kimi-intl/kimi-k3.1-pro-highspeed` (moonshot.ai) | `KIMI_API_KEY` |
 | | `qwen-us/qwen3.8-max`, `qwen-us/qwen3.8-flash` (dashscope-us) | `DASHSCOPE_US_API_KEY` |
 | | `anthropic/claude-opus-5-5`, `anthropic/claude-haiku-5-5` | `ANTHROPIC_API_KEY` |
 | | `openai/gpt-6-astra`, `openai/gpt-6.1-terra` | `OPENAI_API_KEY` |
@@ -40,6 +40,12 @@ prices come from pricing groups, which tango doesn't see). If
 China and international accounts of the same vendor use different keys. `kimi/kimi-k3.1-pro` and
 `kimi-intl/kimi-k3.1-pro` both read `KIMI_API_KEY`, so only the one matching your account works;
 point the other at a different variable in `models.json` if you have both. The default model is the first preset with a key set, which is `tknet/qwen3.8-flash-next`.
+
+Costs follow each vendor's pricing page, including long-prompt tiers: when a request's prompt
+(input plus cache reads and writes) passes the threshold, the whole request is billed at the
+higher tier. Claude Haiku 5.5 steps up above 100K tokens, GPT-6 Astra and GPT-6.1 Terra above
+272K, and both xAI models at 200K. In `models.json`, add tiers as
+`"cost": { "input": 1, "output": 2, "tiers": [{ "above": 200000, "input": 2, "output": 4 }] }`.
 
 ## Quick start
 

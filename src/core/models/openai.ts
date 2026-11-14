@@ -9,6 +9,23 @@ import type {
 } from '../types.js';
 import { argsObject, parseArgs, parseEvent, postJson, resolveApiKey, sseLines } from './util.js';
 
+/**
+ * Map a chat-completions usage object onto Usage. prompt_tokens already includes cached and
+ * cache-write tokens. Gemini leaves thinking out of completion_tokens but bills it as output,
+ * so output falls back to total_tokens - prompt_tokens when that is larger.
+ */
+export function parseUsage(u: any): Usage {
+  const input = u.prompt_tokens ?? 0;
+  const d = u.prompt_tokens_details ?? {};
+  const output = Math.max(u.completion_tokens ?? 0, (u.total_tokens ?? 0) - input);
+  return {
+    input,
+    output,
+    cacheRead: d.cached_tokens ?? u.prompt_cache_hit_tokens,
+    cacheWrite: d.cache_write_tokens ?? d.cache_creation_input_tokens
+  };
+}
+
 /** Flatten our message model into OpenAI chat-completions shape. */
 export function toOpenAIMessages(system: string, messages: Message[]) {
   const out: any[] = [{ role: 'system', content: system }];
@@ -105,11 +122,7 @@ export const openaiAdapter: ModelAdapter = {
       if (data === '[DONE]') break;
       const ev = parseEvent(spec, data);
       if (ev.error) throw new Error(`${spec.id}: ${JSON.stringify(ev.error)}`);
-      if (ev.usage) {
-        usage.input = ev.usage.prompt_tokens ?? 0;
-        usage.output = ev.usage.completion_tokens ?? 0;
-        usage.cacheRead = ev.usage.prompt_tokens_details?.cached_tokens ?? ev.usage.prompt_cache_hit_tokens;
-      }
+      if (ev.usage) Object.assign(usage, parseUsage(ev.usage));
       const choice = ev.choices?.[0];
       if (!choice) continue;
       const d = choice.delta ?? {};

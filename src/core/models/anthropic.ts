@@ -76,11 +76,14 @@ export const anthropicAdapter: ModelAdapter = {
     for await (const data of sseLines(res.body!)) {
       const ev = parseEvent(spec, data);
       switch (ev.type) {
-        case 'message_start':
-          usage.input = ev.message?.usage?.input_tokens ?? 0;
-          usage.cacheRead = ev.message?.usage?.cache_read_input_tokens;
-          usage.cacheWrite = ev.message?.usage?.cache_creation_input_tokens;
+        case 'message_start': {
+          // input_tokens excludes cached tokens; Usage.input is the whole prompt
+          const u = ev.message?.usage ?? {};
+          usage.cacheRead = u.cache_read_input_tokens;
+          usage.cacheWrite = u.cache_creation_input_tokens;
+          usage.input = (u.input_tokens ?? 0) + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0);
           break;
+        }
         case 'content_block_start': {
           const cb = ev.content_block;
           if (cb.type === 'text') blocks[ev.index] = { type: 'text', text: '' };

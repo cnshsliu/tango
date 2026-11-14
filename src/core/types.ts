@@ -39,6 +39,16 @@ export interface Message {
 export type StopReason = 'stop' | 'tool_use' | 'length' | 'error' | 'aborted';
 
 export interface Usage {
+  /** all prompt tokens, including cacheRead and cacheWrite */
+  input: number;
+  /** all generated tokens, including reasoning */
+  output: number;
+  cacheRead?: number;
+  cacheWrite?: number;
+}
+
+/** USD per million tokens */
+export interface Prices {
   input: number;
   output: number;
   cacheRead?: number;
@@ -62,10 +72,13 @@ export interface ModelSpec {
   contextWindow?: number;
   maxTokens?: number;
   reasoning?: boolean;
-  /** USD per million tokens */
-  cost?: { input: number; output: number; cacheRead?: number; cacheWrite?: number };
-  /** where the model is served: inside mainland China, or outside it */
-  region?: 'cn' | 'intl';
+  /**
+   * Base prices. `tiers` (ascending) apply when the request's prompt tokens (Usage.input)
+   * exceed `above`; the whole request is then billed at that tier.
+   */
+  cost?: Prices & { tiers?: (Prices & { above: number })[] };
+  /** where the endpoint is served: mainland China, outside it, or the user's own gateway */
+  region?: 'cn' | 'intl' | 'gateway';
 }
 
 export interface ToolSchema {
