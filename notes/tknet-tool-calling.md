@@ -2,6 +2,39 @@
 
 日期：2026-11-14 · 提交：`5d9ac16` + `a08e867` + `f206ec5` + `b85057d`（均已部署生产）
 
+---
+
+## 附：折扣子系统退役（2026-11-14，提交 `22aada0` + `c685148`，已部署）
+
+**决策**：废弃 `users.billing_rate` 与 `api_keys.multiplier`，计费只走列表价
+（`model_pricing`）或所绑价格组的覆盖价。
+
+- **生产数据**：唯一 billing_rate=0.80 用户（liukehong@gmail.com）已改回 1.00
+  （备份 `scripts/billing-rate-backup-2026-11-14.json`，事务执行）。
+- **代码范围**：31 文件，+219/−240。auth 中间件不再读 billingRate；chat/messages/
+  responses/embeddings/batch 五个端点不再传递倍率、删除了"account rate 403"门禁；
+  request/stream/batch worker 及 calculator 全部去掉 userMultiplier（billedAmount =
+  列表/组价 × 用量）；profit-guard 删除 discountBlocksCaller/accountRateBlocksModel；
+  admin users/api-keys、user keys/profile、dashboard estimator/keys 的编辑入口与 zod
+  字段全部移除。
+- **残留读取**：无。全仓只剩 schema 列定义（列保留不删，历史账单可读）与备份 JSON。
+- **全字段成本地板（新保护）**：group_model_pricing 保存时，cached / cache-write
+  5m / 1h 三个字段也要 ≥ 对应上游成本档（含 legacy 单层双侧兜底）；继承公共价不是
+  绕过口；`PROFIT_GUARD_EXEMPT_MODELS` 中的模型跳过整个地板。测试 64 项覆盖。
+- **部署后实测**（https://tknet.ai，1.0× key）：qwen3.8-flash-next 57 in / 42 out →
+  billed $0.00001415 = 57×0.075/M + 42×0.235/M，**精确等于列表价 × 用量**。
+- **将来删列迁移方案（未执行）**：
+  1. 前置确认：`select count(*) from users where billing_rate <> 1.00` 与
+     `select count(*) from api_keys where multiplier <> 1.00` 均为 0；
+  2. `alter table users drop column billing_rate;`
+     `alter table api_keys drop column multiplier;`（均为带 default 的 notNull 列，
+     无外键/索引依赖，drop 即可；requests 历史行不引用这两列本身）；
+  3. 同步删 `src/lib/db/schema/users.ts` / `api-keys.ts` 的字段定义；
+  4. 因无代码读取，迁移可安全地在任意部署窗口执行（drizzle/ 编号顺延，
+     `apply-migration.ts` 手工应用）。
+
+---
+
 ## 结论
 
 `/api/v1/chat/completions` 已完整支持 OpenAI 兼容工具调用（function calling），tango 可用。
@@ -33,7 +66,9 @@
 
 **tango e2e 收口（2026-11-14）**：`npx tsx src/cli.ts -m tknet/qwen3.8-flash-next "列出这个目录的文件"`
 → agent 实际调用 bash 工具列出目录（含大小）并给出最终中文回答。全程无 profit-guard 违规。
-**tool calling 阻塞项就此关闭。**
+同日追加 `tknet/deepseek-v4.1-flash` preset（`src/core/models/registry.ts`，1M 上下文，
+cost 0.135/0.54/0.003）并 e2e 通过：多轮 bash 工具循环 + 结构化目录树回答，零违规。
+**tool calling 阻塞项就此关闭（双模型 e2e 验证）。**
 
 ## 现在支持的完整形态
 

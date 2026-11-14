@@ -14,7 +14,8 @@ message bridges and scheduler come later.
 
 Through the tknet.ai gateway, tool calling works end to end with `tknet/qwen3.8-flash-next` (the
 default) and `tknet/deepseek-v4-pro` (checked 2026-11-14: one-shot, REPL with permission prompts,
-`-c`, `-r`). Costs are tknet list prices; your account's billing rate may differ. If
+`-c`, `-r`). Costs are tknet list prices, which is what tknet bills (it has no per-account discounts; custom
+prices come from pricing groups, which tango doesn't see). If
 `http(s)_proxy` is set, tango routes its requests through it.
 
 ## Quick start
