@@ -73,3 +73,17 @@ test('costUsd prices cache reads separately', () => {
   const usd = costUsd(spec, { input: 1_000_000, output: 1_000_000, cacheRead: 100_000 });
   assert.ok(Math.abs(usd - 2.91) < 1e-9, `got ${usd}`);
 });
+
+test('lastModel falls back to the model that last answered when no switch was recorded', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'tango-test-'));
+  try {
+    const store = await SessionStore.create(dir, '/work');
+    assert.equal(store.lastModel(), undefined);
+    await store.appendMessage({ role: 'user', content: [{ type: 'text', text: 'hi' }] });
+    await store.appendMessage({ role: 'assistant', content: [{ type: 'text', text: 'yo' }], model: 'tknet/deepseek-v4.1-flash' });
+    const reopened = await SessionStore.open(dir, store.id);
+    assert.equal(reopened.lastModel(), 'tknet/deepseek-v4.1-flash');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

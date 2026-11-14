@@ -108,6 +108,8 @@ export class SessionStore {
     for (let i = this.entries.length - 1; i >= 0; i--) {
       const e = this.entries[i];
       if (e.kind === 'model') return e.modelId;
+      // sessions started with -m never record a switch; use the model that last answered
+      if (e.kind === 'message' && e.message.role === 'assistant' && e.message.model) return e.message.model;
     }
   }
 
