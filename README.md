@@ -8,7 +8,7 @@ out of the box with a single API key, no proxy.
 ## Status
 
 Core loop is working: agent loop, JSONL sessions with compaction, Anthropic + OpenAI-compatible
-adapters, built-in tools (read / write / edit / bash / grep / find / ls / web_search / web_fetch), a permission gate,
+adapters, built-in tools (read / write / edit / bash / grep / find / ls / web_search / web_fetch / office_read), a permission gate,
 AGENTS.md + skills context assembly, typed event bus, cost tracking. CLI REPL only; TUI,
 message bridges and scheduler come later.
 
@@ -64,6 +64,21 @@ China but can break if Bing changes its markup. Force one with `TANGO_SEARCH=bin
 decoding GBK pages correctly. It refuses binary content, stops at 5 MB and times out after 30 s.
 Both tools count as reads for permissions.
 
+## Office files
+
+`office_read` extracts text from PDF, Word, Excel and PowerPoint with no npm dependencies.
+
+| type | how | options |
+| --- | --- | --- |
+| .docx | built-in ZIP + XML reader; headings become `#`, lists `-`, tables markdown | |
+| .xlsx | tab-separated rows prefixed with the row number; dates converted from serials | `sheet` (name or index), `rows` (default first 500) |
+| .pptx | slides in presentation order, plus speaker notes | `pages` (slide range) |
+| .pdf | `pdftotext -layout` (poppler), else macOS PDFKit; says so when a PDF has no text layer (scanned) | `pages` |
+| .doc .rtf .odt .wps | macOS `textutil` | |
+
+Old binary .xls/.ppt are refused with a hint to re-save as .xlsx/.pptx. `brew install poppler`
+gives much better PDF output than the PDFKit fallback. Counts as a read for permissions.
+
 ## Config
 
 All user state lives in `~/.tango/` (override with `TANGO_HOME`):
@@ -91,6 +106,7 @@ src/core/
   permissions.ts  ask / auto / readonly gate on before_tool
   models/       anthropic-messages + openai-completions adapters, presets, cost
   tools/        registry + read/write/edit/bash + grep/find/ls + web_search/web_fetch
+                office/ = office_read (zip + xml readers, docx/xlsx/pptx, pdf via pdftotext)
 src/cli.ts      REPL / one-shot entry
 ```
 
