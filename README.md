@@ -9,9 +9,9 @@ out of the box with a single API key, no proxy.
 
 Core loop is working: agent loop, JSONL sessions with compaction, Anthropic + OpenAI-compatible
 adapters, built-in tools (read / write / edit / bash / grep / find / ls / web_search / web_fetch /
-office_read / office_write / notify), a permission gate, AGENTS.md + skills context assembly,
+office_read / office_write / notify / diff), a permission gate, AGENTS.md + skills context assembly,
 typed event bus, cost tracking with long-prompt price tiers, `/save-as-skill`, scheduled tasks
-(`tango task`) with Feishu webhook delivery. CLI REPL only; a TUI comes later.
+(`tango task`) with Feishu webhook delivery, auto type diagnostics after edits. CLI REPL only; a TUI comes later.
 
 Through the tknet.ai gateway, tool calling works end to end with `tknet/qwen3.8-flash-next` (the
 default), `tknet/deepseek-v4.1-flash` and `tknet/deepseek-v4-pro` (checked 2026-11-14: one-shot,
@@ -90,6 +90,14 @@ description enter the system prompt. `/save-as-skill 名称` distils the current
 + tool calls) into a draft under `~/.tango/skill-drafts/`. Edit the draft — above all write a real
 `description:` — then `/save-as-skill finish <file>` installs it as a project skill.
 
+## Coding feedback loop
+
+After every `write`/`edit` of a source file tango runs the project's *own* checker and appends any
+errors to the tool result, so the model sees a broken edit immediately: `tsc --noEmit` for
+TypeScript, `pyright` (then `ruff`) from `.venv` or `node_modules` for Python, `go vet`, `cargo check`.
+Silent when the project has no checker installed. The `diff` tool (read-only) shows what changed:
+a summary, or full hunks per file.
+
 ## Permissions
 
 Three modes, set with flags or `/mode`:
@@ -161,11 +169,12 @@ src/core/
   session.ts    append-only JSONL store, compaction = summary entry
   context.ts    system prompt = base + AGENTS.md (upward + global) + skills + env
   skills.ts     /save-as-skill drafts → SKILL.md
+  diagnostics.ts after write/edit → project checker (tsc/pyright/ruff/go vet/cargo) → tool result
   scheduler.ts  tango task: due-check, per-run sessions, Feishu webhook, daemon loop
   config.ts     ~/.tango loading, model picking, key availability
   permissions.ts  ask / auto / readonly gate on before_tool
   models/       anthropic-messages + openai-completions adapters, presets, cost
-  tools/        registry + read/write/edit/bash + grep/find/ls + web_search/web_fetch + notify
+  tools/        registry + read/write/edit/bash + grep/find/ls + web_search/web_fetch + notify + diff
                 office/ = office_read (zip + xml readers) + office_write (zip writer, docx/xlsx)
 src/cli.ts      REPL / one-shot entry
 ```

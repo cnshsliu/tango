@@ -19,6 +19,8 @@ import { SessionStore, type SessionSummary } from './core/session.js';
 import { ToolRegistry } from './core/tools/registry.js';
 import { bashTool } from './core/tools/bash.js';
 import { editTool, readTool, writeTool } from './core/tools/fs.js';
+import { diffTool } from './core/tools/diff.js';
+import { installDiagnostics } from './core/diagnostics.js';
 import { findTool, grepTool, lsTool } from './core/tools/search.js';
 import { webSearchTool } from './core/tools/web-search.js';
 import { webFetchTool } from './core/tools/web-fetch.js';
@@ -153,7 +155,7 @@ function parseArgs(argv: string[]): Args {
 
 function buildTools(): ToolRegistry {
   const tools = new ToolRegistry();
-  for (const t of [readTool, writeTool, editTool, bashTool, grepTool, findTool, lsTool, webSearchTool, webFetchTool, officeReadTool, officeWriteTool, notifyTool])
+  for (const t of [readTool, writeTool, editTool, bashTool, grepTool, findTool, lsTool, webSearchTool, webFetchTool, officeReadTool, officeWriteTool, notifyTool, diffTool])
     tools.register(t);
   return tools;
 }
@@ -182,6 +184,7 @@ function makeAgent(model: ModelSpec, store: SessionStore, cwd: string): Agent {
   events.on('before_tool', ({ call }) => {
     if (process.stdout.isTTY) process.stdout.write(dim(`⚙ ${call.name} ${toolSummary(call)}\n`));
   });
+  installDiagnostics(events, cwd);
   return new Agent({ store, tools: buildTools(), model, cwd, events });
 }
 

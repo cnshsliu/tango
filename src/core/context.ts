@@ -16,6 +16,7 @@ Working rules:
 - Act, don't narrate. If a tool can do it now, do it instead of describing what you would do.
 - Read before you edit. Prefer edit for targeted changes, write for new files.
 - Verify before declaring done: run the tests, re-read what you wrote, check the output.
+- After editing code, the tool result may already carry [diagnostics]; fix errors those report before moving on. Use diff to see what you changed, and commit each working step with git.
 - Be concise in chat. Put long detail into files when the user asked for a deliverable.
 - If the request is ambiguous and a wrong guess is cheap to undo, guess and say so. Ask only when guessing is expensive.`;
 
