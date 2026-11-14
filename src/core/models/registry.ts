@@ -56,64 +56,72 @@ export const presets: ModelSpec[] = [
     maxTokens: 16384,
     cost: { input: 0.6525, output: 1.305, cacheRead: 0.005438 }
   },
+  // China presets checked against official docs on 2026-11-14. CNY prices converted at 6.6849 CNY/USD.
+  // DeepSeek costs are peak-hour prices; off-peak is half.
   {
-    id: 'deepseek/deepseek-chat',
+    id: 'deepseek/deepseek-flash',
     region: 'cn',
     provider: 'deepseek',
-    model: 'deepseek-chat',
+    model: 'deepseek-flash',
     api: 'openai-completions',
-    baseUrl: 'https://api.deepseek.com/v1',
+    baseUrl: 'https://api.deepseek.com',
     apiKey: 'DEEPSEEK_API_KEY',
-    contextWindow: 128000,
-    maxTokens: 8192,
-    cost: { input: 0.27, output: 1.1, cacheRead: 0.07 }
-  },
-  {
-    id: 'deepseek/deepseek-reasoner',
-    region: 'cn',
-    provider: 'deepseek',
-    model: 'deepseek-reasoner',
-    api: 'openai-completions',
-    baseUrl: 'https://api.deepseek.com/v1',
-    apiKey: 'DEEPSEEK_API_KEY',
-    contextWindow: 128000,
-    maxTokens: 16384,
+    contextWindow: 1048576,
+    maxTokens: 32768,
     reasoning: true,
-    cost: { input: 0.55, output: 2.19, cacheRead: 0.14 }
+    cost: { input: 0.3, output: 1.2, cacheRead: 0.006 }
   },
   {
-    id: 'kimi/kimi-k2',
+    id: 'deepseek/deepseek-v4-pro',
+    region: 'cn',
+    provider: 'deepseek',
+    model: 'deepseek-v4-pro',
+    api: 'openai-completions',
+    baseUrl: 'https://api.deepseek.com',
+    apiKey: 'DEEPSEEK_API_KEY',
+    contextWindow: 1048576,
+    maxTokens: 32768,
+    reasoning: true,
+    cost: { input: 1.32, output: 3.96, cacheRead: 0.044 }
+  },
+  {
+    id: 'kimi/kimi-k3.1-pro',
     region: 'cn',
     provider: 'kimi',
-    model: 'kimi-k2-0905-preview',
+    model: 'kimi-k3.1-pro',
     api: 'openai-completions',
     baseUrl: 'https://api.moonshot.cn/v1',
     apiKey: 'KIMI_API_KEY',
-    contextWindow: 256000,
-    maxTokens: 16384,
-    cost: { input: 0.6, output: 2.5 }
+    contextWindow: 1048576,
+    maxTokens: 32768,
+    reasoning: true,
+    cost: { input: 1.945, output: 10.172, cacheRead: 0.1945, cacheWrite: 1.945 }
   },
   {
-    id: 'qwen/qwen3-coder-plus',
+    id: 'qwen/qwen3.8-max',
     region: 'cn',
     provider: 'qwen',
-    model: 'qwen3-coder-plus',
+    model: 'qwen3.8-max',
     api: 'openai-completions',
     baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
     apiKey: 'DASHSCOPE_API_KEY',
-    contextWindow: 128000,
-    maxTokens: 16384
+    contextWindow: 1000000,
+    maxTokens: 32768,
+    reasoning: true,
+    cost: { input: 1.795, output: 5.385 }
   },
   {
-    id: 'zhipu/glm-4.6',
+    id: 'zhipu/glm-5.3',
     region: 'cn',
     provider: 'zhipu',
-    model: 'glm-4.6',
+    model: 'glm-5.3',
     api: 'openai-completions',
     baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
     apiKey: 'Z_API_KEY',
-    contextWindow: 200000,
-    maxTokens: 16384
+    contextWindow: 1000000,
+    maxTokens: 32768,
+    reasoning: true,
+    cost: { input: 1.197, output: 4.189, cacheRead: 0.299 }
   },
   {
     id: 'kimi-code/kimi-for-coding',

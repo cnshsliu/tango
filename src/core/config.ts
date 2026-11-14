@@ -14,7 +14,7 @@ export function tangoDir(): string {
 export const sessionsDir = () => join(tangoDir(), 'sessions');
 
 export interface Config {
-  /** default model id, e.g. "deepseek/deepseek-chat" */
+  /** default model id, e.g. "deepseek/deepseek-flash" */
   model?: string;
 }
 

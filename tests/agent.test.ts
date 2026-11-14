@@ -77,6 +77,22 @@ test('openai messages: tool-call-only assistant turns omit content instead of se
   assert.equal('content' in msgs[1], false);
   assert.equal(msgs[1].tool_calls.length, 1);
   assert.equal(msgs[2].content, 'hi');
+  assert.equal('reasoning_content' in msgs[2], false);
+});
+
+test('openai messages: thinking is sent back as reasoning_content', async () => {
+  const { toOpenAIMessages } = await import('../src/core/models/openai.js');
+  const msgs = toOpenAIMessages('sys', [
+    {
+      role: 'assistant',
+      content: [
+        { type: 'thinking', text: 'need ls' },
+        { type: 'tool_call', id: 'c1', name: 'ls', input: {} }
+      ]
+    }
+  ] as any);
+  assert.equal(msgs[1].reasoning_content, 'need ls');
+  assert.equal(msgs[1].tool_calls.length, 1);
 });
 
 test('malformed tool arguments become a tool error the model can see, not a crash', async () => {

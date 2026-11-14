@@ -43,7 +43,7 @@ export interface Usage {
 export type ApiKind = 'anthropic-messages' | 'openai-completions';
 
 export interface ModelSpec {
-  /** display + selection id, e.g. "deepseek/deepseek-chat" */
+  /** display + selection id, e.g. "deepseek/deepseek-flash" */
   id: string;
   provider: string;
   /** model name as sent to the API */

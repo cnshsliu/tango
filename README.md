@@ -24,17 +24,17 @@ prices come from pricing groups, which tango doesn't see). If
 
 | Group | Presets | Key variable |
 |---|---|---|
-| China (mainland endpoints, no proxy) | `deepseek/*` | `DEEPSEEK_API_KEY` |
-| | `kimi/kimi-k2` (moonshot.cn) | `KIMI_API_KEY` |
+| China (mainland endpoints, no proxy) | `deepseek/deepseek-flash`, `deepseek/deepseek-v4-pro` | `DEEPSEEK_API_KEY` |
+| | `kimi/kimi-k3.1-pro` (moonshot.cn) | `KIMI_API_KEY` |
 | | `kimi-code/kimi-for-coding` (api.kimi.com/coding, Kimi Code plan) | `KIMI_CODE_API_KEY` |
-| | `qwen/qwen3-coder-plus` (dashscope.aliyuncs.com) | `DASHSCOPE_API_KEY` |
-| | `zhipu/glm-4.6` (bigmodel.cn) | `Z_API_KEY` |
+| | `qwen/qwen3.8-max` (dashscope.aliyuncs.com) | `DASHSCOPE_API_KEY` |
+| | `zhipu/glm-5.3` (bigmodel.cn) | `Z_API_KEY` |
 | International | `tknet/*` (tknet.ai, Tencent Cloud Silicon Valley) | `TKNET_API_KEY` |
 | | `kimi-intl/kimi-k3.1-pro` (moonshot.ai) | `KIMI_API_KEY` |
 | | `qwen-us/*` (dashscope-us) | `DASHSCOPE_US_API_KEY` |
 | | `anthropic/*`, `openai/*` | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` |
 
-China and international accounts of the same vendor use different keys. `kimi/kimi-k2` and
+China and international accounts of the same vendor use different keys. `kimi/kimi-k3.1-pro` and
 `kimi-intl/kimi-k3.1-pro` both read `KIMI_API_KEY`, so only the one matching your account works;
 point the other at a different variable in `models.json` if you have both. The default model is the first preset with a key set, which is `tknet/qwen3.8-flash-next`.
 

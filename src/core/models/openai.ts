@@ -42,10 +42,16 @@ export function toOpenAIMessages(system: string, messages: Message[]) {
         .filter((b) => b.type === 'text')
         .map((b) => (b as any).text)
         .join('');
+      const thinking = m.content
+        .filter((b) => b.type === 'thinking')
+        .map((b) => (b as any).text)
+        .join('');
       const calls = m.content.filter((b) => b.type === 'tool_call');
       // content is omitted (not null) when empty: some gateways, e.g. tknet, reject null.
       const msg: any = { role: 'assistant' };
       if (text || !calls.length) msg.content = text;
+      // DeepSeek and Kimi thinking models return 400 on tool requests unless reasoning is sent back.
+      if (thinking) msg.reasoning_content = thinking;
       if (calls.length) {
         msg.tool_calls = calls.map((c) => {
           if (c.type !== 'tool_call') return null;
