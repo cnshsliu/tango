@@ -41,7 +41,7 @@ test('readonly denies writes and bash; auto allows everything', () => {
 });
 
 test('unknown tools ask by default', () => {
-  assert.equal(decide('ask', call('web_fetch', { url: 'x' }), cwd).action, 'ask');
+  assert.equal(decide('ask', call('feishu_send', { text: 'x' }), cwd).action, 'ask');
 });
 
 test('gate blocks without an asker and honours the answer with one', async () => {

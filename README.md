@@ -8,7 +8,7 @@ out of the box with a single API key, no proxy.
 ## Status
 
 Core loop is working: agent loop, JSONL sessions with compaction, Anthropic + OpenAI-compatible
-adapters, built-in tools (read / write / edit / bash / grep / find / ls), a permission gate,
+adapters, built-in tools (read / write / edit / bash / grep / find / ls / web_search / web_fetch), a permission gate,
 AGENTS.md + skills context assembly, typed event bus, cost tracking. CLI REPL only; TUI,
 message bridges and scheduler come later.
 
@@ -54,6 +54,16 @@ In the REPL, answer `y`, `n` or `a` (always, switches to `auto` for the session)
 can't ask, so risky calls are refused there unless `--yes` is given. The gate is a `before_tool`
 handler in `src/core/permissions.ts`.
 
+## Web tools
+
+`web_search` uses the first backend whose key is set: `TAVILY_API_KEY`, `BOCHA_API_KEY` (博查),
+`BRAVE_API_KEY`. With no key it scrapes Bing's public results page, which works from mainland
+China but can break if Bing changes its markup. Force one with `TANGO_SEARCH=bing|tavily|bocha|brave`.
+
+`web_fetch` reads an http(s) URL and turns HTML into markdown-like text (headings, links, lists),
+decoding GBK pages correctly. It refuses binary content, stops at 5 MB and times out after 30 s.
+Both tools count as reads for permissions.
+
 ## Config
 
 All user state lives in `~/.tango/` (override with `TANGO_HOME`):
@@ -80,7 +90,7 @@ src/core/
   config.ts     ~/.tango loading, model picking, key availability
   permissions.ts  ask / auto / readonly gate on before_tool
   models/       anthropic-messages + openai-completions adapters, presets, cost
-  tools/        registry + read/write/edit/bash + grep/find/ls
+  tools/        registry + read/write/edit/bash + grep/find/ls + web_search/web_fetch
 src/cli.ts      REPL / one-shot entry
 ```
 
