@@ -12,9 +12,10 @@ adapters, built-in tools (read / write / edit / bash / grep / find / ls / web_se
 AGENTS.md + skills context assembly, typed event bus, cost tracking. CLI REPL only; TUI,
 message bridges and scheduler come later.
 
-Through the tknet.ai gateway, tool calling works end to end with `tknet/deepseek-v4-pro` (checked
-2026-11-14). `tknet/qwen3.8-flash-next` is currently not listed by the gateway. If `http(s)_proxy`
-is set, tango routes its requests through it.
+Through the tknet.ai gateway, tool calling works end to end with `tknet/qwen3.8-flash-next` (the
+default) and `tknet/deepseek-v4-pro` (checked 2026-11-14: one-shot, REPL with permission prompts,
+`-c`, `-r`). Costs are tknet list prices; your account's billing rate may differ. If
+`http(s)_proxy` is set, tango routes its requests through it.
 
 ## Quick start
 

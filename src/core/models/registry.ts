@@ -26,7 +26,8 @@ export const presets: ModelSpec[] = [
     baseUrl: 'https://tknet.ai/api/v1',
     apiKey: '$TKNET_API_KEY',
     contextWindow: 200000,
-    maxTokens: 16384
+    maxTokens: 16384,
+    cost: { input: 0.075, output: 0.235, cacheRead: 0.008 }
   },
   {
     id: 'tknet/deepseek-v4-pro',
