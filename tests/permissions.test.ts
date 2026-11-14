@@ -20,9 +20,16 @@ test('reads always pass, even in readonly', () => {
 test('writes inside cwd pass; outside cwd ask', () => {
   assert.equal(decide('ask', call('write', { path: 'src/a.ts' }), cwd).action, 'allow');
   assert.equal(decide('ask', call('edit', { path: '/work/proj/b.ts' }), cwd).action, 'allow');
+  assert.equal(decide('ask', call('office_write', { path: '报告.docx' }), cwd).action, 'allow');
+  assert.equal(decide('readonly', call('office_write', { path: 'a.xlsx' }), cwd).action, 'deny');
   assert.equal(decide('ask', call('write', { path: '../other/x' }), cwd).action, 'ask');
   assert.equal(decide('ask', call('write', { path: '/work/proj-evil/x' }), cwd).action, 'ask');
   assert.equal(decide('ask', call('write', { path: '/etc/hosts' }), cwd).action, 'ask');
+});
+
+test('new tools default to asking until declared (notify)', () => {
+  assert.equal(decide('ask', call('notify', { text: 'hi' }), cwd).action, 'ask');
+  assert.equal(decide('readonly', call('notify', { text: 'hi' }), cwd).action, 'deny');
 });
 
 test('risky bash asks, ordinary bash passes', () => {
