@@ -182,9 +182,23 @@ export const presets: ModelSpec[] = [
     api: 'openai-completions',
     baseUrl: 'https://api.moonshot.ai/v1',
     apiKey: 'KIMI_API_KEY',
-    contextWindow: 256000,
-    maxTokens: 16384,
-    reasoning: true
+    contextWindow: 1048576,
+    maxTokens: 32768,
+    reasoning: true,
+    cost: { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2 }
+  },
+  {
+    id: 'kimi-intl/kimi-k3.1-pro-highspeed',
+    region: 'intl',
+    provider: 'kimi-intl',
+    model: 'kimi-k3.1-pro-highspeed',
+    api: 'openai-completions',
+    baseUrl: 'https://api.moonshot.ai/v1',
+    apiKey: 'KIMI_API_KEY',
+    contextWindow: 1048576,
+    maxTokens: 32768,
+    reasoning: true,
+    cost: { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 4 }
   },
   {
     id: 'qwen-us/qwen3.8-max',
@@ -194,20 +208,23 @@ export const presets: ModelSpec[] = [
     api: 'openai-completions',
     baseUrl: 'https://dashscope-us.aliyuncs.com/compatible-mode/v1',
     apiKey: 'DASHSCOPE_US_API_KEY',
-    contextWindow: 256000,
-    maxTokens: 16384,
-    reasoning: true
+    contextWindow: 1000000,
+    maxTokens: 32768,
+    reasoning: true,
+    cost: { input: 2.242, output: 6.726 }
   },
   {
-    id: 'qwen-us/qwen3-coder-flash',
+    id: 'qwen-us/qwen3.8-flash',
     region: 'intl',
     provider: 'qwen-us',
-    model: 'qwen3-coder-flash',
+    model: 'qwen3.8-flash',
     api: 'openai-completions',
     baseUrl: 'https://dashscope-us.aliyuncs.com/compatible-mode/v1',
     apiKey: 'DASHSCOPE_US_API_KEY',
-    contextWindow: 128000,
-    maxTokens: 16384
+    contextWindow: 1000000,
+    maxTokens: 32768,
+    reasoning: true,
+    cost: { input: 0.164, output: 0.513 }
   },
   // US presets checked against official docs on 2026-11-14. Costs are the base tier
   // (OpenAI <272K, xAI <200K, Haiku <100K prompt tokens); longer prompts cost more.

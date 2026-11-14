@@ -30,8 +30,8 @@ prices come from pricing groups, which tango doesn't see). If
 | | `qwen/qwen3.8-max`, `qwen/qwen3.8-flash` (dashscope.aliyuncs.com) | `DASHSCOPE_API_KEY` |
 | | `zhipu/glm-5.3`, `zhipu/glm-5.3-flash` (bigmodel.cn) | `Z_API_KEY` |
 | International | `tknet/*` (tknet.ai, Tencent Cloud Silicon Valley) | `TKNET_API_KEY` |
-| | `kimi-intl/kimi-k3.1-pro` (moonshot.ai) | `KIMI_API_KEY` |
-| | `qwen-us/*` (dashscope-us) | `DASHSCOPE_US_API_KEY` |
+| | `kimi-intl/kimi-k3.1-pro`, `kimi-intl/kimi-k3.1-pro-highspeed` (moonshot.ai) | `KIMI_API_KEY` |
+| | `qwen-us/qwen3.8-max`, `qwen-us/qwen3.8-flash` (dashscope-us) | `DASHSCOPE_US_API_KEY` |
 | | `anthropic/claude-opus-5-5`, `anthropic/claude-haiku-5-5` | `ANTHROPIC_API_KEY` |
 | | `openai/gpt-6-astra`, `openai/gpt-6.1-terra` | `OPENAI_API_KEY` |
 | | `google/gemini-4-carbon`, `google/gemini-3.8-flash` | `GEMINI_API_KEY` |
