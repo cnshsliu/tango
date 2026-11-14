@@ -1,5 +1,6 @@
 import { createInterface } from 'node:readline';
 import * as http from 'node:http';
+import { join } from 'node:path';
 import { Agent } from './core/agent.js';
 import {
   hasKey,
@@ -11,6 +12,7 @@ import {
   sessionsDir,
   tangoDir
 } from './core/config.js';
+import { listDrafts, promoteDraft, saveDraft } from './core/skills.js';
 import { EventBus } from './core/events.js';
 import { keyEnvName } from './core/models/util.js';
 import { SessionStore, type SessionSummary } from './core/session.js';
@@ -56,6 +58,7 @@ const CMD_HELP = `commands:
   /mode [ask|auto|readonly]  show or change permission mode
   /sessions    list sessions, newest first
   /compact     summarize and drop older context
+  /save-as-skill [描述]  save this session's flow as a skill draft (then /save-as-skill finish <file>)
   /cost        session cost
   /new         start a fresh session
   /help        this
@@ -332,6 +335,35 @@ async function interactive(agent: Agent, store: SessionStore): Promise<void> {
       case 'compact': {
         const ok = await agent.compact();
         console.log(dim(ok ? `compacted → ${store.messageCount()} messages in context` : 'nothing worth compacting'));
+        return true;
+      }
+      case 'save-as-skill':
+      case 'skill': {
+        try {
+          if (arg === 'finish' || arg === '定稿') {
+            console.error(red('usage: /save-as-skill finish <draft file>'));
+            for (const d of await listDrafts()) console.log(dim('  ' + d));
+            return true;
+          }
+          if (arg.startsWith('finish ') || arg.startsWith('定稿 ')) {
+            const file = arg.replace(/^(finish|定稿)\s+/, '');
+            const root = process.cwd().includes('.tango') ? process.cwd() : join(process.cwd(), '.tango', 'skills');
+            const s = await promoteDraft(file, root);
+            console.log(dim(`skill → ${s.file}`));
+            console.log(dim(`(project skill: ${root} · global: move it to ${join(tangoDir(), 'skills')})`));
+            return true;
+          }
+          const d = await saveDraft({
+            title: arg || textOf(store.allMessages().find((m) => m.role === 'user') ?? { role: 'user', content: [] }) || 'workflow',
+            description: arg || undefined,
+            messages: store.allMessages(),
+            cwd: process.cwd()
+          });
+          console.log(dim(`draft → ${d.file}`));
+          console.log(dim('open it, write a real description + steps, then: /save-as-skill finish <file>'));
+        } catch (e: any) {
+          console.error(red(e.message));
+        }
         return true;
       }
       case 'cost':

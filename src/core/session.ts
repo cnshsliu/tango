@@ -113,6 +113,11 @@ export class SessionStore {
     }
   }
 
+  /** Full history, ignoring compaction (used by /save-as-skill). */
+  allMessages(): Message[] {
+    return this.entries.filter((e) => e.kind === 'message').map((e) => (e as { message: Message }).message);
+  }
+
   /**
    * Messages for model context: everything after the latest compaction,
    * with its summary injected as a leading user message.

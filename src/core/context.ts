@@ -1,7 +1,8 @@
 import { readFile, readdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { homedir } from 'node:os';
+import { tangoDir } from './config.js';
+import { skillsDir } from './skills.js';
 
 export interface SkillInfo {
   name: string;
@@ -35,7 +36,7 @@ function frontmatter(src: string): Record<string, string> {
  * Only name + description go into the system prompt; the model reads the file when it matches.
  */
 export async function discoverSkills(cwd: string): Promise<SkillInfo[]> {
-  const roots = [join(homedir(), '.tango', 'skills'), join(cwd, '.tango', 'skills')];
+  const roots = [skillsDir(), join(cwd, '.tango', 'skills')];
   const skills: SkillInfo[] = [];
   const seen = new Set<string>();
   for (const root of roots) {
@@ -68,7 +69,7 @@ export async function loadAgentsFiles(cwd: string): Promise<string[]> {
     dir = parent;
   }
   const out: string[] = [];
-  const global = join(homedir(), '.tango', 'AGENTS.md');
+  const global = join(tangoDir(), 'AGENTS.md');
   if (existsSync(global)) {
     const body = (await readFile(global, 'utf8')).trim();
     if (body) out.push(body);
