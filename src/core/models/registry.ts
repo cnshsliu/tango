@@ -29,6 +29,17 @@ export const presets: ModelSpec[] = [
     maxTokens: 16384
   },
   {
+    id: 'tknet/deepseek-v4-pro',
+    provider: 'tknet',
+    model: 'deepseek-v4-pro',
+    api: 'openai-completions',
+    baseUrl: 'https://tknet.ai/api/v1',
+    apiKey: '$TKNET_API_KEY',
+    contextWindow: 128000,
+    maxTokens: 16384,
+    cost: { input: 0.6525, output: 1.305 }
+  },
+  {
     id: 'deepseek/deepseek-chat',
     provider: 'deepseek',
     model: 'deepseek-chat',

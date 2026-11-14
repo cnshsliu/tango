@@ -67,3 +67,14 @@ test('agent runs model → tool → model over an OpenAI-compatible SSE endpoint
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test('openai messages: tool-call-only assistant turns omit content instead of sending null', async () => {
+  const { toOpenAIMessages } = await import('../src/core/models/openai.js');
+  const msgs = toOpenAIMessages('sys', [
+    { role: 'assistant', content: [{ type: 'tool_call', id: 'c1', name: 'ls', input: {} }] },
+    { role: 'assistant', content: [{ type: 'text', text: 'hi' }] }
+  ] as any);
+  assert.equal('content' in msgs[1], false);
+  assert.equal(msgs[1].tool_calls.length, 1);
+  assert.equal(msgs[2].content, 'hi');
+});

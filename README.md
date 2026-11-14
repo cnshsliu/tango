@@ -12,8 +12,9 @@ adapters, built-in tools (read / write / edit / bash / grep / find / ls / web_se
 AGENTS.md + skills context assembly, typed event bus, cost tracking. CLI REPL only; TUI,
 message bridges and scheduler come later.
 
-Known blocker: the tknet.ai gateway currently drops `tools` from requests, so models behind it
-can chat but not call tools. Fix in progress on the gateway side.
+Through the tknet.ai gateway, tool calling works end to end with `tknet/deepseek-v4-pro` (checked
+2026-11-14). `tknet/qwen3.8-flash-next` is currently not listed by the gateway. If `http(s)_proxy`
+is set, tango routes its requests through it.
 
 ## Quick start
 

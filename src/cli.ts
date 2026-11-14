@@ -1,4 +1,5 @@
 import { createInterface } from 'node:readline';
+import * as http from 'node:http';
 import { Agent } from './core/agent.js';
 import {
   hasKey,
@@ -23,6 +24,10 @@ import { installPermissionGate, type AskFn, type PermissionMode } from './core/p
 import type { Message, ModelSpec, ToolCallBlock } from './core/types.js';
 
 const VERSION = '0.0.1';
+
+// Node's fetch ignores http(s)_proxy unless told to; many users in China need it.
+const proxyEnv = ['HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy'].some((k) => process.env[k]);
+if (proxyEnv && !process.env.NODE_USE_ENV_PROXY) (http as any).setGlobalProxyFromEnv?.();
 
 const HELP = `tango ${VERSION} — a light agent harness
 

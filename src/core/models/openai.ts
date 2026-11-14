@@ -10,7 +10,7 @@ import type {
 import { resolveApiKey, sseLines } from './util.js';
 
 /** Flatten our message model into OpenAI chat-completions shape. */
-function toOpenAIMessages(system: string, messages: Message[]) {
+export function toOpenAIMessages(system: string, messages: Message[]) {
   const out: any[] = [{ role: 'system', content: system }];
   for (const m of messages) {
     if (m.role === 'user') {
@@ -43,7 +43,9 @@ function toOpenAIMessages(system: string, messages: Message[]) {
         .map((b) => (b as any).text)
         .join('');
       const calls = m.content.filter((b) => b.type === 'tool_call');
-      const msg: any = { role: 'assistant', content: text || null };
+      // content is omitted (not null) when empty: some gateways, e.g. tknet, reject null.
+      const msg: any = { role: 'assistant' };
+      if (text || !calls.length) msg.content = text;
       if (calls.length) {
         msg.tool_calls = calls.map((c) => {
           if (c.type !== 'tool_call') return null;
