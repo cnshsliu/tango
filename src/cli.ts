@@ -24,7 +24,10 @@ import { webSearchTool } from './core/tools/web-search.js';
 import { webFetchTool } from './core/tools/web-fetch.js';
 import { officeReadTool, officeWriteTool } from './core/tools/office/index.js';
 import { installPermissionGate, type AskFn, type PermissionMode } from './core/permissions.js';
+import { addTask, daemonLoop, feishuWebhook, lastRunAt, loadTasks, parseInterval, removeTask, runDueOnce, sendFeishu, summarizeOutput } from './core/scheduler.js';
+import { notifyTool } from './core/tools/notify.js';
 import type { Message, ModelSpec, ToolCallBlock } from './core/types.js';
+import type { Task } from './core/scheduler.js';
 
 const VERSION = '0.0.1';
 
@@ -42,6 +45,10 @@ usage:
   tango -m <model>       pick a model (see --models)
   tango --models         list models and which have keys
   tango --sessions       list sessions, newest first
+  tango task             list scheduled tasks
+  tango task add <name> <every:30m|2h> <prompt...> [--mode auto]
+  tango task rm <name>   remove a task
+  tango task run [--loop]  run due tasks once, or keep running as a daemon
 options:
   --cwd <dir>            work in <dir> (default: current directory)
   -y / --yes             run risky commands without asking
@@ -80,6 +87,7 @@ interface Args {
   input?: string;
   yes: boolean;
   readonly: boolean;
+  task?: string[];
 }
 
 function parseArgs(argv: string[]): Args {
@@ -135,13 +143,17 @@ function parseArgs(argv: string[]): Args {
         rest.push(argv[i]);
     }
   }
+  if (rest[0] === 'task') {
+    a.task = rest.slice(1);
+    return a;
+  }
   if (rest.length) a.input = rest.join(' ');
   return a;
 }
 
 function buildTools(): ToolRegistry {
   const tools = new ToolRegistry();
-  for (const t of [readTool, writeTool, editTool, bashTool, grepTool, findTool, lsTool, webSearchTool, webFetchTool, officeReadTool, officeWriteTool])
+  for (const t of [readTool, writeTool, editTool, bashTool, grepTool, findTool, lsTool, webSearchTool, webFetchTool, officeReadTool, officeWriteTool, notifyTool])
     tools.register(t);
   return tools;
 }
@@ -437,8 +449,69 @@ async function interactive(agent: Agent, store: SessionStore): Promise<void> {
   console.log(dim(`bye ($${agent.totalCostUsd.toFixed(4)} this session)`));
 }
 
+async function taskMain(args: Args, rest: string[]): Promise<void> {
+  const [sub, ...a] = rest;
+  if (!sub || sub === 'list') {
+    const tasks = await loadTasks();
+    if (!tasks.length) return console.log(dim('no tasks yet: tango task add <name> <every> <prompt...>  (e.g. every: 30m, 2h)'));
+    for (const t of tasks) {
+      const last = await lastRunAt(t.name);
+      console.log(`${t.name}  every ${t.everyMinutes}m  ${t.mode ?? 'readonly'}  last: ${last ? `${last.ts.slice(0, 16)} ${last.ok ? 'ok' : 'FAILED'}` : 'never'}`);
+      console.log(dim(`  ${t.prompt.slice(0, 110)}`));
+    }
+    return console.log(dim(`\ndaemon: tango task run --loop · run once now: tango task run`));
+  }
+  if (sub === 'add') {
+    const [name, every, ...prompt] = a;
+    if (!name || !every || !prompt.length) throw new Error('usage: tango task add <name> <every:30m|2h> <prompt...>');
+    let mode: PermissionMode = 'readonly';
+    const mi = prompt.indexOf('--mode');
+    if (mi >= 0) {
+      const v = prompt[mi + 1];
+      if (v !== 'auto' && v !== 'readonly') throw new Error('--mode must be auto or readonly (headless tasks never ask)');
+      mode = v;
+      prompt.splice(mi, 2);
+    }
+    await addTask({ name, prompt: prompt.join(' '), everyMinutes: parseInterval(every), cwd: process.cwd(), mode });
+    return console.log(dim(`task "${name}" added; starts on the next "tango task run --loop" tick`));
+  }
+  if (sub === 'rm') {
+    if (!a[0]) throw new Error('usage: tango task rm <name>');
+    return console.log(dim(`removed "${(await removeTask(a[0])).name}"`));
+  }
+  if (sub === 'run') {
+    const loop = a.includes('--loop');
+    const runner = (t: Task) => runTask(t, args);
+    if (!loop) return void (await runDueOnce(runner));
+    console.log(dim('tango task daemon: ctrl-c to stop'));
+    const ac = new AbortController();
+    process.on('SIGINT', () => ac.abort());
+    process.on('SIGTERM', () => ac.abort());
+    await daemonLoop(runner, 1, ac.signal);
+    return;
+  }
+  throw new Error(`unknown task command "${sub}" (list | add | rm | run [--loop])`);
+}
+
+async function runTask(t: Task, args: Args): Promise<{ ok: boolean; output: string }> {
+  perm.mode = t.mode === 'auto' ? 'auto' : 'readonly'; // headless: nothing can answer "ask"
+  const { agent } = await openAgent({ ...args, input: undefined, resume: undefined, continue: false, cwd: t.cwd ?? args.cwd, yes: t.mode === 'auto' });
+  const msg = await agent.prompt(t.prompt, () => {});
+  const output = summarizeOutput(textOf(msg) || `[no text; stopReason=${msg.stopReason}]`);
+  const hook = await feishuWebhook();
+  if (hook) {
+    try {
+      await sendFeishu(hook, `tango · ${t.name}`, output);
+    } catch (e: any) {
+      console.error(red(`feishu: ${e.message}`));
+    }
+  }
+  return { ok: msg.stopReason !== 'error' && msg.stopReason !== 'aborted', output };
+}
+
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
+  if (args.task) return taskMain(args, args.task);
   if (args.version) return console.log(VERSION);
   if (args.help) return console.log(HELP);
 

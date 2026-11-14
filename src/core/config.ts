@@ -16,6 +16,8 @@ export const sessionsDir = () => join(tangoDir(), 'sessions');
 export interface Config {
   /** default model id, e.g. "deepseek/deepseek-flash" */
   model?: string;
+  /** Feishu/Lark custom-bot webhook; used by the notify tool and scheduled tasks */
+  feishuWebhook?: string;
 }
 
 async function readJson<T>(path: string): Promise<T | undefined> {

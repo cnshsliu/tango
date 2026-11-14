@@ -130,6 +130,7 @@ export type SessionEntry =
   | { kind: 'meta'; id: string; createdAt: string; cwd: string; name?: string }
   | { kind: 'message'; ts: string; message: Message }
   | { kind: 'model'; ts: string; modelId: string }
+  | { kind: 'task_run'; ts: string; ok: boolean }
   | { kind: 'compaction'; ts: string; summary: string; droppedCount: number };
 
 // ---------- Events (the extension point) ----------

@@ -4,8 +4,6 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { Message, SessionEntry } from './types.js';
 
-const now = () => new Date().toISOString();
-
 export interface SessionMeta {
   id: string;
   createdAt: string;
@@ -24,6 +22,8 @@ export interface SessionSummary extends SessionMeta {
  */
 export class SessionStore {
   private entries: SessionEntry[] = [];
+  /** all timestamps come from here; scheduled runs inject the daemon's notion of "now" */
+  private clock: () => Date = () => new Date();
 
   private constructor(
     readonly dir: string,
@@ -34,10 +34,15 @@ export class SessionStore {
     return join(this.dir, `${this.id}.jsonl`);
   }
 
-  static async create(dir: string, cwd: string, name?: string): Promise<SessionStore> {
+  private now(): string {
+    return this.clock().toISOString();
+  }
+
+  static async create(dir: string, cwd: string, name?: string, id?: string, clock?: () => Date): Promise<SessionStore> {
     await mkdir(dir, { recursive: true });
-    const store = new SessionStore(dir, randomUUID());
-    await store.append({ kind: 'meta', id: store.id, createdAt: now(), cwd, name });
+    const store = new SessionStore(dir, id ?? randomUUID());
+    if (clock) store.clock = clock;
+    await store.append({ kind: 'meta', id: store.id, createdAt: store.now(), cwd, name });
     return store;
   }
 
@@ -82,11 +87,11 @@ export class SessionStore {
   }
 
   appendMessage(message: Message): Promise<void> {
-    return this.append({ kind: 'message', ts: now(), message });
+    return this.append({ kind: 'message', ts: this.now(), message });
   }
 
   setModel(modelId: string): Promise<void> {
-    return this.append({ kind: 'model', ts: now(), modelId });
+    return this.append({ kind: 'model', ts: this.now(), modelId });
   }
 
   /** Messages currently visible to the model (summary + everything after last compaction). */
@@ -96,7 +101,17 @@ export class SessionStore {
 
   async compact(summary: string): Promise<void> {
     const droppedCount = this.messageCount();
-    await this.append({ kind: 'compaction', ts: now(), summary, droppedCount });
+    await this.append({ kind: 'compaction', ts: this.now(), summary, droppedCount });
+  }
+
+  /** All messages of a given entry kind (e.g. task_run records). */
+  entriesOf<K extends SessionEntry['kind']>(kind: K): Extract<SessionEntry, { kind: K }>[] {
+    return this.entries.filter((e): e is Extract<SessionEntry, { kind: K }> => e.kind === kind);
+  }
+
+  /** Full history, ignoring compaction (used by /save-as-skill). */
+  allMessages(): Message[] {
+    return this.entries.filter((e) => e.kind === 'message').map((e) => (e as { message: Message }).message);
   }
 
   meta(): SessionMeta | undefined {
@@ -111,11 +126,6 @@ export class SessionStore {
       // sessions started with -m never record a switch; use the model that last answered
       if (e.kind === 'message' && e.message.role === 'assistant' && e.message.model) return e.message.model;
     }
-  }
-
-  /** Full history, ignoring compaction (used by /save-as-skill). */
-  allMessages(): Message[] {
-    return this.entries.filter((e) => e.kind === 'message').map((e) => (e as { message: Message }).message);
   }
 
   /**

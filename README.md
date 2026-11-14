@@ -8,9 +8,10 @@ out of the box with a single API key, no proxy.
 ## Status
 
 Core loop is working: agent loop, JSONL sessions with compaction, Anthropic + OpenAI-compatible
-adapters, built-in tools (read / write / edit / bash / grep / find / ls / web_search / web_fetch / office_read), a permission gate,
-AGENTS.md + skills context assembly, typed event bus, cost tracking. CLI REPL only; TUI,
-message bridges and scheduler come later.
+adapters, built-in tools (read / write / edit / bash / grep / find / ls / web_search / web_fetch /
+office_read / office_write / notify), a permission gate, AGENTS.md + skills context assembly,
+typed event bus, cost tracking with long-prompt price tiers, `/save-as-skill`, scheduled tasks
+(`tango task`) with Feishu webhook delivery. CLI REPL only; a TUI comes later.
 
 Through the tknet.ai gateway, tool calling works end to end with `tknet/qwen3.8-flash-next` (the
 default), `tknet/deepseek-v4.1-flash` and `tknet/deepseek-v4-pro` (checked 2026-11-14: one-shot,
@@ -70,7 +71,24 @@ tango -m <model>       pick model            tango --models
 tango --sessions       list sessions         --cwd <dir>
 ```
 
-REPL commands: `/model`, `/models`, `/mode`, `/sessions`, `/compact`, `/cost`, `/new`, `/help`, `/exit`.
+REPL commands: `/model`, `/models`, `/mode`, `/sessions`, `/compact`, `/save-as-skill`, `/cost`, `/new`, `/help`, `/exit`.
+
+## Scheduled tasks
+
+`tango task add 新闻摘要 2h 搜集今天的 AI 新闻，写成摘要发飞书 [--mode auto]` stores a task in
+`~/.tango/tasks.json`. `tango task run --loop` is the daemon: every minute it runs tasks whose
+interval has passed, each in its own session (`task-<name>-<time>.jsonl`, visible in `--sessions`).
+Results go to the `feishuWebhook` in config as a card. Headless tasks can't answer prompts, so
+they default to `readonly` (reads, web, writes files); `--mode auto` also allows bash.
+The model can also push mid-task with the `notify` tool. cron works too — `tango task run` runs
+due tasks once and exits.
+
+## Skills
+
+Global skills live in `~/.tango/skills/<name>/SKILL.md` (project: `.tango/skills/`); only name +
+description enter the system prompt. `/save-as-skill 名称` distils the current session (user turns
++ tool calls) into a draft under `~/.tango/skill-drafts/`. Edit the draft — above all write a real
+`description:` — then `/save-as-skill finish <file>` installs it as a project skill.
 
 ## Permissions
 
@@ -122,8 +140,9 @@ All user state lives in `~/.tango/` (override with `TANGO_HOME`):
 
 | file | purpose |
 | --- | --- |
-| `config.json` | default model (`/model <id>` writes it) |
+| `config.json` | default model (`/model <id>` writes it); `feishuWebhook` for notify/tasks |
 | `models.json` | extra/overriding model specs, same shape as built-in presets |
+| `tasks.json` | scheduled tasks (`tango task add`) |
 | `AGENTS.md` | global instructions appended to the system prompt |
 | `skills/<name>/SKILL.md` | global skills (project-level: `<cwd>/.tango/skills/`) |
 | `sessions/*.jsonl` | append-only sessions, one line per entry |
@@ -141,11 +160,13 @@ src/core/
   agent.ts      the loop: model → tools → model, persist + emit each step
   session.ts    append-only JSONL store, compaction = summary entry
   context.ts    system prompt = base + AGENTS.md (upward + global) + skills + env
+  skills.ts     /save-as-skill drafts → SKILL.md
+  scheduler.ts  tango task: due-check, per-run sessions, Feishu webhook, daemon loop
   config.ts     ~/.tango loading, model picking, key availability
   permissions.ts  ask / auto / readonly gate on before_tool
   models/       anthropic-messages + openai-completions adapters, presets, cost
-  tools/        registry + read/write/edit/bash + grep/find/ls + web_search/web_fetch
-                office/ = office_read (zip + xml readers, docx/xlsx/pptx, pdf via pdftotext)
+  tools/        registry + read/write/edit/bash + grep/find/ls + web_search/web_fetch + notify
+                office/ = office_read (zip + xml readers) + office_write (zip writer, docx/xlsx)
 src/cli.ts      REPL / one-shot entry
 ```
 
