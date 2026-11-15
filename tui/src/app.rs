@@ -147,22 +147,25 @@ impl App {
             }
             return;
         }
+        // Ctrl+C never quits (that is /exit's job): busy turns get interrupted,
+        // idle input gets cleared — mashing it is always safe.
         if ctrl && k.code == KeyCode::Char('c') {
             if self.busy {
                 serve.notify(json!({ "cmd": "interrupt" }));
                 self.push("[interrupt requested]", Style::new().dark_gray());
-            } else {
-                self.quit = true;
+            } else if !self.input.is_empty() {
+                self.input.clear();
+                self.cursor = 0;
             }
-            return;
-        }
-        if ctrl && k.code == KeyCode::Char('d') && self.input.is_empty() {
-            self.quit = true;
             return;
         }
         match k.code {
             KeyCode::Esc if self.busy => {
                 serve.notify(json!({ "cmd": "interrupt" }));
+            }
+            KeyCode::Esc => {
+                self.input.clear();
+                self.cursor = 0;
             }
             KeyCode::Enter if !self.busy => self.send_prompt(serve),
             KeyCode::Enter => {
@@ -214,6 +217,12 @@ impl App {
         if text.trim().is_empty() {
             return;
         }
+        // The only way out: /exit or /quit. No key chord can kill the session by accident.
+        let cmd = text.trim().to_lowercase();
+        if cmd == "/exit" || cmd == "/quit" || cmd == ":q" {
+            self.quit = true;
+            return;
+        }
         self.push(format!("❯ {}", text.replace('\n', " ⏎ ")), Style::new().cyan());
         self.input.clear();
         self.cursor = 0;
@@ -231,7 +240,7 @@ impl App {
                 self.session = v["sessionId"].as_str().unwrap_or("?").chars().take(8).collect();
                 let n = v["tools"].as_array().map_or(0, |a| a.len());
                 self.push(
-                    format!("tango serve · session {} · {n} tools (ctrl+c quit · wheel scrolls)", self.session),
+                    format!("tango serve · session {} · {n} tools (/exit quit · esc/ctrl+c interrupt · wheel scrolls)", self.session),
                     Style::new().dark_gray(),
                 );
             }
