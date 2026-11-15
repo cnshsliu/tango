@@ -41,10 +41,12 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<(), Box<dyn Error>> {
     let (tx, rx) = mpsc::channel::<Event>();
-    let mut serve = Serve::spawn(tx.clone())?;
+    let mut serve = Serve::spawn(tx.clone(), 0, None)?;
 
     // crossterm has no pollable fd we own: a thread forwards terminal input into the same queue
-    thread::spawn(move || {
+    thread::spawn({
+        let tx = tx.clone();
+        move || {
         loop {
             match event::poll(Duration::from_millis(200)) {
                 Ok(true) => match event::read() {
@@ -70,12 +72,16 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<(), Box<dyn 
                 Err(_) => return, // terminal gone; the main loop will notice via draw
             }
         }
+        }
     });
 
     let mut app = App::new();
     loop {
         terminal.draw(|f| app.draw(f))?;
         match rx.recv()? {
+            // stale frames from a killed serve child (session switch): drop by epocheration
+            Event::Server(epoch, _) if epoch != serve.epoch => {}
+            Event::Gone(epoch) if epoch != serve.epoch => {}
             // idle heartbeat only when nothing else is happening — no busy redraw loop
             Event::Resized(w, h) => {
                 terminal.resize(Rect::new(0, 0, w, h))?;
@@ -86,6 +92,11 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<(), Box<dyn 
                     break;
                 }
             }
+        }
+        // the app asked to resume another session: kill this child, respawn with TANGO_RESUME
+        if let Some(id) = app.respawn.take() {
+            let next = Serve::spawn(tx.clone(), serve.epoch + 1, Some(&id))?;
+            let _old = std::mem::replace(&mut serve, next); // drop kills the previous child
         }
     }
     if let Some(e) = app.err {

@@ -108,7 +108,9 @@ a summary, or full hunks per file.
 stdin line, one JSON frame per stdout line. Human logs go to stderr; stdout is protocol-only.
 Commands: `prompt`, `interrupt`, `permission` (answers a `permission_request` frame by request id),
 `models` (list presets with key availability), `set_model`, `set_mode`,
-`compact`, `status`. Frames: `hello` (session/model/tools) → `stream` (token deltas) →
+`sessions` (list recent sessions, read-only), `compact`, `status`. A client switches sessions by
+respawning the child with `TANGO_RESUME=<id or prefix>` in the environment — serve takes resume
+from there, no flags. Frames: `hello` (session/model/tools) → `stream` (token deltas) →
 `tool_result` / `permission_request` → `message` → `turn_end` (usage + running cost) → `result`
 (per command). stdin EOF lets queued work finish, so pipes work too. This is the seam the TUI —
 and later web/IDE shells — plug into; the core never knows which face is attached.
@@ -124,7 +126,9 @@ prompt, 6KB cap), fences render as indented gray blocks, and Ctrl+O toggles full
 under each tool line. Keys follow one rule: nothing but `/exit` (or `/quit`) can leave the session.
 Ctrl+C interrupts a running turn and clears the input when idle — press it as often as you like;
 Esc closes popups, else does the same (OpenCode-style). `TANGO_BIN`
-overrides the server binary (e.g. `TANGO_BIN="node bin/tango.js"` for dev builds).
+overrides the server binary (e.g. `TANGO_BIN="node bin/tango.js"` for dev builds). Bare `/model`
+and `/resume` open centered pickers; picking a session kills the serve child and respawns it with
+`TANGO_RESUME`, so the old conversation context comes back whole (the transcript view starts fresh).
 
 ## Permissions
 

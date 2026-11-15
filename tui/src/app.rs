@@ -50,16 +50,33 @@ struct Permission {
 enum Pending {
     Model,
     Models,
+    Sessions,
     Mode,
     Compact,
     Status,
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum PickerKind {
+    Model,
+    Session,
+}
+
 #[derive(Clone)]
 struct PickItem {
     id: String,
-    keyed: bool,
-    ctx: String,
+    /// left column: model id or "prefix · msgs · date"
+    label: String,
+    /// right column: context window, or session name/cwd
+    note: String,
+    warn: bool,
+    current: bool,
+}
+
+struct Picker {
+    kind: PickerKind,
+    items: Vec<PickItem>,
+    sel: usize,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -83,6 +100,7 @@ const SLASH: &[(&str, &str)] = &[
     ("/model <id>", "切换模型，裸 /model 打开列表"),
     ("/mode <m>", "ask | auto | readonly"),
     ("/quit", "quit the session"),
+    ("/resume", "切换到历史会话，打开列表"),
     ("/status", "session info"),
 ];
 
@@ -97,7 +115,7 @@ pub struct App {
     pub input: Vec<char>,
     pub cursor: usize,
     popup: Option<Popup>,
-    picker: Option<(Vec<PickItem>, usize)>,
+    picker: Option<Picker>,
     /// 0 = pinned to the newest line (follow mode); increases when scrolling back
     scroll_back: usize,
     verbose_tools: bool,
@@ -110,6 +128,8 @@ pub struct App {
     session: String,
     cost: f64,
     pub quit: bool,
+    /// session id the main loop should respawn serve with (TANGO_RESUME); set by the picker
+    pub respawn: Option<String>,
     pub err: Option<String>,
 }
 
@@ -134,6 +154,7 @@ impl App {
             session: String::new(),
             cost: 0.0,
             quit: false,
+            respawn: None,
             err: None,
         }
     }
@@ -403,6 +424,10 @@ impl App {
                 let id = serve.command("compact", vec![]);
                 self.pending.push((id, Pending::Compact));
             }
+            "/resume" => {
+                let id = serve.command("sessions", vec![]);
+                self.pending.push((id, Pending::Sessions));
+            }
             "/status" => {
                 let id = serve.command("status", vec![]);
                 self.pending.push((id, Pending::Status));
@@ -497,7 +522,7 @@ impl App {
     /// Handle one event; returns true when the loop should end.
     pub fn handle(&mut self, ev: Event, serve: &mut Serve) -> bool {
         match ev {
-            Event::Gone => {
+            Event::Gone(_) => {
                 if !self.quit {
                     self.err = Some("tango serve exited".into());
                 }
@@ -512,7 +537,7 @@ impl App {
             },
             Event::Key(k) if k.kind == KeyEventKind::Release => {}
             Event::Key(k) => self.key(k, serve),
-            Event::Server(v) => self.frame(v),
+            Event::Server(_, v) => self.frame(v),
         }
         false
     }
@@ -545,17 +570,17 @@ impl App {
             self.verbose_tools = !self.verbose_tools;
             return;
         }
-        // the model picker grabs navigation keys while open
+        // the picker grabs navigation keys while it is open
         if self.picker.is_some() {
             match k.code {
                 KeyCode::Up => {
-                    if let Some((_, s)) = self.picker.as_mut() {
-                        *s = s.saturating_sub(1);
+                    if let Some(p) = self.picker.as_mut() {
+                        p.sel = p.sel.saturating_sub(1);
                     }
                 }
                 KeyCode::Down => {
-                    if let Some((items, s)) = self.picker.as_mut() {
-                        *s = (*s + 1).min(items.len().saturating_sub(1));
+                    if let Some(p) = self.picker.as_mut() {
+                        p.sel = (p.sel + 1).min(p.items.len().saturating_sub(1));
                     }
                 }
                 KeyCode::Esc => self.picker = None,
@@ -563,13 +588,28 @@ impl App {
                     let picked = self
                         .picker
                         .as_ref()
-                        .map(|(items, s)| items.get(*s).map(|i| (i.id.clone(), i.keyed)));
+                        .and_then(|p| p.items.get(p.sel).map(|i| (p.kind, i.clone())));
                     self.picker = None;
-                    if let Some(Some((id, keyed))) = picked {
-                        if !keyed {
-                            self.push(format!("! {id} has no api key configured"), Style::new().dark_gray());
+                    if let Some((kind, item)) = picked {
+                        match kind {
+                            PickerKind::Model => {
+                                if item.warn {
+                                    self.push(format!("! {} has no api key configured", item.id), Style::new().dark_gray());
+                                }
+                                self.run_slash(&format!("/model {}", item.id), serve);
+                            }
+                            PickerKind::Session => {
+                                // switching context means a new serve child; wipe the old transcript
+                                self.lines.clear();
+                                self.stream.clear();
+                                self.thinking.clear();
+                                self.pending.clear();
+                                self.busy = false;
+                                self.cost = 0.0;
+                                self.push(format!("↻ resuming session {} …", item.id), Style::new().dark_gray());
+                                self.respawn = Some(item.id);
+                            }
                         }
-                        self.run_slash(&format!("/model {id}"), serve);
                     }
                 }
                 _ => {}
@@ -773,16 +813,51 @@ impl App {
                                             let id = m["id"].as_str()?.to_string();
                                             let cw = m["contextWindow"].as_u64().unwrap_or(0);
                                             Some(PickItem {
-                                                keyed: m["keyed"].as_bool().unwrap_or(false),
-                                                ctx: if cw == 0 { String::new() } else { format!("{}k", cw / 1000) },
+                                                warn: !m["keyed"].as_bool().unwrap_or(false),
+                                                note: if cw == 0 { String::new() } else { format!("{}k", cw / 1000) },
+                                                current: id == cur,
+                                                label: id.clone(),
                                                 id,
                                             })
                                         })
                                         .collect()
                                 })
                                 .unwrap_or_default();
-                            let sel = items.iter().position(|i| i.id == cur).unwrap_or(0);
-                            self.picker = Some((items, sel));
+                            let sel = items.iter().position(|i| i.current).unwrap_or(0);
+                            self.picker = Some(Picker { kind: PickerKind::Model, items, sel });
+                        }
+                        (Pending::Sessions, true) => {
+                            let items: Vec<PickItem> = d["sessions"]
+                                .as_array()
+                                .map(|a| {
+                                    a.iter()
+                                        .filter_map(|s| {
+                                            let id = s["id"].as_str()?.to_string();
+                                            Some(PickItem {
+                                                note: {
+                                                    let name = s["name"].as_str().unwrap_or("");
+                                                    if name.is_empty() { s["cwd"].as_str().unwrap_or("").to_string() } else { name.to_string() }
+                                                },
+                                                warn: false,
+                                                current: s["current"].as_bool().unwrap_or(false),
+                                                label: format!(
+                                                    "{} · {} msgs · {}",
+                                                    s["id"].as_str().unwrap_or("").chars().take(8).collect::<String>(),
+                                                    s["messages"].as_u64().unwrap_or(0),
+                                                    s["createdAt"].as_str().unwrap_or("").replace('T', " ")
+                                                ),
+                                                id,
+                                            })
+                                        })
+                                        .collect()
+                                })
+                                .unwrap_or_default();
+                            if items.is_empty() {
+                                self.push("no sessions yet", Style::new().dark_gray());
+                            } else {
+                                let sel = items.iter().position(|i| i.current).unwrap_or(0);
+                                self.picker = Some(Picker { kind: PickerKind::Session, items, sel });
+                            }
                         }
                         (Pending::Model, true) => {
                             self.model = d["model"].as_str().unwrap_or("?").into();
@@ -951,10 +1026,10 @@ impl App {
         let col = cw % w;
         f.set_cursor_position(Position::new(input_a.x + col as u16, input_a.y + 1 + row as u16));
 
-        // model picker overlay
-        if let Some((items, sel)) = &self.picker {
-            let h = (items.len().min(14) + 3) as u16;
-            let w = (area.width.min(64)).max(40);
+        // model/session picker overlay
+        if let Some(p) = &self.picker {
+            let h = (p.items.len().min(14) + 3) as u16;
+            let w = (area.width.min(72)).max(44);
             let pop = Rect {
                 x: (area.width.saturating_sub(w)) / 2,
                 y: (area.height.saturating_sub(h)) / 2,
@@ -962,38 +1037,50 @@ impl App {
                 height: h,
             };
             f.render_widget(Clear, pop);
-            let mut rows: Vec<Line> = items
+            let label_w = (w as usize).saturating_sub(30);
+            // keep the selection inside the 14-row window
+            let start = if p.sel < 13 { 0 } else { p.sel - 12 };
+            let win = &p.items[start..(start + 14).min(p.items.len())];
+            let mut rows: Vec<Line> = win
                 .iter()
                 .enumerate()
-                .take(14)
                 .map(|(i, it)| {
+                    let i = i + start;
                     let marks = format!(
-                        "{} {}",
-                        if it.keyed { " " } else { "⚠" },
-                        if i == *sel { "▸" } else { " " }
+                        "{}{} {}",
+                        if it.warn { "⚠" } else { " " },
+                        if it.current { "✓" } else { " " },
+                        if i == p.sel { "▸" } else { " " }
                     );
-                    let style = if !it.keyed {
+                    let style = if it.warn {
                         Style::new().dark_gray()
-                    } else if i == *sel {
+                    } else if i == p.sel {
                         Style::new().bold()
                     } else {
                         Style::new()
                     };
-                    Line::from(Span::styled(format!(" {marks} {:<44} {}", it.id, it.ctx), style))
+                    let pad = label_w.saturating_sub(display_width(&it.label));
+                    let note: String = it.note.chars().take((w as usize).saturating_sub(label_w + 10)).collect();
+                    Line::from(Span::styled(format!(" {marks} {}{} {}", it.label, " ".repeat(pad), note), style))
                 })
                 .collect();
-            if items.len() > 14 {
+            if p.items.len() > 14 {
                 rows.push(Line::from(Span::styled(
-                    format!("   … {} more", items.len() - 14),
+                    format!("   {}–{} / {}", start + 1, start + win.len(), p.items.len()),
                     Style::new().dark_gray(),
                 )));
             }
             rows.push(Line::from(""));
-            rows.push(Line::from(Span::styled(
-                " ↑↓ 选择 · enter 切换 · esc 取消 · ⚠=缺 key",
-                Style::new().dark_gray(),
-            )));
-            f.render_widget(Paragraph::new(rows).block(Block::bordered().title(" 选择模型 ")), pop);
+            let hint = match p.kind {
+                PickerKind::Model => " ↑↓ 选择 · enter 切换 · esc 取消 · ⚠=缺 key · ✓=当前",
+                PickerKind::Session => " ↑↓ 选择 · enter 恢复会话(重启 serve) · esc 取消 · ✓=当前",
+            };
+            rows.push(Line::from(Span::styled(hint, Style::new().dark_gray())));
+            let title = match p.kind {
+                PickerKind::Model => " 选择模型 ",
+                PickerKind::Session => " 选择会话 ",
+            };
+            f.render_widget(Paragraph::new(rows).block(Block::bordered().title(title)), pop);
         }
 
         // permission modal

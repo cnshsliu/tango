@@ -5,11 +5,12 @@
  * stdin: one JSON command per line.
  * stdout: one JSON frame per line, protocol only — human logs never touch stdout.
  *
- * commands:  prompt | interrupt | permission | models | set_model | set_mode | compact | status
+ * commands:  prompt | interrupt | permission | models | set_model | set_mode | compact | sessions | status
  * frames:    hello | stream | message | tool_result | permission_request | turn_end | error | result
  */
 import { createInterface } from 'node:readline';
-import { hasKey, loadModels, pickModel } from './core/config.js';
+import { hasKey, loadModels, pickModel, sessionsDir } from './core/config.js';
+import { SessionStore } from './core/session.js';
 import type { AskFn, PermissionMode } from './core/permissions.js';
 import type { ToolResult } from './core/types.js';
 import { buildTools, openAgent, VERSION, type HostArgs, type PermState } from './host.js';
@@ -32,6 +33,8 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
     process.stdout.write(JSON.stringify(frame) + '\n');
   };
   const perm: PermState = { mode: args.readonly ? 'readonly' : 'ask' };
+  // session resume without flags: the TUI respawns this child with TANGO_RESUME=<id or prefix>
+  if (!args.resume && process.env.TANGO_RESUME) args.resume = process.env.TANGO_RESUME;
 
   let opened;
   try {
@@ -103,8 +106,21 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
         }
         return;
       }
-      case 'models': {
-        const models = await loadModels();
+      case 'sessions': {
+        const list = await SessionStore.list(sessionsDir());
+        reply(cmd, true, {
+          sessions: list.slice(0, 40).map((s) => ({
+            id: s.id,
+            createdAt: s.createdAt.slice(0, 16),
+            messages: s.messages,
+            cwd: s.cwd,
+            name: s.name ?? '',
+            current: s.id === store.id
+          }))
+        });
+        return;
+      }
+      case 'models': {        const models = await loadModels();
         reply(cmd, true, {
           current: agent.model.id,
           models: models.map((m) => ({ id: m.id, keyed: hasKey(m), contextWindow: m.contextWindow ?? 0 }))

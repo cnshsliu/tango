@@ -5,13 +5,15 @@ use std::sync::mpsc::Sender;
 use std::thread;
 
 /// Everything the main loop receives: protocol frames, child stderr, and terminal input.
+/// Server/Gone carry the child epocheration so frames from a killed serve (after a session
+/// switch) can be filtered out before they reach the app.
 pub enum Event {
-    Server(Value),
+    Server(u64, Value),
     Stderr(String),
     Key(crossterm::event::KeyEvent),
     Mouse(crossterm::event::MouseEvent),
     Resized(u16, u16),
-    Gone, // the serve child exited
+    Gone(u64), // the serve child of this epocheration exited
 }
 
 /// Owns the `tango serve` child process: JSONL out, frames in.
@@ -19,10 +21,12 @@ pub struct Serve {
     child: Child,
     stdin: std::process::ChildStdin,
     next_id: u64,
+    pub epoch: u64,
 }
 
 impl Serve {
-    pub fn spawn(tx: Sender<Event>) -> std::io::Result<Self> {
+    /// `resume` is injected as TANGO_RESUME so the child opens that session instead of a new one.
+    pub fn spawn(tx: Sender<Event>, epoch: u64, resume: Option<&str>) -> std::io::Result<Self> {
         // TANGO_BIN can hold args too, e.g. `node /path/to/bin/tango.js` for dev builds.
         let bin = std::env::var("TANGO_BIN").unwrap_or_else(|_| "tango".into());
         let mut parts = bin.split_whitespace();
@@ -34,6 +38,9 @@ impl Serve {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        if let Some(id) = resume {
+            cmd.env("TANGO_RESUME", id);
+        }
         let mut child = cmd.spawn()?;
         let stdin = child.stdin.take().unwrap();
         let stdout = child.stdout.take().unwrap();
@@ -46,13 +53,13 @@ impl Serve {
                 let mut line = String::new();
                 while r.read_line(&mut line).unwrap_or(0) > 0 {
                     if let Ok(v) = serde_json::from_str::<Value>(line.trim())
-                        && tx.send(Event::Server(v)).is_err()
+                        && tx.send(Event::Server(epoch, v)).is_err()
                     {
                         return; // main loop gone
                     }
                     line.clear();
                 }
-                let _ = tx.send(Event::Gone);
+                let _ = tx.send(Event::Gone(epoch));
             }
         });
         thread::spawn({
@@ -72,7 +79,8 @@ impl Serve {
         Ok(Self {
             child,
             stdin,
-            next_id: 0,
+            next_id: epoch * 1_000_000,
+            epoch,
         })
     }
 
