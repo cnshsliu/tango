@@ -18,6 +18,8 @@ export interface Config {
   model?: string;
   /** Feishu/Lark custom-bot webhook; used by the notify tool and scheduled tasks */
   feishuWebhook?: string;
+  /** TUI palette: fixed dark/light or terminal COLORFGBG detection */
+  theme?: 'dark' | 'light' | 'auto';
 }
 
 async function readJson<T>(path: string): Promise<T | undefined> {

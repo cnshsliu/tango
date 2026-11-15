@@ -52,6 +52,7 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
     return;
   }
   const { agent, store, cwd } = opened;
+  const config = await loadConfig();
   const pricedModels = await loadModels();
   let sessionCostUsd = store.allMessages().reduce((sum, m) => {
     if (m.role !== 'assistant' || !m.usage) return sum;
@@ -100,6 +101,7 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
     cwd,
     mode: perm.mode,
     totalCostUsd: sessionCostUsd,
+    theme: config.theme,
     tools: buildTools().schemas().map(({ name, description }) => ({ name, description }))
   });
 
