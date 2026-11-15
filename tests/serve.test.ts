@@ -228,10 +228,10 @@ test('serve: sessions listing, TANGO_RESUME restores context, TANGO_MODE, save_s
   await writeFile(
     join(home, 'models.json'),
     JSON.stringify([
-      { id: 'mock/mock', provider: 'mock', model: 'mock-model', api: 'openai-completions', baseUrl: `http://127.0.0.1:${(mock.server.address() as AddressInfo).port}/v1`, apiKey: 'MOCK_SERVE_KEY' }
+      { id: 'mock/mock', provider: 'mock', model: 'mock-model', api: 'openai-completions', baseUrl: `http://127.0.0.1:${(mock.server.address() as AddressInfo).port}/v1`, apiKey: 'MOCK_SERVE_KEY', cost: { input: 1, output: 2 } }
     ])
   );
-  mock.setScript(() => SSE({ choices: [{ delta: { content: '收到' }, finish_reason: 'stop' }] }) + 'data: [DONE]\n\n');
+  mock.setScript(() => SSE({ choices: [{ delta: { content: '收到' }, finish_reason: 'stop' }], usage: { prompt_tokens: 1000, completion_tokens: 500, total_tokens: 1500 } }) + 'data: [DONE]\n\n');
 
   // first child: one turn, then exit
   const a = await startServe(home, work, 0);
@@ -251,6 +251,7 @@ test('serve: sessions listing, TANGO_RESUME restores context, TANGO_MODE, save_s
     const hello = await b.next();
     assert.equal(hello.sessionId, firstId);
     assert.equal(hello.mode, 'auto');
+    assert.equal(hello.totalCostUsd, 0.002);
 
     b.send({ id: 2, cmd: 'sessions' });
     const list = await b.until((f) => f.type === 'result' && f.id === 2, 'sessions result');
@@ -259,7 +260,12 @@ test('serve: sessions listing, TANGO_RESUME restores context, TANGO_MODE, save_s
     assert.ok(cur.messages >= 2);
 
     b.send({ id: 3, cmd: 'prompt', text: '暗号是什么' });
+    const turn = await b.until((f) => f.type === 'turn_end', 'resumed turn_end');
+    assert.equal(turn.totalCostUsd, 0.004);
     await b.until((f) => f.type === 'result' && f.id === 3, 'prompt result');
+    b.send({ id: 6, cmd: 'status' });
+    const status = await b.until((f) => f.type === 'result' && f.id === 6, 'resumed status');
+    assert.equal(status.data.totalCostUsd, 0.004);
     // the resumed turn sent the earlier conversation to the model
     const last = JSON.stringify(mock.requests.at(-1).messages);
     assert.match(last, /月亮饼/);

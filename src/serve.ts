@@ -13,6 +13,7 @@ import { hasKey, keyProblem, loadConfig, loadModels, pickModel, saveConfig, sess
 import { listDrafts, promoteDraft, saveDraft } from './core/skills.js';
 import { join } from 'node:path';
 import { SessionStore } from './core/session.js';
+import { costUsd } from './core/models/registry.js';
 import type { AskFn, PermissionMode } from './core/permissions.js';
 import type { ToolResult } from './core/types.js';
 import { buildTools, openAgent, VERSION, type HostArgs, type PermState } from './host.js';
@@ -51,6 +52,12 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
     return;
   }
   const { agent, store, cwd } = opened;
+  const pricedModels = await loadModels();
+  let sessionCostUsd = store.allMessages().reduce((sum, m) => {
+    if (m.role !== 'assistant' || !m.usage) return sum;
+    const model = pricedModels.find((p) => p.id === m.model) ?? agent.model;
+    return sum + costUsd(model, m.usage);
+  }, 0);
 
   // permission bridge: gate asks → client answers by request id
   let reqSeq = 0;
@@ -63,7 +70,10 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
     })) satisfies AskFn;
 
   agent.events.on('message', ({ message }) => out({ type: 'message', message }));
-  agent.events.on('turn_end', (e) => out({ type: 'turn_end', ...e, totalCostUsd: agent.totalCostUsd }));
+  agent.events.on('turn_end', (e) => {
+    sessionCostUsd += e.costUsd;
+    out({ type: 'turn_end', ...e, totalCostUsd: sessionCostUsd });
+  });
   agent.events.on('after_tool', ({ call, result, ms }) =>
     out({
       type: 'tool_result',
@@ -89,6 +99,7 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
     model: agent.model.id,
     cwd,
     mode: perm.mode,
+    totalCostUsd: sessionCostUsd,
     tools: buildTools().schemas().map(({ name, description }) => ({ name, description }))
   });
 
@@ -214,7 +225,7 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
           mode: perm.mode,
           cwd,
           contextMessages: store.messageCount(),
-          totalCostUsd: agent.totalCostUsd
+          totalCostUsd: sessionCostUsd
         });
         return;
       default:

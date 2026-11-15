@@ -789,6 +789,7 @@ impl App {
                 self.model = v["model"].as_str().unwrap_or("?").into();
                 self.mode = v["mode"].as_str().unwrap_or("?").into();
                 self.session = v["sessionId"].as_str().unwrap_or("?").chars().take(8).collect();
+                self.cost = v["totalCostUsd"].as_f64().unwrap_or(0.0);
                 let n = v["tools"].as_array().map_or(0, |a| a.len());
                 self.push(
                     format!("tango serve · session {} · {n} tools · /help · esc/ctrl+c interrupt · /exit quits", self.session),
@@ -1235,5 +1236,24 @@ fn cursor_step(input: &[char], cursor: usize, left: bool) -> usize {
         cursor.saturating_sub(1)
     } else {
         min(cursor + 1, input.len())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hello_restores_session_cost() {
+        let mut app = App::new();
+        app.frame(json!({
+            "type": "hello",
+            "sessionId": "12345678-abcd",
+            "model": "mock/mock",
+            "mode": "ask",
+            "totalCostUsd": 1.25,
+            "tools": []
+        }));
+        assert_eq!(app.cost, 1.25);
     }
 }
