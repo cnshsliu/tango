@@ -4,6 +4,27 @@
 
 ---
 
+## 附 2：币种体系与价格组目录重构（2026-11-14/15，12 提交 `0ff064d`..`1dab09a`，已部署+迁移+验收）
+
+**规则**：apikey.fan 层级价 = 成本；**售价 = 成本 × 1.1**（¥→$ 走后台维护的汇率）；
+汇率缺失**拒绝服务**（无硬编码兜底，admin 在 /admin/exchange-rates 维护）。
+
+- **组**：default（真实组=全目录+Plus 层覆盖价，未绑组 key 走它）、Balance（外接层 13 模型）、
+  Jackson Hole（JackHo 7 个 anthropic:*）、native（清空，留官渠）
+- **default 真实组**：NULL 组解析到 default 目录；目录缺行放行继承价（防全站 403）；
+  禁用的 default 视为缺席
+- **展示**：zh-CN/zh-TW 界面全 ¥，其余全 $（服务端 ?displayCurrency= 同源换算，汇率缺失按原币显示）
+- **支付**：充值币种随界面语言（CNY 结账 ¥，ledger 按 DB 汇率记 USD；payments 记实收币种/金额，迁移 0062）
+- **实例成本**：APIKEY.FUN 三实例重同步为站点层级价 ×CNY（含**实例级币种**——计费只读实例币种，
+  评审 Critical 拦下的坑），JackHo 不变
+- **验收**：未绑组 key 调 opus-4-7 计费精确 = ¥5.5/27.5/0.55(cached) ÷7.2（27 个缓存命中档也算对，
+  µ$ 级吻合）；新模型 sonnet-5 路由 OK；中文界面 121¥/0$；平衡组/Jackson Hole 芯片与目录正常
+- 计划：`docs/superpowers/plans/2026-11-14-currency-system-and-catalog.md`；独立评审 1C+5I+5M 全处置
+
+---
+
+---
+
 ## 附：折扣子系统退役（2026-11-14，提交 `22aada0` + `c685148`，已部署）
 
 **决策**：废弃 `users.billing_rate` 与 `api_keys.multiplier`，计费只走列表价
@@ -39,6 +60,12 @@
      （$0.075/$0.235 × 1.0）；admin/users、admin/api-keys、dashboard/keys、
      dashboard/estimator 页面全部 200；pm2 日志重启以来零 `column does not exist`
      （日志中仅有的两条 `relation "users" does not exist` 为数月前历史错误）。
+  6. **实弹补验（ego-browser，2026-11-14）**：经真实 UI 闭环——登录 admin →
+     `/dashboard/keys` 点 "+ New Key" → 命名创建 → key 出现在列表（active，
+     prefix sk-tknb2…）→ 行内删除成功；admin API 建的测试 key 也已清理，最终零残留。
+     顺带发现并修复：admin keys 页表头遗留的 "Multiplier" 列（`3e09da3`，
+     待下次部署）。注：创建 key 的 UI 在用户门户 /dashboard/keys，
+     admin 的 /admin/api-keys 只做管理列表。
 
 ---
 
