@@ -1,6 +1,9 @@
 import { createInterface } from 'node:readline';
 import * as http from 'node:http';
-import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { Agent } from './core/agent.js';
 import {
   hasKey,
@@ -40,6 +43,7 @@ usage:
   tango task add <name> <interval:30m|2h> <prompt...> [--mode auto]
   tango task rm <name>   remove a task
   tango task run [--loop]  run due tasks once, or keep running as a daemon
+  tango tui              fullscreen TUI (Rust client; -r <id> / -c resume a session)
   tango serve            JSONL protocol on stdin/stdout for external UIs (TUI, web)
 options:
   --cwd <dir>            work in <dir> (default: current directory)
@@ -81,6 +85,7 @@ interface Args {
   readonly: boolean;
   task?: string[];
   serve?: boolean;
+  tui?: boolean;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -142,6 +147,10 @@ function parseArgs(argv: string[]): Args {
   }
   if (rest[0] === 'serve') {
     a.serve = true;
+    return a;
+  }
+  if (rest[0] === 'tui') {
+    a.tui = true;
     return a;
   }
   if (rest.length) a.input = rest.join(' ');
@@ -478,6 +487,26 @@ async function runTask(t: Task, args: Args): Promise<{ ok: boolean; output: stri
   return { ok: msg.stopReason !== 'error' && msg.stopReason !== 'aborted', output };
 }
 
+/** `tango tui`: hand the terminal to the Rust client, pointed back at this same tango build. */
+async function launchTui(args: Args): Promise<void> {
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..');
+  const bin = process.env.TANGO_TUI ?? join(root, 'tui', 'target', 'release', 'tango-tui');
+  if (!existsSync(bin)) {
+    throw new Error(`TUI not built: ${bin}\n  build it with: cd ${join(root, 'tui')} && cargo build --release`);
+  }
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  env.TANGO_BIN ??= `${process.execPath} ${join(root, 'bin', 'tango.js')}`;
+  if (args.resume) env.TANGO_RESUME = args.resume;
+  else if (args.continue) {
+    const [latest] = await SessionStore.list(sessionsDir());
+    if (!latest) throw new Error('no sessions to continue yet');
+    env.TANGO_RESUME = latest.id;
+  }
+  const r = spawnSync(bin, [], { stdio: 'inherit', env, cwd: args.cwd ?? process.cwd() });
+  if (r.error) throw r.error;
+  process.exitCode = r.status ?? 1;
+}
+
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   if (args.task) return taskMain(args, args.task);
@@ -489,6 +518,7 @@ async function main(): Promise<void> {
 
   if (args.yes && args.readonly) throw new Error('--yes and --readonly cannot be combined');
   if (args.serve) return serveStdio(args);
+  if (args.tui) return launchTui(args);
   perm.mode = args.yes ? 'auto' : args.readonly ? 'readonly' : 'ask';
   const { agent, store } = await openReplAgent(args);
   if (args.input) return runOnce(agent, args.input);

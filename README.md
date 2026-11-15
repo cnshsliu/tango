@@ -117,8 +117,8 @@ and later web/IDE shells — plug into; the core never knows which face is attac
 
 ## TUI
 
-`tui/` holds the Rust client (ratatui + crossterm): `cargo build --release` in `tui/`, run
-`tui/target/release/tango-tui`. It spawns `tango serve` and speaks the protocol above — fullscreen
+`tui/` holds the Rust client (ratatui + crossterm): `cargo build --release` in `tui/`, then run
+`tango tui` (`tango tui -c` / `tango tui -r <id>` open a previous session). It spawns `tango serve` and speaks the protocol above — fullscreen
 alternate screen, mouse wheel scrolling, streaming answers, thinking lines, tool status lines with
 durations, a centered permission modal (y/n), a status bar (model · mode · cost · session) and a
 multi-line input with Tab-completed `/` commands and `@file` inlining (contents ride along in the
