@@ -1,0 +1,86 @@
+use ratatui::style::{Color, Modifier, Style};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tone {
+    Text,
+    Muted,
+    User,
+    Success,
+    Warning,
+    Error,
+    Selected,
+    Badge,
+    ActiveBadge,
+}
+
+#[derive(Clone, Copy)]
+pub struct Theme {
+    pub light: bool,
+}
+
+impl Theme {
+    pub fn dark() -> Self {
+        Self { light: false }
+    }
+
+    pub fn light() -> Self {
+        Self { light: true }
+    }
+
+    pub fn resolve(setting: Option<&str>, colorfgbg: Option<&str>) -> Self {
+        match setting {
+            Some("light") => Self::light(),
+            Some("auto")
+                if colorfgbg
+                    .and_then(|v| v.rsplit(';').next())
+                    .and_then(|v| v.parse::<u16>().ok())
+                    .is_some_and(|bg| matches!(bg, 7 | 15 | 255)) =>
+            {
+                Self::light()
+            }
+            _ => Self::dark(),
+        }
+    }
+
+    pub fn style(self, tone: Tone) -> Style {
+        match (self.light, tone) {
+            (_, Tone::Muted) => Style::new().fg(Color::DarkGray),
+            (false, Tone::User) => Style::new().fg(Color::Cyan),
+            (true, Tone::User) => Style::new().fg(Color::Blue),
+            (_, Tone::Success) => Style::new().fg(Color::Green),
+            (false, Tone::Warning) => Style::new().fg(Color::Yellow),
+            (true, Tone::Warning) => Style::new().fg(Color::Rgb(150, 90, 0)),
+            (_, Tone::Error) => Style::new().fg(Color::Red),
+            (false, Tone::Selected) => Style::new().add_modifier(Modifier::BOLD),
+            (true, Tone::Selected) => Style::new().fg(Color::Black).add_modifier(Modifier::BOLD),
+            (false, Tone::Badge) => Style::new().fg(Color::Black).bg(Color::White),
+            (true, Tone::Badge) => Style::new().fg(Color::White).bg(Color::Black),
+            (_, Tone::ActiveBadge) => Style::new().fg(Color::Black).bg(Color::Yellow),
+            (true, Tone::Text) => Style::new().fg(Color::Black),
+            (false, Tone::Text) => Style::new(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolves_explicit_and_fallback_themes() {
+        assert!(!Theme::resolve(Some("dark"), Some("0;15")).light);
+        assert!(Theme::resolve(Some("light"), Some("15;0")).light);
+        assert!(!Theme::resolve(Some("bogus"), Some("0;15")).light);
+        assert!(!Theme::resolve(None, Some("0;15")).light);
+    }
+
+    #[test]
+    fn auto_uses_light_terminal_backgrounds() {
+        for value in [Some("0;7"), Some("0;15"), Some("0;255")] {
+            assert!(Theme::resolve(Some("auto"), value).light);
+        }
+        for value in [Some("15;0"), Some("0;8"), Some("junk"), None] {
+            assert!(!Theme::resolve(Some("auto"), value).light);
+        }
+    }
+}

@@ -1,5 +1,6 @@
 mod app;
 mod child;
+mod theme;
 
 use app::App;
 use child::{Event, Serve};
