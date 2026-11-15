@@ -179,7 +179,12 @@ export class Agent {
     }
 
     const veto = await this.events.emit('before_tool', { call, tool });
-    if (veto && veto.block) return fail(`blocked: ${veto.reason}`);
+    if (veto && veto.block) {
+      // announce blocked calls too, so UIs can show why nothing ran
+      const result = { content: [{ type: 'text' as const, text: `blocked: ${veto.reason}` }], isError: true };
+      await this.events.emit('after_tool', { call, result, ms: 0 });
+      return { type: 'tool_result', toolCallId: call.id, content: result.content, isError: true };
+    }
 
     const t0 = Date.now();
     let result: ToolResult;

@@ -1,7 +1,7 @@
 import { createInterface } from 'node:readline';
 import * as http from 'node:http';
 import { join } from 'node:path';
-import { Agent } from './core/agent.js';
+import type { Agent } from './core/agent.js';
 import {
   hasKey,
   keyProblem,
@@ -13,25 +13,14 @@ import {
   tangoDir
 } from './core/config.js';
 import { listDrafts, promoteDraft, saveDraft } from './core/skills.js';
-import { EventBus } from './core/events.js';
 import { keyEnvName } from './core/models/util.js';
 import { SessionStore, type SessionSummary } from './core/session.js';
-import { ToolRegistry } from './core/tools/registry.js';
-import { bashTool } from './core/tools/bash.js';
-import { editTool, readTool, writeTool } from './core/tools/fs.js';
-import { diffTool } from './core/tools/diff.js';
-import { installDiagnostics } from './core/diagnostics.js';
-import { findTool, grepTool, lsTool } from './core/tools/search.js';
-import { webSearchTool } from './core/tools/web-search.js';
-import { webFetchTool } from './core/tools/web-fetch.js';
-import { officeReadTool, officeWriteTool } from './core/tools/office/index.js';
-import { installPermissionGate, type AskFn, type PermissionMode } from './core/permissions.js';
+import type { AskFn, PermissionMode } from './core/permissions.js';
 import { addTask, daemonLoop, feishuWebhook, lastRunAt, loadTasks, parseInterval, removeTask, runDueOnce, sendFeishu, summarizeOutput } from './core/scheduler.js';
-import { notifyTool } from './core/tools/notify.js';
 import type { Message, ModelSpec, ToolCallBlock } from './core/types.js';
 import type { Task } from './core/scheduler.js';
-
-const VERSION = '0.0.1';
+import { makeAgent, openAgent, VERSION, type PermState } from './host.js';
+import { serveStdio } from './serve.js';
 
 // Node's fetch ignores http(s)_proxy unless told to; many users in China need it.
 const proxyEnv = ['HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy'].some((k) => process.env[k]);
@@ -51,6 +40,7 @@ usage:
   tango task add <name> <every:30m|2h> <prompt...> [--mode auto]
   tango task rm <name>   remove a task
   tango task run [--loop]  run due tasks once, or keep running as a daemon
+  tango serve [--stdio]    JSONL protocol on stdin/stdout for external UIs (TUI, web)
 options:
   --cwd <dir>            work in <dir> (default: current directory)
   -y / --yes             run risky commands without asking
@@ -90,6 +80,7 @@ interface Args {
   yes: boolean;
   readonly: boolean;
   task?: string[];
+  serve?: boolean;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -149,19 +140,16 @@ function parseArgs(argv: string[]): Args {
     a.task = rest.slice(1);
     return a;
   }
+  if (rest[0] === 'serve') {
+    a.serve = true;
+    return a;
+  }
   if (rest.length) a.input = rest.join(' ');
   return a;
 }
 
-function buildTools(): ToolRegistry {
-  const tools = new ToolRegistry();
-  for (const t of [readTool, writeTool, editTool, bashTool, grepTool, findTool, lsTool, webSearchTool, webFetchTool, officeReadTool, officeWriteTool, notifyTool, diffTool])
-    tools.register(t);
-  return tools;
-}
-
 /** Process-wide permission state; the REPL installs `ask`, one-shot runs leave it unset. */
-const perm: { mode: PermissionMode; ask?: AskFn } = { mode: 'ask' };
+const perm: PermState = { mode: 'ask' };
 
 function toolSummary(call: ToolCallBlock): string {
   const input = (call.input ?? {}) as Record<string, unknown>;
@@ -177,15 +165,14 @@ function textOf(m: Message): string {
     .join('\n');
 }
 
-function makeAgent(model: ModelSpec, store: SessionStore, cwd: string): Agent {
-  const events = new EventBus();
-  // gate first: a vetoed call is never announced as running
-  installPermissionGate(events, { mode: () => perm.mode, cwd, ask: (c, r) => (perm.ask ? perm.ask(c, r) : Promise.resolve(false)) });
-  events.on('before_tool', ({ call }) => {
+/** host.makeAgent + the REPL's one-line tool printer (stdout here is human output, not a protocol). */
+function replAgent(model: ModelSpec, store: SessionStore, cwd: string): Agent {
+  const agent = makeAgent(model, store, cwd, perm);
+  // registered after the gate: a vetoed call is never announced as running
+  agent.events.on('before_tool', ({ call }) => {
     if (process.stdout.isTTY) process.stdout.write(dim(`⚙ ${call.name} ${toolSummary(call)}\n`));
   });
-  installDiagnostics(events, cwd);
-  return new Agent({ store, tools: buildTools(), model, cwd, events });
+  return agent;
 }
 
 function printModels(models: ModelSpec[], current?: string): void {
@@ -215,36 +202,15 @@ function printSessions(sessions: SessionSummary[]): void {
   }
 }
 
-async function resolveSessionId(prefix: string): Promise<string> {
-  const sessions = await SessionStore.list(sessionsDir());
-  const hits = sessions.filter((s) => s.id.startsWith(prefix));
-  if (hits.length === 1) return hits[0].id;
-  if (!hits.length) throw new Error(`no session matches "${prefix}" (tango --sessions)`);
-  throw new Error(`ambiguous "${prefix}": ${hits.map((s) => s.id.slice(0, 8)).join(', ')}`);
-}
-
-async function openAgent(args: Args): Promise<{ agent: Agent; store: SessionStore }> {
-  const cfg = await loadConfig();
-  const models = await loadModels();
-  const model = pickModel(models, cfg, args.model);
-
-  let store: SessionStore;
-  if (args.resume) {
-    store = await SessionStore.open(sessionsDir(), await resolveSessionId(args.resume));
-  } else if (args.continue) {
-    const [latest] = await SessionStore.list(sessionsDir());
-    if (!latest) throw new Error('no sessions to continue yet');
-    store = await SessionStore.open(sessionsDir(), latest.id);
-  } else {
-    store = await SessionStore.create(sessionsDir(), args.cwd ?? process.cwd());
-  }
-
-  const cwd = args.cwd ?? store.meta()?.cwd ?? process.cwd();
-  // honour a model switch made earlier in a resumed session unless the user asked explicitly
-  const stored = !args.model && !cfg.model ? store.lastModel() : undefined;
-  const effective = stored ? models.find((m) => m.id === stored) ?? model : model;
-  if (!hasKey(effective)) console.error(red(`⚠ ${keyProblem(effective)}`));
-  return { agent: makeAgent(effective, store, cwd), store };
+/** host.openAgent + the REPL's warnings and tool printer (stdout here is human output, not a protocol). */
+async function openReplAgent(args: Args): Promise<{ agent: Agent; store: SessionStore }> {
+  const { agent, store, warning } = await openAgent(args, perm);
+  if (warning) console.error(red(`⚠ ${warning}`));
+  // registered after the gate: a vetoed call is never announced as running
+  agent.events.on('before_tool', ({ call }) => {
+    if (process.stdout.isTTY) process.stdout.write(dim(`⚙ ${call.name} ${toolSummary(call)}\n`));
+  });
+  return { agent, store };
 }
 
 async function runOnce(agent: Agent, input: string): Promise<void> {
@@ -386,7 +352,7 @@ async function interactive(agent: Agent, store: SessionStore): Promise<void> {
         return true;
       case 'new': {
         store = await SessionStore.create(sessionsDir(), process.cwd());
-        agent = makeAgent(agent.model, store, process.cwd());
+        agent = replAgent(agent.model, store, process.cwd());
         console.log(dim(`new session ${store.id.slice(0, 8)}`));
         return true;
       }
@@ -498,7 +464,7 @@ async function taskMain(args: Args, rest: string[]): Promise<void> {
 
 async function runTask(t: Task, args: Args): Promise<{ ok: boolean; output: string }> {
   perm.mode = t.mode === 'auto' ? 'auto' : 'readonly'; // headless: nothing can answer "ask"
-  const { agent } = await openAgent({ ...args, input: undefined, resume: undefined, continue: false, cwd: t.cwd ?? args.cwd, yes: t.mode === 'auto' });
+  const { agent } = await openReplAgent({ ...args, input: undefined, resume: undefined, continue: false, cwd: t.cwd ?? args.cwd, yes: t.mode === 'auto' });
   const msg = await agent.prompt(t.prompt, () => {});
   const output = summarizeOutput(textOf(msg) || `[no text; stopReason=${msg.stopReason}]`);
   const hook = await feishuWebhook();
@@ -522,8 +488,9 @@ async function main(): Promise<void> {
   if (args.listSessions) return printSessions(await SessionStore.list(sessionsDir()));
 
   if (args.yes && args.readonly) throw new Error('--yes and --readonly cannot be combined');
+  if (args.serve) return serveStdio(args);
   perm.mode = args.yes ? 'auto' : args.readonly ? 'readonly' : 'ask';
-  const { agent, store } = await openAgent(args);
+  const { agent, store } = await openReplAgent(args);
   if (args.input) return runOnce(agent, args.input);
   await interactive(agent, store);
 }
