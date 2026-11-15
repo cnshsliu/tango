@@ -161,7 +161,8 @@ impl App {
     }
 
     /// Lightweight markdown commit: fences become indented gray blocks (markers stripped),
-    /// headings turn bold, ** and ` markers vanish. No inline spans — one style per line.
+    /// headings turn bold, ** and ` markers vanish, `|` tables are re-flowed into aligned
+    /// columns. No inline spans — one style per line.
     fn commit_stream(&mut self) {
         if !self.thinking.is_empty() {
             let t: String = self.thinking.chars().take(400).collect();
@@ -173,22 +174,83 @@ impl App {
         }
         let s = std::mem::take(&mut self.stream);
         let mut in_fence = false;
-        for raw in s.trim_end().split('\n') {
-            let line = raw.trim_end();
+        let lines: Vec<&str> = s.trim_end().split('\n').collect();
+        let mut i = 0;
+        while i < lines.len() {
+            let line = lines[i].trim_end();
             if line.trim_start().starts_with("```") {
                 in_fence = !in_fence;
+                i += 1;
                 continue;
             }
             if in_fence {
                 self.push(format!("  {line}"), Style::new().dark_gray());
+                i += 1;
+                continue;
+            }
+            // table run: consecutive | rows (the |---| separator row folds into a rule)
+            if line.trim_start().starts_with('|') {
+                let mut run = vec![line.trim()];
+                while i + 1 < lines.len() && lines[i + 1].trim_start().starts_with('|') {
+                    i += 1;
+                    run.push(lines[i].trim());
+                }
+                Self::push_table(self, &run);
+                i += 1;
                 continue;
             }
             if line.starts_with('#') {
                 self.push(line.trim_start_matches('#').trim(), Style::new().bold());
+                i += 1;
                 continue;
             }
             let t = line.replace("**", "").replace('`', "");
             self.push(t, Style::new());
+            i += 1;
+        }
+    }
+
+    /// Re-flow a markdown table into fixed-width terminal columns (CJK-aware padding).
+    fn push_table(&mut self, run: &[&str]) {
+        let rows: Vec<Vec<String>> = run
+            .iter()
+            .filter(|l| {
+                let core = l.trim_matches('|');
+                // drop blanks and rows that are nothing but ---/:-- separators (pipes included)
+                !core.is_empty() && !(core.contains('-') && core.chars().all(|c| matches!(c, '-' | ':' | '|' | ' ')))
+            })
+            .map(|l| {
+                l.trim_matches('|')
+                    .split('|')
+                    .map(|c| c.trim().replace("**", "").replace('`', "").trim().to_string())
+                    .collect()
+            })
+            .collect();
+        if rows.len() < 2 {
+            // not a real table — keep the raw pipes as plain lines
+            for l in run {
+                self.push(*l, Style::new());
+            }
+            return;
+        }
+        let cols = rows.iter().map(|r| r.len()).max().unwrap_or(0);
+        let mut width = vec![0usize; cols];
+        for r in &rows {
+            for (c, cell) in r.iter().enumerate() {
+                width[c] = width[c].max(display_width(cell));
+            }
+        }
+        for (n, r) in rows.iter().enumerate() {
+            let mut out = String::from(" ");
+            for (c, cell) in r.iter().enumerate() {
+                out.push_str(cell);
+                out.push_str(&" ".repeat(width[c].saturating_sub(display_width(cell)) + 2));
+            }
+            let style = if n == 0 { Style::new().bold() } else { Style::new() };
+            self.push(out.trim_end(), style);
+            if n == 0 {
+                self.push(format!(" {}", "─".repeat(width.iter().sum::<usize>() + 2 * cols)), Style::new().dark_gray());
+            }
         }
     }
 
@@ -313,7 +375,7 @@ impl App {
                 for (c, d) in SLASH {
                     self.push(format!("  {c:<14} {d}"), Style::new().dark_gray());
                 }
-                self.push("  @path         inline a file into the next prompt", Style::new().dark_gray());
+                self.push("  @path         inline a file or dir listing into the next prompt", Style::new().dark_gray());
                 self.push("  tab / ↑↓      complete · ctrl+o tool output · esc interrupt/clear", Style::new().dark_gray());
             }
             "/clear" | "/new" => self.lines.clear(),
@@ -366,7 +428,8 @@ impl App {
                 }
                 let raw: String = chars[i + 1..j].iter().collect();
                 let path = raw.trim_end_matches(|c: char| ")]}.,;:!?\"'".contains(c));
-                if !path.is_empty() && Path::new(path).is_file() {
+                let p = Path::new(path);
+                if !path.is_empty() && (p.is_file() || p.is_dir()) {
                     hits.push((i, j, path.to_string()));
                 }
                 i = j.max(i + 1);
@@ -380,6 +443,10 @@ impl App {
         for (start, end, path) in hits {
             out.extend(chars[pos..start].iter());
             pos = end;
+            if Path::new(&path).is_dir() {
+                out.push_str(&format!("{path}/:\n{}", Self::dir_listing(&path)));
+                continue;
+            }
             match fs::read_to_string(&path) {
                 Ok(body) => {
                     let clipped: String = body.chars().take(AT_FILE_CAP).collect();
@@ -391,6 +458,38 @@ impl App {
         }
         out.extend(chars[pos..].iter());
         (out, warns)
+    }
+
+    /// one-level directory listing for @dir references; heavy machine dirs stay out of prompts
+    fn dir_listing(path: &str) -> String {
+        const SKIP: [&str; 4] = [".git", "node_modules", "target", "dist"];
+        let mut entries: Vec<(String, bool)> = fs::read_dir(path)
+            .map(|rd| {
+                rd.flatten()
+                    .map(|e| {
+                        let name = e.file_name().to_string_lossy().to_string();
+                        let is_dir = e.path().is_dir();
+                        (name, is_dir)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        entries.sort();
+        let mut out = String::new();
+        let mut shown = 0;
+        for (name, is_dir) in entries {
+            if SKIP.contains(&name.as_str()) {
+                continue;
+            }
+            let line = if is_dir { format!("{name}/\n") } else { format!("{name}\n") };
+            out.push_str(&line);
+            shown += 1;
+            if shown >= 200 {
+                out.push_str("…[truncated]\n");
+                break;
+            }
+        }
+        out
     }
 
     // ---------- event handling ----------
