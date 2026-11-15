@@ -40,7 +40,7 @@ usage:
   tango task add <name> <every:30m|2h> <prompt...> [--mode auto]
   tango task rm <name>   remove a task
   tango task run [--loop]  run due tasks once, or keep running as a daemon
-  tango serve [--stdio]    JSONL protocol on stdin/stdout for external UIs (TUI, web)
+  tango serve            JSONL protocol on stdin/stdout for external UIs (TUI, web)
 options:
   --cwd <dir>            work in <dir> (default: current directory)
   -y / --yes             run risky commands without asking

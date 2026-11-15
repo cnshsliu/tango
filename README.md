@@ -12,7 +12,7 @@ adapters, built-in tools (read / write / edit / bash / grep / find / ls / web_se
 office_read / office_write / notify / diff), a permission gate, AGENTS.md + skills context assembly,
 typed event bus, cost tracking with long-prompt price tiers, `/save-as-skill`, scheduled tasks
 (`tango task`) with Feishu webhook delivery, auto type diagnostics after edits, and a JSONL
-serve protocol (`tango serve --stdio`) ready for a TUI client to plug into.
+serve protocol (`tango serve`) ready for a TUI client to plug into.
 
 Through the tknet.ai gateway, tool calling works end to end with `tknet/qwen3.8-flash-next` (the
 default), `tknet/deepseek-v4.1-flash` and `tknet/deepseek-v4-pro` (checked 2026-11-14: one-shot,
@@ -101,8 +101,9 @@ a summary, or full hunks per file.
 
 ## Serve protocol (the UI seam)
 
-`tango serve --stdio` speaks JSONL: one JSON command per stdin line, one JSON frame per stdout
-line (human logs go to stderr, stdout is protocol-only). Commands: `prompt`, `interrupt`,
+`tango serve` speaks JSONL over stdin/stdout (the only transport today): one JSON command per
+stdin line, one JSON frame per stdout line. Human logs go to stderr; stdout is protocol-only.
+Commands: `prompt`, `interrupt`,
 `permission` (answers a `permission_request` frame by request id), `set_model`, `set_mode`,
 `compact`, `status`. Frames: `hello` (session/model/tools) → `stream` (token deltas) →
 `tool_result` / `permission_request` → `message` → `turn_end` (usage + running cost) → `result`
@@ -188,7 +189,7 @@ src/core/
   tools/        registry + read/write/edit/bash + grep/find/ls + web_search/web_fetch + notify + diff
                 office/ = office_read (zip + xml readers) + office_write (zip writer, docx/xlsx)
 src/host.ts     shared agent assembly for every host (REPL, serve, tasks)
-src/serve.ts    tango serve --stdio: JSONL protocol for external UIs (the TUI seam)
+src/serve.ts    tango serve: JSONL protocol for external UIs (the TUI seam)
 src/cli.ts      REPL / one-shot entry
 ```
 

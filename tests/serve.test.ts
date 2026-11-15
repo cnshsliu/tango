@@ -9,7 +9,7 @@ import type { AddressInfo } from 'node:net';
 import { createInterface } from 'node:readline';
 
 /**
- * End-to-end protocol test: real `tango serve --stdio` child process against a local
+ * End-to-end protocol test: real `tango serve` child process against a local
  * mock OpenAI-compatible SSE endpoint. No API keys, no network.
  */
 
@@ -64,7 +64,7 @@ async function startServe(home: string, cwd: string, port: number) {
   return { child, send, next, until };
 }
 
-test('serve --stdio: hello, status, prompt with a permission denial, session persistence', async () => {
+test('serve: hello, status, prompt with a permission denial, session persistence', async () => {
   const mock = await startMock();
   const home = await mkdtemp(join(tmpdir(), 'tango-serve-home-'));
   const work = await mkdtemp(join(tmpdir(), 'tango-serve-work-'));
@@ -135,7 +135,7 @@ test('serve --stdio: hello, status, prompt with a permission denial, session per
   }
 });
 
-test('serve --stdio: stdin EOF does not cut a queued prompt short (pipe usage)', async () => {
+test('serve: stdin EOF does not cut a queued prompt short (pipe usage)', async () => {
   const mock = await startMock();
   const home = await mkdtemp(join(tmpdir(), 'tango-serve-home-'));
   const work = await mkdtemp(join(tmpdir(), 'tango-serve-work-'));
@@ -163,7 +163,7 @@ test('serve --stdio: stdin EOF does not cut a queued prompt short (pipe usage)',
   }
 });
 
-test('serve --stdio: set_mode and read-only mode are enforced', async () => {
+test('serve: set_mode and read-only mode are enforced', async () => {
   const mock = await startMock();
   const home = await mkdtemp(join(tmpdir(), 'tango-serve-home-'));
   const work = await mkdtemp(join(tmpdir(), 'tango-serve-work-'));

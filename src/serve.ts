@@ -1,5 +1,6 @@
 /**
- * tango serve --stdio — the boundary between core and any UI (the Rust TUI, later web/IDE).
+ * tango serve — the boundary between core and any UI (the Rust TUI, later web/IDE).
+ * stdio is the transport: no flags, no port, no token.
  *
  * stdin: one JSON command per line.
  * stdout: one JSON frame per line, protocol only — human logs never touch stdout.
