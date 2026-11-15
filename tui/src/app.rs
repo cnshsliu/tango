@@ -49,9 +49,17 @@ struct Permission {
 #[derive(Clone, Copy, PartialEq)]
 enum Pending {
     Model,
+    Models,
     Mode,
     Compact,
     Status,
+}
+
+#[derive(Clone)]
+struct PickItem {
+    id: String,
+    keyed: bool,
+    ctx: String,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -72,7 +80,7 @@ const SLASH: &[(&str, &str)] = &[
     ("/exit", "quit the session"),
     ("/help", "list commands"),
     ("/interrupt", "stop the running turn"),
-    ("/model <id>", "switch model"),
+    ("/model <id>", "切换模型，裸 /model 打开列表"),
     ("/mode <m>", "ask | auto | readonly"),
     ("/quit", "quit the session"),
     ("/status", "session info"),
@@ -89,6 +97,7 @@ pub struct App {
     pub input: Vec<char>,
     pub cursor: usize,
     popup: Option<Popup>,
+    picker: Option<(Vec<PickItem>, usize)>,
     /// 0 = pinned to the newest line (follow mode); increases when scrolling back
     scroll_back: usize,
     verbose_tools: bool,
@@ -113,6 +122,7 @@ impl App {
             input: Vec::new(),
             cursor: 0,
             popup: None,
+            picker: None,
             scroll_back: 0,
             verbose_tools: false,
             busy: false,
@@ -312,7 +322,8 @@ impl App {
             }
             "/model" => {
                 if rest.is_empty() {
-                    self.push("usage: /model <id> (see status bar)", Style::new().dark_gray());
+                    let id = serve.command("models", vec![]);
+                    self.pending.push((id, Pending::Models));
                 } else {
                     let id = serve.command("set_model", vec![("modelId", Value::String(rest.into()))]);
                     self.pending.push((id, Pending::Model));
@@ -433,6 +444,37 @@ impl App {
         }
         if ctrl && k.code == KeyCode::Char('o') {
             self.verbose_tools = !self.verbose_tools;
+            return;
+        }
+        // the model picker grabs navigation keys while open
+        if self.picker.is_some() {
+            match k.code {
+                KeyCode::Up => {
+                    if let Some((_, s)) = self.picker.as_mut() {
+                        *s = s.saturating_sub(1);
+                    }
+                }
+                KeyCode::Down => {
+                    if let Some((items, s)) = self.picker.as_mut() {
+                        *s = (*s + 1).min(items.len().saturating_sub(1));
+                    }
+                }
+                KeyCode::Esc => self.picker = None,
+                KeyCode::Enter | KeyCode::Tab => {
+                    let picked = self
+                        .picker
+                        .as_ref()
+                        .map(|(items, s)| items.get(*s).map(|i| (i.id.clone(), i.keyed)));
+                    self.picker = None;
+                    if let Some(Some((id, keyed))) = picked {
+                        if !keyed {
+                            self.push(format!("! {id} has no api key configured"), Style::new().dark_gray());
+                        }
+                        self.run_slash(&format!("/model {id}"), serve);
+                    }
+                }
+                _ => {}
+            }
             return;
         }
         // popup grabs navigation keys while it is open
@@ -622,6 +664,27 @@ impl App {
                     let kind = self.pending.remove(pos).1;
                     let d = &v["data"];
                     match (kind, ok) {
+                        (Pending::Models, true) => {
+                            let cur = d["current"].as_str().unwrap_or("").to_string();
+                            let items: Vec<PickItem> = d["models"]
+                                .as_array()
+                                .map(|a| {
+                                    a.iter()
+                                        .filter_map(|m| {
+                                            let id = m["id"].as_str()?.to_string();
+                                            let cw = m["contextWindow"].as_u64().unwrap_or(0);
+                                            Some(PickItem {
+                                                keyed: m["keyed"].as_bool().unwrap_or(false),
+                                                ctx: if cw == 0 { String::new() } else { format!("{}k", cw / 1000) },
+                                                id,
+                                            })
+                                        })
+                                        .collect()
+                                })
+                                .unwrap_or_default();
+                            let sel = items.iter().position(|i| i.id == cur).unwrap_or(0);
+                            self.picker = Some((items, sel));
+                        }
                         (Pending::Model, true) => {
                             self.model = d["model"].as_str().unwrap_or("?").into();
                             self.push(format!("model → {}", self.model), Style::new().dark_gray());
@@ -788,6 +851,51 @@ impl App {
         let row = rows + cw / w;
         let col = cw % w;
         f.set_cursor_position(Position::new(input_a.x + col as u16, input_a.y + 1 + row as u16));
+
+        // model picker overlay
+        if let Some((items, sel)) = &self.picker {
+            let h = (items.len().min(14) + 3) as u16;
+            let w = (area.width.min(64)).max(40);
+            let pop = Rect {
+                x: (area.width.saturating_sub(w)) / 2,
+                y: (area.height.saturating_sub(h)) / 2,
+                width: w,
+                height: h,
+            };
+            f.render_widget(Clear, pop);
+            let mut rows: Vec<Line> = items
+                .iter()
+                .enumerate()
+                .take(14)
+                .map(|(i, it)| {
+                    let marks = format!(
+                        "{} {}",
+                        if it.keyed { " " } else { "⚠" },
+                        if i == *sel { "▸" } else { " " }
+                    );
+                    let style = if !it.keyed {
+                        Style::new().dark_gray()
+                    } else if i == *sel {
+                        Style::new().bold()
+                    } else {
+                        Style::new()
+                    };
+                    Line::from(Span::styled(format!(" {marks} {:<44} {}", it.id, it.ctx), style))
+                })
+                .collect();
+            if items.len() > 14 {
+                rows.push(Line::from(Span::styled(
+                    format!("   … {} more", items.len() - 14),
+                    Style::new().dark_gray(),
+                )));
+            }
+            rows.push(Line::from(""));
+            rows.push(Line::from(Span::styled(
+                " ↑↓ 选择 · enter 切换 · esc 取消 · ⚠=缺 key",
+                Style::new().dark_gray(),
+            )));
+            f.render_widget(Paragraph::new(rows).block(Block::bordered().title(" 选择模型 ")), pop);
+        }
 
         // permission modal
         if let Some(p) = &self.permission {

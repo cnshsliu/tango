@@ -20,7 +20,7 @@ import { webFetchTool } from './core/tools/web-fetch.js';
 import { webSearchTool } from './core/tools/web-search.js';
 import type { ModelSpec } from './core/types.js';
 
-export const VERSION = '0.0.1';
+export const VERSION = '0.1.0';
 
 /** Live permission state a host mutates (REPL /mode, serve set_mode, tasks --mode). */
 export interface PermState {

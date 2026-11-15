@@ -106,8 +106,8 @@ a summary, or full hunks per file.
 
 `tango serve` speaks JSONL over stdin/stdout (the only transport today): one JSON command per
 stdin line, one JSON frame per stdout line. Human logs go to stderr; stdout is protocol-only.
-Commands: `prompt`, `interrupt`,
-`permission` (answers a `permission_request` frame by request id), `set_model`, `set_mode`,
+Commands: `prompt`, `interrupt`, `permission` (answers a `permission_request` frame by request id),
+`models` (list presets with key availability), `set_model`, `set_mode`,
 `compact`, `status`. Frames: `hello` (session/model/tools) → `stream` (token deltas) →
 `tool_result` / `permission_request` → `message` → `turn_end` (usage + running cost) → `result`
 (per command). stdin EOF lets queued work finish, so pipes work too. This is the seam the TUI —

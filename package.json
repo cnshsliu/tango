@@ -1,6 +1,6 @@
 {
   "name": "tango",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "Tango — it takes two. A light agent harness for work and code.",
   "type": "module",
   "private": true,

@@ -5,11 +5,11 @@
  * stdin: one JSON command per line.
  * stdout: one JSON frame per line, protocol only — human logs never touch stdout.
  *
- * commands:  prompt | interrupt | permission | set_model | set_mode | compact | status
+ * commands:  prompt | interrupt | permission | models | set_model | set_mode | compact | status
  * frames:    hello | stream | message | tool_result | permission_request | turn_end | error | result
  */
 import { createInterface } from 'node:readline';
-import { loadModels, pickModel } from './core/config.js';
+import { hasKey, loadModels, pickModel } from './core/config.js';
 import type { AskFn, PermissionMode } from './core/permissions.js';
 import type { ToolResult } from './core/types.js';
 import { buildTools, openAgent, VERSION, type HostArgs, type PermState } from './host.js';
@@ -101,6 +101,14 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
         } catch (e: any) {
           reply(cmd, false, undefined, String(e?.message ?? e));
         }
+        return;
+      }
+      case 'models': {
+        const models = await loadModels();
+        reply(cmd, true, {
+          current: agent.model.id,
+          models: models.map((m) => ({ id: m.id, keyed: hasKey(m), contextWindow: m.contextWindow ?? 0 }))
+        });
         return;
       }
       case 'set_model': {
