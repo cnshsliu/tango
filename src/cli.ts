@@ -37,7 +37,7 @@ usage:
   tango --models         list models and which have keys
   tango --sessions       list sessions, newest first
   tango task             list scheduled tasks
-  tango task add <name> <every:30m|2h> <prompt...> [--mode auto]
+  tango task add <name> <interval:30m|2h> <prompt...> [--mode auto]
   tango task rm <name>   remove a task
   tango task run [--loop]  run due tasks once, or keep running as a daemon
   tango serve            JSONL protocol on stdin/stdout for external UIs (TUI, web)
@@ -432,7 +432,7 @@ async function taskMain(args: Args, rest: string[]): Promise<void> {
   }
   if (sub === 'add') {
     const [name, every, ...prompt] = a;
-    if (!name || !every || !prompt.length) throw new Error('usage: tango task add <name> <every:30m|2h> <prompt...>');
+    if (!name || !every || !prompt.length) throw new Error('usage: tango task add <name> <interval:30m|2h> <prompt...>');
     let mode: PermissionMode = 'readonly';
     const mi = prompt.indexOf('--mode');
     if (mi >= 0) {
