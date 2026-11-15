@@ -5,7 +5,7 @@ use std::sync::mpsc::Sender;
 use std::thread;
 
 /// Everything the main loop receives: protocol frames, child stderr, and terminal input.
-/// Server/Gone carry the child epocheration so frames from a killed serve (after a session
+/// Server/Gone carry the child epoch so frames from a killed serve (after a session
 /// switch) can be filtered out before they reach the app.
 pub enum Event {
     Server(u64, Value),
@@ -15,7 +15,7 @@ pub enum Event {
     Resized(u16, u16),
     /// bracketed paste: the whole clipboard as one event, newlines kept, never "Enter"
     Paste(String),
-    Gone(u64), // the serve child of this epocheration exited
+    Gone(u64), // the serve child of this epoch exited
 }
 
 /// Owns the `tango serve` child process: JSONL out, frames in.

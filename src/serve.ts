@@ -5,7 +5,7 @@
  * stdin: one JSON command per line.
  * stdout: one JSON frame per line, protocol only — human logs never touch stdout.
  *
- * commands:  prompt | interrupt | permission | models | set_model | set_mode | compact | sessions | save_skill | status
+ * commands:  prompt | interrupt | permission | models | set_model | set_mode | compact | sessions | history | save_skill | status
  * frames:    hello | stream | message | tool_result | permission_request | turn_end | error | result
  */
 import { createInterface } from 'node:readline';
@@ -124,6 +124,29 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
             current: s.id === store.id
           }))
         });
+        return;
+      }
+      case 'history': {
+        // the full conversation (compaction ignored) flattened for display: a resumed client
+        // redraws its transcript from this; tool calls are paired with their results
+        const results = new Map<string, { isError: boolean; output: string }>();
+        const all = store.allMessages();
+        for (const m of all)
+          for (const b of m.content)
+            if (b.type === 'tool_result')
+              results.set(b.toolCallId, {
+                isError: !!b.isError,
+                output: resultText({ content: b.content, isError: b.isError }).slice(0, 4_000)
+              });
+        const items: unknown[] = [];
+        for (const m of all)
+          for (const b of m.content) {
+            if (b.type === 'text' && b.text.trim()) items.push({ kind: m.role, text: b.text });
+            else if (b.type === 'tool_call')
+              items.push({ kind: 'tool', name: b.name, input: b.input, ...(results.get(b.id) ?? { isError: false, output: '' }) });
+          }
+        const limit = Math.max(1, Number(cmd.limit) || 300);
+        reply(cmd, true, { items: items.slice(-limit), total: items.length });
         return;
       }
       case 'models': {

@@ -128,6 +128,21 @@ test('serve: hello, status, prompt with a permission denial, session persistence
     assert.match(body, /"kind":"message"/);
     assert.match(body, /user declined/);
 
+    s.send({ id: 4, cmd: 'history' });
+    const history = await s.until((f) => f.type === 'result' && f.id === 4, 'history result');
+    assert.equal(history.data.total, 3);
+    assert.deepEqual(history.data.items.map((i: any) => i.kind), ['user', 'tool', 'assistant']);
+    assert.equal(history.data.items[0].text, '把文件写到上一级目录');
+    assert.equal(history.data.items[1].name, 'write');
+    assert.equal(history.data.items[1].isError, true);
+    assert.match(history.data.items[1].output, /user declined/);
+    assert.equal(history.data.items[2].text, '好，不写了');
+
+    s.send({ id: 5, cmd: 'history', limit: 2 });
+    const tail = await s.until((f) => f.type === 'result' && f.id === 5, 'limited history result');
+    assert.equal(tail.data.total, 3);
+    assert.deepEqual(tail.data.items.map((i: any) => i.kind), ['tool', 'assistant']);
+
     s.child.stdin.end();
     await new Promise<number>((r) => s.child.on('exit', r));
   } finally {

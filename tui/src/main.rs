@@ -91,7 +91,7 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<(), Box<dyn 
     loop {
         terminal.draw(|f| app.draw(f))?;
         match rx.recv()? {
-            // stale frames from a killed serve child (session switch): drop by epocheration
+            // stale frames from a killed serve child (session switch): drop by epoch
             Event::Server(epoch, _) if epoch != serve.epoch => {}
             Event::Gone(epoch) if epoch != serve.epoch => {}
             // idle heartbeat only when nothing else is happening — no busy redraw loop

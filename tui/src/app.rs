@@ -55,6 +55,7 @@ enum Pending {
     Compact,
     Status,
     Skill,
+    History,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -587,7 +588,14 @@ impl App {
             },
             Event::Key(k) if k.kind == KeyEventKind::Release => {}
             Event::Key(k) => self.key(k, serve),
-            Event::Server(_, v) => self.frame(v),
+            Event::Server(_, v) => {
+                // a (re)attached child: redraw the session's past turns before anything new
+                if v["type"] == "hello" {
+                    let id = serve.command("history", vec![]);
+                    self.pending.push((id, Pending::History));
+                }
+                self.frame(v)
+            }
         }
         false
     }
@@ -960,6 +968,7 @@ impl App {
                                 }
                             }
                         }
+                        (Pending::History, true) => self.load_history(d),
                         (_, false) => self.push(format!("error: {}", v["error"].as_str().unwrap_or("?")), Style::new().red()),
                     }
                 }
@@ -967,6 +976,46 @@ impl App {
             "error" => self.push(format!("error: {}", v["message"].as_str().unwrap_or("?")), Style::new().red()),
             _ => {}
         }
+    }
+
+    fn load_history(&mut self, d: &Value) {
+        let items = match d["items"].as_array() {
+            Some(a) if !a.is_empty() => a,
+            _ => return,
+        };
+        let total = d["total"].as_u64().unwrap_or(0) as usize;
+        let mut lines = std::mem::take(&mut self.lines);
+        let hello = match lines.last() {
+            // the banner stays the newest line
+            Some(l) if l.text.starts_with("tango serve") => lines.pop(),
+            _ => None,
+        };
+        if total > items.len() {
+            self.push(format!("… {} earlier items not shown", total - items.len()), Style::new().dark_gray());
+        }
+        for it in items {
+            let text = it["text"].as_str().unwrap_or("");
+            match it["kind"].as_str() {
+                Some("user") => self.push(format!("❯ {}", text.replace('\n', " ⏎ ")), Style::new().cyan()),
+                Some("assistant") => {
+                    self.stream = text.to_string();
+                    self.commit_stream();
+                }
+                Some("tool") => {
+                    let name = it["name"].as_str().unwrap_or("?");
+                    let ok = !it["isError"].as_bool().unwrap_or(false);
+                    let style = if ok { Style::new().dark_gray() } else { Style::new().red() };
+                    let out = it["output"].as_str().map(|s| s.lines().take(200).collect::<Vec<_>>().join("\n"));
+                    self.push_tool(format!("⚙ {name} {}", Self::call_summary(&it["input"])), style, out);
+                }
+                _ => {}
+            }
+        }
+        self.push("── resumed ──", Style::new().dark_gray());
+        let restored = std::mem::take(&mut self.lines);
+        lines.extend(restored);
+        lines.extend(hello);
+        self.lines = lines;
     }
 
     // ---------- rendering ----------
