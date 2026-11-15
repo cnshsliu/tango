@@ -1,0 +1,108 @@
+use serde_json::{Value, json};
+use std::io::{BufRead, BufReader, Write};
+use std::process::{Child, Command, Stdio};
+use std::sync::mpsc::Sender;
+use std::thread;
+
+/// Everything the main loop receives: protocol frames, child stderr, and terminal input.
+pub enum Event {
+    Server(Value),
+    Stderr(String),
+    Key(crossterm::event::KeyEvent),
+    Mouse(crossterm::event::MouseEvent),
+    Resized(u16, u16),
+    Gone, // the serve child exited
+}
+
+/// Owns the `tango serve` child process: JSONL out, frames in.
+pub struct Serve {
+    child: Child,
+    stdin: std::process::ChildStdin,
+    next_id: u64,
+}
+
+impl Serve {
+    pub fn spawn(tx: Sender<Event>) -> std::io::Result<Self> {
+        // TANGO_BIN can hold args too, e.g. `node /path/to/bin/tango.js` for dev builds.
+        let bin = std::env::var("TANGO_BIN").unwrap_or_else(|_| "tango".into());
+        let mut parts = bin.split_whitespace();
+        let mut cmd = Command::new(parts.next().unwrap_or("tango"));
+        for a in parts {
+            cmd.arg(a);
+        }
+        cmd.arg("serve")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = cmd.spawn()?;
+        let stdin = child.stdin.take().unwrap();
+        let stdout = child.stdout.take().unwrap();
+        let stderr = child.stderr.take().unwrap();
+
+        thread::spawn({
+            let tx = tx.clone();
+            move || {
+                let mut r = BufReader::new(stdout);
+                let mut line = String::new();
+                while r.read_line(&mut line).unwrap_or(0) > 0 {
+                    if let Ok(v) = serde_json::from_str::<Value>(line.trim())
+                        && tx.send(Event::Server(v)).is_err()
+                    {
+                        return; // main loop gone
+                    }
+                    line.clear();
+                }
+                let _ = tx.send(Event::Gone);
+            }
+        });
+        thread::spawn({
+            let tx = tx.clone();
+            move || {
+                let mut r = BufReader::new(stderr);
+                let mut line = String::new();
+                while r.read_line(&mut line).unwrap_or(0) > 0 {
+                    let l = line.trim_end().to_string();
+                    if !l.is_empty() && tx.send(Event::Stderr(l)).is_err() {
+                        return;
+                    }
+                    line.clear();
+                }
+            }
+        });
+        Ok(Self {
+            child,
+            stdin,
+            next_id: 0,
+        })
+    }
+
+    /// Send a command that expects a `result` frame; returns its id.
+    pub fn command(&mut self, cmd: &str, extra: Vec<(&str, Value)>) -> u64 {
+        self.next_id += 1;
+        let id = self.next_id;
+        let mut v = json!({ "id": id, "cmd": cmd });
+        if let Some(m) = v.as_object_mut() {
+            for (k, val) in extra {
+                m.insert(k.into(), val);
+            }
+        }
+        self.write_line(&v.to_string());
+        id
+    }
+
+    /// Fire-and-forget frames: interrupt and permission answers carry no id.
+    pub fn notify(&mut self, frame: Value) {
+        self.write_line(&frame.to_string());
+    }
+
+    fn write_line(&mut self, line: &str) {
+        let _ = writeln!(self.stdin, "{line}");
+        let _ = self.stdin.flush();
+    }
+}
+
+impl Drop for Serve {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+    }
+}

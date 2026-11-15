@@ -11,8 +11,8 @@ Core loop is working: agent loop, JSONL sessions with compaction, Anthropic + Op
 adapters, built-in tools (read / write / edit / bash / grep / find / ls / web_search / web_fetch /
 office_read / office_write / notify / diff), a permission gate, AGENTS.md + skills context assembly,
 typed event bus, cost tracking with long-prompt price tiers, `/save-as-skill`, scheduled tasks
-(`tango task`) with Feishu webhook delivery, auto type diagnostics after edits, and a JSONL
-serve protocol (`tango serve`) ready for a TUI client to plug into.
+(`tango task`) with Feishu webhook delivery, auto type diagnostics after edits, a JSONL
+serve protocol (`tango serve`), and a Rust TUI client (`tui/`) on top of it.
 
 Through the tknet.ai gateway, tool calling works end to end with `tknet/qwen3.8-flash-next` (the
 default), `tknet/deepseek-v4.1-flash` and `tknet/deepseek-v4-pro` (checked 2026-11-14: one-shot,
@@ -109,6 +109,15 @@ Commands: `prompt`, `interrupt`,
 `tool_result` / `permission_request` → `message` → `turn_end` (usage + running cost) → `result`
 (per command). stdin EOF lets queued work finish, so pipes work too. This is the seam the TUI —
 and later web/IDE shells — plug into; the core never knows which face is attached.
+
+## TUI
+
+`tui/` holds the Rust client (ratatui + crossterm): `cargo build --release` in `tui/`, run
+`tui/target/release/tango-tui`. It spawns `tango serve` and speaks the protocol above — fullscreen
+alternate screen, mouse wheel scrolling, streaming answers, thinking lines, tool status lines with
+durations, a centered permission modal (y/n), a status bar (model · mode · cost · session) and a
+multi-line input. Ctrl+C interrupts a running turn, and quits when idle; Ctrl+D exits. `TANGO_BIN`
+overrides the server binary (e.g. `TANGO_BIN="node bin/tango.js"` for dev builds).
 
 ## Permissions
 
