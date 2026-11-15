@@ -82,7 +82,10 @@ interval has passed, each in its own session (`task-<name>-<time>.jsonl`, visibl
 Results go to the `feishuWebhook` in config as a card. Headless tasks can't answer prompts, so
 they default to `readonly` (reads, web, writes files); `--mode auto` also allows bash.
 The model can also push mid-task with the `notify` tool. cron works too — `tango task run` runs
-due tasks once and exits.
+due tasks once and exits. On macOS, `scripts/com.tango.task.plist` installs the daemon as a
+launchd service (starts at login, respawns on crash): copy it to `~/Library/LaunchAgents/`,
+`launchctl bootstrap gui/$(id -u) <path>`. launchd gets no shell environment, so the wrapper
+sources API keys from `~/.tango/env` (KEY=VALUE, chmod 600); logs go to `~/Library/Logs/tango-task.log`.
 
 ## Skills
 
