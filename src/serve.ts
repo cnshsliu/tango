@@ -169,9 +169,7 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
     queue = queue.then(() => handle(cmd));
   });
   rl.on('close', () => {
-    denyPending();
-    agent.abort();
-    // let in-flight frames flush, then leave — the client is gone
-    setTimeout(() => process.exit(0), 50);
+    // stdin EOF (a pipe, not a UI): finish queued work, then leave; never cut a running prompt short
+    void queue.then(() => process.exit(0));
   });
 }

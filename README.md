@@ -11,7 +11,8 @@ Core loop is working: agent loop, JSONL sessions with compaction, Anthropic + Op
 adapters, built-in tools (read / write / edit / bash / grep / find / ls / web_search / web_fetch /
 office_read / office_write / notify / diff), a permission gate, AGENTS.md + skills context assembly,
 typed event bus, cost tracking with long-prompt price tiers, `/save-as-skill`, scheduled tasks
-(`tango task`) with Feishu webhook delivery, auto type diagnostics after edits. CLI REPL only; a TUI comes later.
+(`tango task`) with Feishu webhook delivery, auto type diagnostics after edits, and a JSONL
+serve protocol (`tango serve --stdio`) ready for a TUI client to plug into.
 
 Through the tknet.ai gateway, tool calling works end to end with `tknet/qwen3.8-flash-next` (the
 default), `tknet/deepseek-v4.1-flash` and `tknet/deepseek-v4-pro` (checked 2026-11-14: one-shot,
@@ -98,6 +99,16 @@ TypeScript, `pyright` (then `ruff`) from `.venv` or `node_modules` for Python, `
 Silent when the project has no checker installed. The `diff` tool (read-only) shows what changed:
 a summary, or full hunks per file.
 
+## Serve protocol (the UI seam)
+
+`tango serve --stdio` speaks JSONL: one JSON command per stdin line, one JSON frame per stdout
+line (human logs go to stderr, stdout is protocol-only). Commands: `prompt`, `interrupt`,
+`permission` (answers a `permission_request` frame by request id), `set_model`, `set_mode`,
+`compact`, `status`. Frames: `hello` (session/model/tools) → `stream` (token deltas) →
+`tool_result` / `permission_request` → `message` → `turn_end` (usage + running cost) → `result`
+(per command). stdin EOF lets queued work finish, so pipes work too. This is the seam the TUI —
+and later web/IDE shells — plug into; the core never knows which face is attached.
+
 ## Permissions
 
 Three modes, set with flags or `/mode`:
@@ -176,6 +187,8 @@ src/core/
   models/       anthropic-messages + openai-completions adapters, presets, cost
   tools/        registry + read/write/edit/bash + grep/find/ls + web_search/web_fetch + notify + diff
                 office/ = office_read (zip + xml readers) + office_write (zip writer, docx/xlsx)
+src/host.ts     shared agent assembly for every host (REPL, serve, tasks)
+src/serve.ts    tango serve --stdio: JSONL protocol for external UIs (the TUI seam)
 src/cli.ts      REPL / one-shot entry
 ```
 

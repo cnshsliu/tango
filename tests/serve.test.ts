@@ -135,6 +135,34 @@ test('serve --stdio: hello, status, prompt with a permission denial, session per
   }
 });
 
+test('serve --stdio: stdin EOF does not cut a queued prompt short (pipe usage)', async () => {
+  const mock = await startMock();
+  const home = await mkdtemp(join(tmpdir(), 'tango-serve-home-'));
+  const work = await mkdtemp(join(tmpdir(), 'tango-serve-work-'));
+  await writeFile(
+    join(home, 'models.json'),
+    JSON.stringify([
+      { id: 'mock/mock', provider: 'mock', model: 'mock-model', api: 'openai-completions', baseUrl: `http://127.0.0.1:${(mock.server.address() as AddressInfo).port}/v1`, apiKey: 'MOCK_SERVE_KEY' }
+    ])
+  );
+  mock.setScript(() => SSE({ choices: [{ delta: { content: '管道里的答复' }, finish_reason: 'stop' }] }) + 'data: [DONE]\n\n');
+
+  const s = await startServe(home, work, 0);
+  try {
+    await s.next(); // hello
+    s.send({ id: 1, cmd: 'prompt', text: '说一句' });
+    s.child.stdin.end(); // EOF while the prompt is still in flight
+    const msg = await s.until((f) => f.type === 'message', 'message after EOF');
+    assert.equal(msg.message.content[0].text, '管道里的答复');
+    const res = await s.until((f) => f.type === 'result' && f.id === 1, 'result after EOF');
+    assert.deepEqual(res.data, { stopReason: 'stop' });
+    await new Promise<number>((r) => s.child.on('exit', r)); // then it exits on its own
+  } finally {
+    s.child.kill();
+    mock.server.close();
+  }
+});
+
 test('serve --stdio: set_mode and read-only mode are enforced', async () => {
   const mock = await startMock();
   const home = await mkdtemp(join(tmpdir(), 'tango-serve-home-'));
