@@ -56,7 +56,7 @@ npm install
 npm run dev -- --help
 export DEEPSEEK_API_KEY=sk-...
 npm run dev -- "list the files here and summarize the project"   # one-shot
-npm run dev --                                                  # REPL
+npm run build && (cd tui && cargo build --release) && tango          # TUI
 ```
 
 Install globally after `npm run build`; `tango` / `tang` are the bin names.
@@ -64,15 +64,16 @@ Install globally after `npm run build`; `tango` / `tang` are the bin names.
 ## CLI
 
 ```
-tango [prompt...]      run one prompt and exit
-tango                  interactive REPL
-tango -c               continue most recent session
-tango -r <id>          resume by id/prefix
-tango -m <model>       pick model            tango --models
-tango --sessions       list sessions         --cwd <dir>
+tango                  fullscreen TUI (the interactive interface)
+tango -c / -r <id>     TUI on the most recent / a given session
+tango -m <model> -y    TUI options: model, auto mode (or --readonly)
+tango [prompt...]      run one prompt and exit (also when stdin is a pipe)
+tango --models         list models   tango --sessions   list sessions   --cwd <dir>
+tango repl             line-mode REPL — dev fallback, not the product
 ```
 
-REPL commands: `/model`, `/models`, `/mode`, `/sessions`, `/compact`, `/save-as-skill`, `/cost`, `/new`, `/help`, `/exit`.
+TUI commands: `/model`, `/resume`, `/new`, `/mode`, `/compact`, `/skill`, `/cost`, `/status`,
+`/clear`, `/help`, `/exit`. `/model <id>` also saves the choice as the default for new sessions.
 
 ## Scheduled tasks
 
@@ -107,10 +108,12 @@ a summary, or full hunks per file.
 `tango serve` speaks JSONL over stdin/stdout (the only transport today): one JSON command per
 stdin line, one JSON frame per stdout line. Human logs go to stderr; stdout is protocol-only.
 Commands: `prompt`, `interrupt`, `permission` (answers a `permission_request` frame by request id),
-`models` (list presets with key availability), `set_model`, `set_mode`,
-`sessions` (list recent sessions, read-only), `compact`, `status`. A client switches sessions by
-respawning the child with `TANGO_RESUME=<id or prefix>` in the environment — serve takes resume
-from there, no flags. Frames: `hello` (session/model/tools) → `stream` (token deltas) →
+`models` (list presets with key availability), `set_model` (also saved as the default),
+`set_mode`, `sessions` (list recent sessions, read-only), `save_skill` (draft a skill from the
+session, or `finish <file>` to promote one), `compact`, `status`. Prompts run one at a time;
+`interrupt`, `permission`, `set_mode` and `status` skip that queue so they land mid-turn. A client
+switches sessions by respawning the child with `TANGO_RESUME=<id or prefix>` (and optionally
+`TANGO_MODE`, `TANGO_MODEL`) in the environment — serve takes them from there, no flags. Frames: `hello` (session/model/tools) → `stream` (token deltas) →
 `tool_result` / `permission_request` → `message` → `turn_end` (usage + running cost) → `result`
 (per command). stdin EOF lets queued work finish, so pipes work too. This is the seam the TUI —
 and later web/IDE shells — plug into; the core never knows which face is attached.
@@ -118,7 +121,7 @@ and later web/IDE shells — plug into; the core never knows which face is attac
 ## TUI
 
 `tui/` holds the Rust client (ratatui + crossterm): `cargo build --release` in `tui/`, then run
-`tango tui` (`tango tui -c` / `tango tui -r <id>` open a previous session). It spawns `tango serve` and speaks the protocol above — fullscreen
+`tango` (`tango -c` / `tango -r <id>` open a previous session). It spawns `tango serve` and speaks the protocol above — fullscreen
 alternate screen, mouse wheel scrolling, streaming answers, thinking lines, tool status lines with
 durations, a centered permission modal (y/n), a status bar (model · mode · cost · session) and a
 multi-line input with Tab-completed `/` commands and `@file` inlining (contents ride along in the
@@ -140,7 +143,8 @@ Three modes, set with flags or `/mode`:
 | `auto` | `-y` / `--yes` | everything runs |
 | `readonly` | `--readonly` | reads only; writes and shell are refused |
 
-In the REPL, answer `y`, `n` or `a` (always, switches to `auto` for the session). One-shot runs
+In the TUI's permission dialog, answer `y`, `n` or `a` (always: switches to `auto` for the rest of
+the session, taking effect mid-turn). One-shot runs
 can't ask, so risky calls are refused there unless `--yes` is given. The gate is a `before_tool`
 handler in `src/core/permissions.ts`.
 

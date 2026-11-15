@@ -32,19 +32,19 @@ if (proxyEnv && !process.env.NODE_USE_ENV_PROXY) (http as any).setGlobalProxyFro
 const HELP = `tango ${VERSION} — a light agent harness
 
 usage:
-  tango [prompt...]      run one prompt and exit
-  tango                  interactive session (REPL)
-  tango -c               continue the most recent session
-  tango -r <id>          resume a session by id or prefix
+  tango                  fullscreen TUI (new session)
+  tango -c               TUI, continue the most recent session
+  tango -r <id>          TUI, resume a session by id or prefix
   tango -m <model>       pick a model (see --models)
+  tango [prompt...]      run one prompt and exit (scripts, pipes)
   tango --models         list models and which have keys
   tango --sessions       list sessions, newest first
   tango task             list scheduled tasks
   tango task add <name> <interval:30m|2h> <prompt...> [--mode auto]
   tango task rm <name>   remove a task
   tango task run [--loop]  run due tasks once, or keep running as a daemon
-  tango tui              fullscreen TUI (Rust client; -r <id> / -c resume a session)
   tango serve            JSONL protocol on stdin/stdout for external UIs (TUI, web)
+  tango repl             line-mode REPL (dev fallback when the TUI isn't built)
 options:
   --cwd <dir>            work in <dir> (default: current directory)
   -y / --yes             run risky commands without asking
@@ -86,6 +86,7 @@ interface Args {
   task?: string[];
   serve?: boolean;
   tui?: boolean;
+  repl?: boolean;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -151,6 +152,10 @@ function parseArgs(argv: string[]): Args {
   }
   if (rest[0] === 'tui') {
     a.tui = true;
+    return a;
+  }
+  if (rest[0] === 'repl') {
+    a.repl = true;
     return a;
   }
   if (rest.length) a.input = rest.join(' ');
@@ -502,6 +507,9 @@ async function launchTui(args: Args): Promise<void> {
     if (!latest) throw new Error('no sessions to continue yet');
     env.TANGO_RESUME = latest.id;
   }
+  if (args.model) env.TANGO_MODEL = args.model;
+  if (args.yes) env.TANGO_MODE = 'auto';
+  if (args.readonly) env.TANGO_MODE = 'readonly';
   const r = spawnSync(bin, [], { stdio: 'inherit', env, cwd: args.cwd ?? process.cwd() });
   if (r.error) throw r.error;
   process.exitCode = r.status ?? 1;
@@ -519,6 +527,8 @@ async function main(): Promise<void> {
   if (args.yes && args.readonly) throw new Error('--yes and --readonly cannot be combined');
   if (args.serve) return serveStdio(args);
   if (args.tui) return launchTui(args);
+  // the TUI is the product: an interactive terminal with no prompt opens it
+  if (!args.repl && !args.input && process.stdin.isTTY && process.stdout.isTTY) return launchTui(args);
   perm.mode = args.yes ? 'auto' : args.readonly ? 'readonly' : 'ask';
   const { agent, store } = await openReplAgent(args);
   if (args.input) return runOnce(agent, args.input);

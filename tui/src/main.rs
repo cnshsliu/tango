@@ -41,7 +41,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<(), Box<dyn Error>> {
     let (tx, rx) = mpsc::channel::<Event>();
-    let mut serve = Serve::spawn(tx.clone(), 0, None)?;
+    let mut serve = Serve::spawn(tx.clone(), 0, None, None, None)?;
 
     // crossterm has no pollable fd we own: a thread forwards terminal input into the same queue
     thread::spawn({
@@ -93,9 +93,11 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<(), Box<dyn 
                 }
             }
         }
-        // the app asked to resume another session: kill this child, respawn with TANGO_RESUME
-        if let Some(id) = app.respawn.take() {
-            let next = Serve::spawn(tx.clone(), serve.epoch + 1, Some(&id))?;
+        // the app asked for another session (/resume) or a fresh one (/new): respawn serve
+        if let Some(target) = app.respawn.take() {
+            let mode = app.mode().to_string();
+            let model = if target.is_none() { Some(app.model().to_string()) } else { None };
+            let next = Serve::spawn(tx.clone(), serve.epoch + 1, target.as_deref(), Some(&mode), model.as_deref())?;
             let _old = std::mem::replace(&mut serve, next); // drop kills the previous child
         }
     }

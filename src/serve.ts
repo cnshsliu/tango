@@ -5,11 +5,13 @@
  * stdin: one JSON command per line.
  * stdout: one JSON frame per line, protocol only — human logs never touch stdout.
  *
- * commands:  prompt | interrupt | permission | models | set_model | set_mode | compact | sessions | status
+ * commands:  prompt | interrupt | permission | models | set_model | set_mode | compact | sessions | save_skill | status
  * frames:    hello | stream | message | tool_result | permission_request | turn_end | error | result
  */
 import { createInterface } from 'node:readline';
-import { hasKey, loadModels, pickModel, sessionsDir } from './core/config.js';
+import { hasKey, keyProblem, loadConfig, loadModels, pickModel, saveConfig, sessionsDir } from './core/config.js';
+import { listDrafts, promoteDraft, saveDraft } from './core/skills.js';
+import { join } from 'node:path';
 import { SessionStore } from './core/session.js';
 import type { AskFn, PermissionMode } from './core/permissions.js';
 import type { ToolResult } from './core/types.js';
@@ -35,6 +37,10 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
   const perm: PermState = { mode: args.readonly ? 'readonly' : 'ask' };
   // session resume without flags: the TUI respawns this child with TANGO_RESUME=<id or prefix>
   if (!args.resume && process.env.TANGO_RESUME) args.resume = process.env.TANGO_RESUME;
+  // launch options ride the environment too (tango tui -m / -y / --readonly)
+  if (!args.model && process.env.TANGO_MODEL) args.model = process.env.TANGO_MODEL;
+  const envMode = process.env.TANGO_MODE;
+  if (!args.readonly && (envMode === 'ask' || envMode === 'auto' || envMode === 'readonly')) perm.mode = envMode;
 
   let opened;
   try {
@@ -120,7 +126,8 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
         });
         return;
       }
-      case 'models': {        const models = await loadModels();
+      case 'models': {
+        const models = await loadModels();
         reply(cmd, true, {
           current: agent.model.id,
           models: models.map((m) => ({ id: m.id, keyed: hasKey(m), contextWindow: m.contextWindow ?? 0 }))
@@ -131,7 +138,9 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
         try {
           const model = pickModel(await loadModels(), {}, String(cmd.modelId ?? ''));
           agent.setModel(model);
-          reply(cmd, true, { model: model.id });
+          // same as the REPL: an explicit switch becomes the default for new sessions
+          await saveConfig({ ...(await loadConfig()), model: model.id });
+          reply(cmd, true, { model: model.id, warning: keyProblem(model) });
         } catch (e: any) {
           reply(cmd, false, undefined, e.message);
         }
@@ -148,6 +157,31 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
       case 'compact': {
         const compacted = await agent.compact();
         reply(cmd, true, { compacted, contextMessages: store.messageCount() });
+        return;
+      }
+      case 'save_skill': {
+        // arg "" → draft from this session; "finish <file>" → promote a draft into a project skill
+        const arg = String(cmd.arg ?? '').trim();
+        try {
+          if (/^(finish|定稿)(\s|$)/.test(arg)) {
+            const file = arg.replace(/^(finish|定稿)\s*/, '');
+            if (!file) return reply(cmd, true, { drafts: await listDrafts() });
+            const root = join(cwd, '.tango', 'skills');
+            const s = await promoteDraft(file, root);
+            return reply(cmd, true, { skill: s.file });
+          }
+          const firstUser = store.allMessages().find((m) => m.role === 'user');
+          const firstText = firstUser?.content.find((b) => b.type === 'text') as { text: string } | undefined;
+          const d = await saveDraft({
+            title: arg || firstText?.text.slice(0, 60) || 'workflow',
+            description: arg || undefined,
+            messages: store.allMessages(),
+            cwd
+          });
+          reply(cmd, true, { draft: d.file });
+        } catch (e: any) {
+          reply(cmd, false, undefined, String(e?.message ?? e));
+        }
         return;
       }
       case 'status':
@@ -189,6 +223,12 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
         pending.delete(Number(cmd.request));
         resolve(!!cmd.allow);
       }
+      return;
+    }
+    // mode flips and status reads are instant state ops: they must land mid-turn
+    // (e.g. "always allow" from a permission dialog), so they skip the prompt queue too
+    if (cmd.cmd === 'set_mode' || cmd.cmd === 'status') {
+      void handle(cmd);
       return;
     }
     queue = queue.then(() => handle(cmd));

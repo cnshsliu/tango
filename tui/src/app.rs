@@ -54,6 +54,7 @@ enum Pending {
     Mode,
     Compact,
     Status,
+    Skill,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -93,15 +94,19 @@ struct Popup {
 }
 
 const SLASH: &[(&str, &str)] = &[
-    ("/compact", "summarize older context"),
-    ("/exit", "quit the session"),
-    ("/help", "list commands"),
-    ("/interrupt", "stop the running turn"),
-    ("/model <id>", "切换模型，裸 /model 打开列表"),
+    ("/clear", "清空屏幕（上下文保留）"),
+    ("/compact", "压缩较早的上下文"),
+    ("/cost", "本会话花费与上下文条数"),
+    ("/exit", "退出"),
+    ("/help", "命令列表"),
+    ("/interrupt", "停止当前回合"),
+    ("/model <id>", "切换模型（存为默认），裸 /model 打开列表"),
     ("/mode <m>", "ask | auto | readonly"),
-    ("/quit", "quit the session"),
+    ("/new", "开新会话"),
+    ("/quit", "退出"),
     ("/resume", "切换到历史会话，打开列表"),
-    ("/status", "session info"),
+    ("/skill [title]", "把本会话存成技能草稿 · /skill finish <file> 定稿"),
+    ("/status", "会话信息"),
 ];
 
 /// inline @path tokens are expanded into file contents at send time (Claude Code style)
@@ -128,8 +133,8 @@ pub struct App {
     session: String,
     cost: f64,
     pub quit: bool,
-    /// session id the main loop should respawn serve with (TANGO_RESUME); set by the picker
-    pub respawn: Option<String>,
+    /// serve respawn request for the main loop: Some(Some(id)) resumes, Some(None) starts fresh
+    pub respawn: Option<Option<String>>,
     pub err: Option<String>,
 }
 
@@ -157,6 +162,28 @@ impl App {
             respawn: None,
             err: None,
         }
+    }
+
+    pub fn mode(&self) -> &str {
+        &self.mode
+    }
+
+    pub fn model(&self) -> &str {
+        &self.model
+    }
+
+    /// switching context means a new serve child; wipe the old transcript and turn state
+    fn switch_session(&mut self, target: Option<String>) {
+        let keep: Vec<ChatLine> = self.lines.drain(..).last().into_iter().collect();
+        self.lines = keep; // the "resuming…/new session" notice just pushed
+        self.stream.clear();
+        self.thinking.clear();
+        self.pending.clear();
+        self.permission = None;
+        self.busy = false;
+        self.cost = 0.0;
+        self.scroll_back = 0;
+        self.respawn = Some(target);
     }
 
     fn push(&mut self, text: impl Into<String>, style: Style) {
@@ -399,7 +426,20 @@ impl App {
                 self.push("  @path         inline a file or dir listing into the next prompt", Style::new().dark_gray());
                 self.push("  tab / ↑↓      complete · ctrl+o tool output · esc interrupt/clear", Style::new().dark_gray());
             }
-            "/clear" | "/new" => self.lines.clear(),
+            "/clear" => self.lines.clear(),
+            "/new" => {
+                self.push("↻ new session …", Style::new().dark_gray());
+                self.switch_session(None);
+            }
+            "/sessions" => self.run_slash("/resume", serve),
+            "/cost" => {
+                let id = serve.command("status", vec![]);
+                self.pending.push((id, Pending::Status));
+            }
+            "/skill" | "/save-as-skill" => {
+                let id = serve.command("save_skill", vec![("arg", Value::String(rest.into()))]);
+                self.pending.push((id, Pending::Skill));
+            }
             "/interrupt" => {
                 serve.notify(json!({ "cmd": "interrupt" }));
             }
@@ -549,6 +589,11 @@ impl App {
             match k.code {
                 KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => self.answer(serve, true),
                 KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => self.answer(serve, false),
+                // always: allow this one and stop asking for the rest of the session (REPL parity)
+                KeyCode::Char('a') | KeyCode::Char('A') => {
+                    self.run_slash("/mode auto", serve);
+                    self.answer(serve, true);
+                }
                 _ => {}
             }
             return;
@@ -599,15 +644,8 @@ impl App {
                                 self.run_slash(&format!("/model {}", item.id), serve);
                             }
                             PickerKind::Session => {
-                                // switching context means a new serve child; wipe the old transcript
-                                self.lines.clear();
-                                self.stream.clear();
-                                self.thinking.clear();
-                                self.pending.clear();
-                                self.busy = false;
-                                self.cost = 0.0;
                                 self.push(format!("↻ resuming session {} …", item.id), Style::new().dark_gray());
-                                self.respawn = Some(item.id);
+                                self.switch_session(Some(item.id));
                             }
                         }
                     }
@@ -795,7 +833,11 @@ impl App {
                     self.busy = false;
                     self.refresh_popup();
                     if !ok {
-                        self.push(format!("error: {}", v["error"].as_str().unwrap_or("?")), Style::new().red());
+                        // the same failure usually arrived a moment ago as an `error` frame
+                        let msg = format!("error: {}", v["error"].as_str().unwrap_or("?"));
+                        if self.lines.last().map(|l| l.text.as_str()) != Some(msg.as_str()) {
+                            self.push(msg, Style::new().red());
+                        }
                     }
                     return;
                 }
@@ -861,7 +903,10 @@ impl App {
                         }
                         (Pending::Model, true) => {
                             self.model = d["model"].as_str().unwrap_or("?").into();
-                            self.push(format!("model → {}", self.model), Style::new().dark_gray());
+                            self.push(format!("model → {} (saved as default)", self.model), Style::new().dark_gray());
+                            if let Some(w) = d["warning"].as_str() {
+                                self.push(format!("! {w}"), Style::new().yellow());
+                            }
                         }
                         (Pending::Mode, true) => {
                             self.mode = d["mode"].as_str().unwrap_or("?").into();
@@ -888,6 +933,22 @@ impl App {
                                 ),
                                 Style::new().dark_gray(),
                             );
+                        }
+                        (Pending::Skill, true) => {
+                            if let Some(f) = d["draft"].as_str() {
+                                self.push(format!("draft → {f}"), Style::new().dark_gray());
+                                self.push(
+                                    "edit its description + steps, then: /skill finish <file>",
+                                    Style::new().dark_gray(),
+                                );
+                            } else if let Some(f) = d["skill"].as_str() {
+                                self.push(format!("skill → {f}"), Style::new().green());
+                            } else if let Some(list) = d["drafts"].as_array() {
+                                self.push("usage: /skill finish <draft file>", Style::new().dark_gray());
+                                for f in list.iter().filter_map(|x| x.as_str()) {
+                                    self.push(format!("  {f}"), Style::new().dark_gray());
+                                }
+                            }
                         }
                         (_, false) => self.push(format!("error: {}", v["error"].as_str().unwrap_or("?")), Style::new().red()),
                     }
@@ -1099,7 +1160,7 @@ impl App {
                 Line::from(""),
                 Line::from(Span::raw(p.detail.chars().take(240).collect::<String>())),
                 Line::from(""),
-                Line::from(Span::styled("y allow · n deny", Style::new().bold())),
+                Line::from(Span::styled("y allow · n deny · a always (mode → auto)", Style::new().bold())),
             ])
             .wrap(Wrap { trim: true })
             .block(Block::bordered().title(format!(" {} ", p.name)));

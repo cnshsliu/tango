@@ -25,8 +25,15 @@ pub struct Serve {
 }
 
 impl Serve {
-    /// `resume` is injected as TANGO_RESUME so the child opens that session instead of a new one.
-    pub fn spawn(tx: Sender<Event>, epoch: u64, resume: Option<&str>) -> std::io::Result<Self> {
+    /// `resume` is injected as TANGO_RESUME so the child opens that session instead of a new one;
+    /// `mode` is set only on respawns (None on the first spawn keeps the launch environment).
+    pub fn spawn(
+        tx: Sender<Event>,
+        epoch: u64,
+        resume: Option<&str>,
+        mode: Option<&str>,
+        model: Option<&str>,
+    ) -> std::io::Result<Self> {
         // TANGO_BIN can hold args too, e.g. `node /path/to/bin/tango.js` for dev builds.
         let bin = std::env::var("TANGO_BIN").unwrap_or_else(|_| "tango".into());
         let mut parts = bin.split_whitespace();
@@ -40,6 +47,17 @@ impl Serve {
             .stderr(Stdio::piped());
         if let Some(id) = resume {
             cmd.env("TANGO_RESUME", id);
+        } else if mode.is_some() {
+            cmd.env_remove("TANGO_RESUME"); // respawn for /new: a fresh session
+        }
+        if let Some(m) = mode {
+            // respawns keep the live permission mode; the model pin is only carried into /new —
+            // a resumed session brings back its own model (or the saved default)
+            cmd.env("TANGO_MODE", m);
+            match model {
+                Some(id) => cmd.env("TANGO_MODEL", id),
+                None => cmd.env_remove("TANGO_MODEL"),
+            };
         }
         let mut child = cmd.spawn()?;
         let stdin = child.stdin.take().unwrap();
