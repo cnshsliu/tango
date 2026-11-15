@@ -1,8 +1,8 @@
 use crate::child::{Event, Serve};
+use crate::theme::{Theme, Tone};
 use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers, MouseEventKind};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
-use ratatui::style::Style;
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 use serde_json::{Value, json};
@@ -34,7 +34,7 @@ pub fn display_width(s: &str) -> usize {
 
 struct ChatLine {
     text: String,
-    style: Style,
+    tone: Tone,
     /// full tool output; revealed under the status line when verbose mode is on (ctrl+o)
     output: Option<String>,
 }
@@ -106,7 +106,10 @@ const SLASH: &[(&str, &str)] = &[
     ("/new", "开新会话"),
     ("/quit", "退出"),
     ("/resume", "切换到历史会话，打开列表"),
-    ("/skill [title]", "把本会话存成技能草稿 · /skill finish <file> 定稿"),
+    (
+        "/skill [title]",
+        "把本会话存成技能草稿 · /skill finish <file> 定稿",
+    ),
     ("/status", "会话信息"),
 ];
 
@@ -114,6 +117,7 @@ const SLASH: &[(&str, &str)] = &[
 const AT_FILE_CAP: usize = 6000;
 
 pub struct App {
+    theme: Theme,
     lines: Vec<ChatLine>,
     /// assistant text arriving right now; committed as chat lines by the `message` frame
     stream: String,
@@ -142,6 +146,7 @@ pub struct App {
 impl App {
     pub fn new() -> Self {
         Self {
+            theme: Theme::dark(),
             lines: Vec::new(),
             stream: String::new(),
             thinking: String::new(),
@@ -187,14 +192,22 @@ impl App {
         self.respawn = Some(target);
     }
 
-    fn push(&mut self, text: impl Into<String>, style: Style) {
+    fn push(&mut self, text: impl Into<String>, tone: Tone) {
         for line in text.into().split('\n') {
-            self.lines.push(ChatLine { text: line.to_string(), style, output: None });
+            self.lines.push(ChatLine {
+                text: line.to_string(),
+                tone,
+                output: None,
+            });
         }
     }
 
-    fn push_tool(&mut self, text: impl Into<String>, style: Style, output: Option<String>) {
-        self.lines.push(ChatLine { text: text.into(), style, output });
+    fn push_tool(&mut self, text: impl Into<String>, tone: Tone, output: Option<String>) {
+        self.lines.push(ChatLine {
+            text: text.into(),
+            tone,
+            output,
+        });
     }
 
     /// One-dimension summary of a tool call for its status line.
@@ -215,7 +228,7 @@ impl App {
     fn commit_stream(&mut self) {
         if !self.thinking.is_empty() {
             let t: String = self.thinking.chars().take(400).collect();
-            self.push(format!("✻ {t}"), Style::new().dark_gray().italic());
+            self.push(format!("✻ {t}"), Tone::Thinking);
             self.thinking.clear();
         }
         if self.stream.is_empty() {
@@ -233,7 +246,7 @@ impl App {
                 continue;
             }
             if in_fence {
-                self.push(format!("  {line}"), Style::new().dark_gray());
+                self.push(format!("  {line}"), Tone::Muted);
                 i += 1;
                 continue;
             }
@@ -249,12 +262,12 @@ impl App {
                 continue;
             }
             if line.starts_with('#') {
-                self.push(line.trim_start_matches('#').trim(), Style::new().bold());
+                self.push(line.trim_start_matches('#').trim(), Tone::Selected);
                 i += 1;
                 continue;
             }
             let t = line.replace("**", "").replace('`', "");
-            self.push(t, Style::new());
+            self.push(t, Tone::Text);
             i += 1;
         }
     }
@@ -266,19 +279,27 @@ impl App {
             .filter(|l| {
                 let core = l.trim_matches('|');
                 // drop blanks and rows that are nothing but ---/:-- separators (pipes included)
-                !core.is_empty() && !(core.contains('-') && core.chars().all(|c| matches!(c, '-' | ':' | '|' | ' ')))
+                !core.is_empty()
+                    && !(core.contains('-')
+                        && core.chars().all(|c| matches!(c, '-' | ':' | '|' | ' ')))
             })
             .map(|l| {
                 l.trim_matches('|')
                     .split('|')
-                    .map(|c| c.trim().replace("**", "").replace('`', "").trim().to_string())
+                    .map(|c| {
+                        c.trim()
+                            .replace("**", "")
+                            .replace('`', "")
+                            .trim()
+                            .to_string()
+                    })
                     .collect()
             })
             .collect();
         if rows.len() < 2 {
             // not a real table — keep the raw pipes as plain lines
             for l in run {
-                self.push(*l, Style::new());
+                self.push(*l, Tone::Text);
             }
             return;
         }
@@ -295,10 +316,13 @@ impl App {
                 out.push_str(cell);
                 out.push_str(&" ".repeat(width[c].saturating_sub(display_width(cell)) + 2));
             }
-            let style = if n == 0 { Style::new().bold() } else { Style::new() };
+            let style = if n == 0 { Tone::Selected } else { Tone::Text };
             self.push(out.trim_end(), style);
             if n == 0 {
-                self.push(format!(" {}", "─".repeat(width.iter().sum::<usize>() + 2 * cols)), Style::new().dark_gray());
+                self.push(
+                    format!(" {}", "─".repeat(width.iter().sum::<usize>() + 2 * cols)),
+                    Tone::Muted,
+                );
             }
         }
     }
@@ -308,8 +332,14 @@ impl App {
     /// whitespace-delimited token containing the cursor
     fn token_at_cursor(&self) -> (String, usize, usize) {
         let s: String = self.input.iter().collect();
-        let start = s[..self.cursor_byte()].rfind(char::is_whitespace).map(|i| i + 1).unwrap_or(0);
-        let rel_end = s[start..].find(char::is_whitespace).map(|i| start + i).unwrap_or(s.len());
+        let start = s[..self.cursor_byte()]
+            .rfind(char::is_whitespace)
+            .map(|i| i + 1)
+            .unwrap_or(0);
+        let rel_end = s[start..]
+            .find(char::is_whitespace)
+            .map(|i| start + i)
+            .unwrap_or(s.len());
         (s[start..rel_end].to_string(), start, rel_end)
     }
 
@@ -322,8 +352,11 @@ impl App {
         let text: String = self.input.iter().collect();
         // slash palette: input is the command word only, idle
         if !self.busy && text.starts_with('/') && !text.contains(' ') {
-            let items: Vec<(&str, &str)> =
-                SLASH.iter().copied().filter(|(c, _)| c.starts_with(text.as_str())).collect();
+            let items: Vec<(&str, &str)> = SLASH
+                .iter()
+                .copied()
+                .filter(|(c, _)| c.starts_with(text.as_str()))
+                .collect();
             if items.is_empty() || (items.len() == 1 && items[0].0 == text) {
                 self.popup = None;
             } else {
@@ -343,8 +376,12 @@ impl App {
             if items.is_empty() {
                 self.popup = None;
             } else {
-                self.popup =
-                    Some(Popup { items: items.clone(), descs: vec![String::new(); items.len()], sel: 0, kind: PopKind::File });
+                self.popup = Some(Popup {
+                    items: items.clone(),
+                    descs: vec![String::new(); items.len()],
+                    sel: 0,
+                    kind: PopKind::File,
+                });
             }
             return;
         }
@@ -357,7 +394,11 @@ impl App {
             Some(i) => (&body[..=i], &body[i + 1..]),
             None => ("", body),
         };
-        let base = if dir.is_empty() { Path::new(".").to_path_buf() } else { Path::new(dir).to_path_buf() };
+        let base = if dir.is_empty() {
+            Path::new(".").to_path_buf()
+        } else {
+            Path::new(dir).to_path_buf()
+        };
         let mut out: Vec<String> = Vec::new();
         if let Ok(rd) = fs::read_dir(base) {
             for e in rd.flatten() {
@@ -379,7 +420,9 @@ impl App {
     /// replace the current token (or the whole input for slash) with the selected item
     fn accept_popup(&mut self) {
         let Some(p) = &self.popup else { return };
-        let Some(item) = p.items.get(p.sel).cloned() else { return };
+        let Some(item) = p.items.get(p.sel).cloned() else {
+            return;
+        };
         match p.kind {
             PopKind::Slash => {
                 // never insert the "<id>"-style placeholder; commands with args get a trailing space
@@ -420,16 +463,22 @@ impl App {
         match head.as_str() {
             "/exit" | "/quit" | ":q" => self.quit = true,
             "/help" => {
-                self.push("commands:", Style::new().bold());
+                self.push("commands:", Tone::Selected);
                 for (c, d) in SLASH {
-                    self.push(format!("  {c:<14} {d}"), Style::new().dark_gray());
+                    self.push(format!("  {c:<14} {d}"), Tone::Muted);
                 }
-                self.push("  @path         inline a file or dir listing into the next prompt", Style::new().dark_gray());
-                self.push("  tab / ↑↓      complete · ctrl+o tool output · esc interrupt/clear", Style::new().dark_gray());
+                self.push(
+                    "  @path         inline a file or dir listing into the next prompt",
+                    Tone::Muted,
+                );
+                self.push(
+                    "  tab / ↑↓      complete · ctrl+o tool output · esc interrupt/clear",
+                    Tone::Muted,
+                );
             }
             "/clear" => self.lines.clear(),
             "/new" => {
-                self.push("↻ new session …", Style::new().dark_gray());
+                self.push("↻ new session …", Tone::Muted);
                 self.switch_session(None);
             }
             "/sessions" => self.run_slash("/resume", serve),
@@ -449,13 +498,14 @@ impl App {
                     let id = serve.command("models", vec![]);
                     self.pending.push((id, Pending::Models));
                 } else {
-                    let id = serve.command("set_model", vec![("modelId", Value::String(rest.into()))]);
+                    let id =
+                        serve.command("set_model", vec![("modelId", Value::String(rest.into()))]);
                     self.pending.push((id, Pending::Model));
                 }
             }
             "/mode" => {
                 if rest.is_empty() {
-                    self.push("usage: /mode ask|auto|readonly", Style::new().dark_gray());
+                    self.push("usage: /mode ask|auto|readonly", Tone::Muted);
                 } else {
                     let id = serve.command("set_mode", vec![("mode", Value::String(rest.into()))]);
                     self.pending.push((id, Pending::Mode));
@@ -474,7 +524,7 @@ impl App {
                 self.pending.push((id, Pending::Status));
             }
             other => {
-                self.push(format!("unknown command {other} · /help"), Style::new().red());
+                self.push(format!("unknown command {other} · /help"), Tone::Error);
             }
         }
     }
@@ -516,7 +566,11 @@ impl App {
             match fs::read_to_string(&path) {
                 Ok(body) => {
                     let clipped: String = body.chars().take(AT_FILE_CAP).collect();
-                    let tail = if body.chars().count() > AT_FILE_CAP { "\n…[truncated]" } else { "" };
+                    let tail = if body.chars().count() > AT_FILE_CAP {
+                        "\n…[truncated]"
+                    } else {
+                        ""
+                    };
                     out.push_str(&format!("{path}:\n{clipped}{tail}"));
                 }
                 Err(e) => warns.push(format!("@{path}: {e}")),
@@ -547,7 +601,11 @@ impl App {
             if SKIP.contains(&name.as_str()) {
                 continue;
             }
-            let line = if is_dir { format!("{name}/\n") } else { format!("{name}\n") };
+            let line = if is_dir {
+                format!("{name}/\n")
+            } else {
+                format!("{name}\n")
+            };
             out.push_str(&line);
             shown += 1;
             if shown >= 200 {
@@ -569,7 +627,7 @@ impl App {
                 }
                 return true;
             }
-            Event::Stderr(l) => self.push(format!("! {l}"), Style::new().dark_gray()),
+            Event::Stderr(l) => self.push(format!("! {l}"), Tone::Muted),
             Event::Resized(_, _) => {}
             Event::Paste(s) => {
                 if self.permission.is_none() && self.picker.is_none() {
@@ -605,7 +663,9 @@ impl App {
         // permission modal grabs the keyboard
         if self.permission.is_some() {
             match k.code {
-                KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => self.answer(serve, true),
+                KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+                    self.answer(serve, true)
+                }
                 KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => self.answer(serve, false),
                 // always: allow this one and stop asking for the rest of the session (REPL parity)
                 KeyCode::Char('a') | KeyCode::Char('A') => {
@@ -621,7 +681,7 @@ impl App {
         if ctrl && k.code == KeyCode::Char('c') {
             if self.busy {
                 serve.notify(json!({ "cmd": "interrupt" }));
-                self.push("[interrupt requested]", Style::new().dark_gray());
+                self.push("[interrupt requested]", Tone::Muted);
             } else if !self.input.is_empty() {
                 self.input.clear();
                 self.cursor = 0;
@@ -657,12 +717,15 @@ impl App {
                         match kind {
                             PickerKind::Model => {
                                 if item.warn {
-                                    self.push(format!("! {} has no api key configured", item.id), Style::new().dark_gray());
+                                    self.push(
+                                        format!("! {} has no api key configured", item.id),
+                                        Tone::Muted,
+                                    );
                                 }
                                 self.run_slash(&format!("/model {}", item.id), serve);
                             }
                             PickerKind::Session => {
-                                self.push(format!("↻ resuming session {} …", item.id), Style::new().dark_gray());
+                                self.push(format!("↻ resuming session {} …", item.id), Tone::Muted);
                                 self.switch_session(Some(item.id));
                             }
                         }
@@ -707,15 +770,24 @@ impl App {
                 self.cursor = 0;
             }
             KeyCode::Enter if !self.busy => self.send_prompt(serve),
-            KeyCode::Enter if self.input.iter().collect::<String>().trim_start().starts_with('/') => {
+            KeyCode::Enter
+                if self
+                    .input
+                    .iter()
+                    .collect::<String>()
+                    .trim_start()
+                    .starts_with('/') =>
+            {
                 let text: String = std::mem::take(&mut self.input).iter().collect();
                 self.cursor = 0;
                 self.run_slash(&text, serve); // commands stay live during a turn
             }
             KeyCode::Enter => {
-                self.push("[queued — ctrl+c interrupts]", Style::new().dark_gray());
+                self.push("[queued — ctrl+c interrupts]", Tone::Muted);
             }
-            KeyCode::Char('\n') | KeyCode::Char('\r') if k.modifiers.contains(KeyModifiers::ALT) => {
+            KeyCode::Char('\n') | KeyCode::Char('\r')
+                if k.modifiers.contains(KeyModifiers::ALT) =>
+            {
                 self.input.insert(self.cursor, '\n');
                 self.cursor += 1;
                 self.refresh_popup();
@@ -754,8 +826,13 @@ impl App {
         if let Some(p) = self.permission.take() {
             serve.notify(json!({ "cmd": "permission", "request": p.request, "allow": allow }));
             self.push(
-                format!("{} {} — {}", if allow { "✓ allowed" } else { "✗ denied" }, p.name, p.reason),
-                if allow { Style::new().dark_gray() } else { Style::new().red() },
+                format!(
+                    "{} {} — {}",
+                    if allow { "✓ allowed" } else { "✗ denied" },
+                    p.name,
+                    p.reason
+                ),
+                if allow { Tone::Muted } else { Tone::Error },
             );
         }
     }
@@ -774,9 +851,9 @@ impl App {
         }
         let (expanded, warns) = Self::expand_at(&text);
         for w in warns {
-            self.push(format!("! {w}"), Style::new().dark_gray());
+            self.push(format!("! {w}"), Tone::Muted);
         }
-        self.push(format!("❯ {}", text.replace('\n', " ⏎ ")), Style::new().cyan());
+        self.push(format!("❯ {}", text.replace('\n', " ⏎ ")), Tone::User);
         self.scroll_back = 0;
         self.busy = true;
         self.prompt_id = serve.command("prompt", vec![("text", Value::String(expanded))]);
@@ -786,14 +863,23 @@ impl App {
         let t = v.get("type").and_then(Value::as_str).unwrap_or("");
         match t {
             "hello" => {
+                self.theme = Theme::resolve(
+                    v["theme"].as_str(),
+                    std::env::var("COLORFGBG").ok().as_deref(),
+                );
                 self.model = v["model"].as_str().unwrap_or("?").into();
                 self.mode = v["mode"].as_str().unwrap_or("?").into();
-                self.session = v["sessionId"].as_str().unwrap_or("?").chars().take(8).collect();
+                self.session = v["sessionId"]
+                    .as_str()
+                    .unwrap_or("?")
+                    .chars()
+                    .take(8)
+                    .collect();
                 self.cost = v["totalCostUsd"].as_f64().unwrap_or(0.0);
                 let n = v["tools"].as_array().map_or(0, |a| a.len());
                 self.push(
                     format!("tango serve · session {} · {n} tools · /help · esc/ctrl+c interrupt · /exit quits", self.session),
-                    Style::new().dark_gray(),
+                    Tone::Muted,
                 );
             }
             "stream" => {
@@ -804,7 +890,7 @@ impl App {
                     Some("thinking") => self.thinking.push_str(d),
                     Some("tool_call_start") => self.push(
                         format!("⚙ {} …", ev["name"].as_str().unwrap_or("?")),
-                        Style::new().dark_gray(),
+                        Tone::Muted,
                     ),
                     _ => {}
                 }
@@ -815,7 +901,7 @@ impl App {
                 let summary = Self::call_summary(&v["call"]["input"]);
                 let ms = v["ms"].as_u64().unwrap_or(0);
                 let ok = !v["isError"].as_bool().unwrap_or(false);
-                let style = if ok { Style::new().dark_gray() } else { Style::new().red() };
+                let style = if ok { Tone::Muted } else { Tone::Error };
                 let full = v["output"].as_str().map(|s| {
                     let mut out = String::new();
                     for line in s.lines().take(200) {
@@ -832,7 +918,7 @@ impl App {
                 let name = v["call"]["name"].as_str().unwrap_or("?").to_string();
                 let detail = Self::call_summary(&v["call"]["input"]);
                 let reason = v["reason"].as_str().unwrap_or("").to_string();
-                self.push(format!("? {name}: {reason}"), Style::new().yellow());
+                self.push(format!("? {name}: {reason}"), Tone::Warning);
                 self.permission = Some(Permission {
                     request: v["request"].as_u64().unwrap_or(0),
                     name,
@@ -855,7 +941,7 @@ impl App {
                         // the same failure usually arrived a moment ago as an `error` frame
                         let msg = format!("error: {}", v["error"].as_str().unwrap_or("?"));
                         if self.lines.last().map(|l| l.text.as_str()) != Some(msg.as_str()) {
-                            self.push(msg, Style::new().red());
+                            self.push(msg, Tone::Error);
                         }
                     }
                     return;
@@ -875,7 +961,11 @@ impl App {
                                             let cw = m["contextWindow"].as_u64().unwrap_or(0);
                                             Some(PickItem {
                                                 warn: !m["keyed"].as_bool().unwrap_or(false),
-                                                note: if cw == 0 { String::new() } else { format!("{}k", cw / 1000) },
+                                                note: if cw == 0 {
+                                                    String::new()
+                                                } else {
+                                                    format!("{}k", cw / 1000)
+                                                },
                                                 current: id == cur,
                                                 label: id.clone(),
                                                 id,
@@ -885,7 +975,11 @@ impl App {
                                 })
                                 .unwrap_or_default();
                             let sel = items.iter().position(|i| i.current).unwrap_or(0);
-                            self.picker = Some(Picker { kind: PickerKind::Model, items, sel });
+                            self.picker = Some(Picker {
+                                kind: PickerKind::Model,
+                                items,
+                                sel,
+                            });
                         }
                         (Pending::Sessions, true) => {
                             let items: Vec<PickItem> = d["sessions"]
@@ -897,15 +991,27 @@ impl App {
                                             Some(PickItem {
                                                 note: {
                                                     let name = s["name"].as_str().unwrap_or("");
-                                                    if name.is_empty() { s["cwd"].as_str().unwrap_or("").to_string() } else { name.to_string() }
+                                                    if name.is_empty() {
+                                                        s["cwd"].as_str().unwrap_or("").to_string()
+                                                    } else {
+                                                        name.to_string()
+                                                    }
                                                 },
                                                 warn: false,
                                                 current: s["current"].as_bool().unwrap_or(false),
                                                 label: format!(
                                                     "{} · {} msgs · {}",
-                                                    s["id"].as_str().unwrap_or("").chars().take(8).collect::<String>(),
+                                                    s["id"]
+                                                        .as_str()
+                                                        .unwrap_or("")
+                                                        .chars()
+                                                        .take(8)
+                                                        .collect::<String>(),
                                                     s["messages"].as_u64().unwrap_or(0),
-                                                    s["createdAt"].as_str().unwrap_or("").replace('T', " ")
+                                                    s["createdAt"]
+                                                        .as_str()
+                                                        .unwrap_or("")
+                                                        .replace('T', " ")
                                                 ),
                                                 id,
                                             })
@@ -914,22 +1020,29 @@ impl App {
                                 })
                                 .unwrap_or_default();
                             if items.is_empty() {
-                                self.push("no sessions yet", Style::new().dark_gray());
+                                self.push("no sessions yet", Tone::Muted);
                             } else {
                                 let sel = items.iter().position(|i| i.current).unwrap_or(0);
-                                self.picker = Some(Picker { kind: PickerKind::Session, items, sel });
+                                self.picker = Some(Picker {
+                                    kind: PickerKind::Session,
+                                    items,
+                                    sel,
+                                });
                             }
                         }
                         (Pending::Model, true) => {
                             self.model = d["model"].as_str().unwrap_or("?").into();
-                            self.push(format!("model → {} (saved as default)", self.model), Style::new().dark_gray());
+                            self.push(
+                                format!("model → {} (saved as default)", self.model),
+                                Tone::Muted,
+                            );
                             if let Some(w) = d["warning"].as_str() {
-                                self.push(format!("! {w}"), Style::new().yellow());
+                                self.push(format!("! {w}"), Tone::Warning);
                             }
                         }
                         (Pending::Mode, true) => {
                             self.mode = d["mode"].as_str().unwrap_or("?").into();
-                            self.push(format!("mode → {}", self.mode), Style::new().dark_gray());
+                            self.push(format!("mode → {}", self.mode), Tone::Muted);
                         }
                         (Pending::Compact, true) => self.push(
                             format!(
@@ -937,7 +1050,7 @@ impl App {
                                 d["compacted"].as_bool().unwrap_or(false),
                                 d["contextMessages"].as_u64().unwrap_or(0)
                             ),
-                            Style::new().dark_gray(),
+                            Tone::Muted,
                         ),
                         (Pending::Status, true) => {
                             self.push(
@@ -950,31 +1063,37 @@ impl App {
                                     d["totalCostUsd"].as_f64().unwrap_or(0.0),
                                     d["cwd"].as_str().unwrap_or("?"),
                                 ),
-                                Style::new().dark_gray(),
+                                Tone::Muted,
                             );
                         }
                         (Pending::Skill, true) => {
                             if let Some(f) = d["draft"].as_str() {
-                                self.push(format!("draft → {f}"), Style::new().dark_gray());
+                                self.push(format!("draft → {f}"), Tone::Muted);
                                 self.push(
                                     "edit its description + steps, then: /skill finish <file>",
-                                    Style::new().dark_gray(),
+                                    Tone::Muted,
                                 );
                             } else if let Some(f) = d["skill"].as_str() {
-                                self.push(format!("skill → {f}"), Style::new().green());
+                                self.push(format!("skill → {f}"), Tone::Success);
                             } else if let Some(list) = d["drafts"].as_array() {
-                                self.push("usage: /skill finish <draft file>", Style::new().dark_gray());
+                                self.push("usage: /skill finish <draft file>", Tone::Muted);
                                 for f in list.iter().filter_map(|x| x.as_str()) {
-                                    self.push(format!("  {f}"), Style::new().dark_gray());
+                                    self.push(format!("  {f}"), Tone::Muted);
                                 }
                             }
                         }
                         (Pending::History, true) => self.load_history(d),
-                        (_, false) => self.push(format!("error: {}", v["error"].as_str().unwrap_or("?")), Style::new().red()),
+                        (_, false) => self.push(
+                            format!("error: {}", v["error"].as_str().unwrap_or("?")),
+                            Tone::Error,
+                        ),
                     }
                 }
             }
-            "error" => self.push(format!("error: {}", v["message"].as_str().unwrap_or("?")), Style::new().red()),
+            "error" => self.push(
+                format!("error: {}", v["message"].as_str().unwrap_or("?")),
+                Tone::Error,
+            ),
             _ => {}
         }
     }
@@ -992,12 +1111,15 @@ impl App {
             _ => None,
         };
         if total > items.len() {
-            self.push(format!("… {} earlier items not shown", total - items.len()), Style::new().dark_gray());
+            self.push(
+                format!("… {} earlier items not shown", total - items.len()),
+                Tone::Muted,
+            );
         }
         for it in items {
             let text = it["text"].as_str().unwrap_or("");
             match it["kind"].as_str() {
-                Some("user") => self.push(format!("❯ {}", text.replace('\n', " ⏎ ")), Style::new().cyan()),
+                Some("user") => self.push(format!("❯ {}", text.replace('\n', " ⏎ ")), Tone::User),
                 Some("assistant") => {
                     self.stream = text.to_string();
                     self.commit_stream();
@@ -1005,14 +1127,20 @@ impl App {
                 Some("tool") => {
                     let name = it["name"].as_str().unwrap_or("?");
                     let ok = !it["isError"].as_bool().unwrap_or(false);
-                    let style = if ok { Style::new().dark_gray() } else { Style::new().red() };
-                    let out = it["output"].as_str().map(|s| s.lines().take(200).collect::<Vec<_>>().join("\n"));
-                    self.push_tool(format!("⚙ {name} {}", Self::call_summary(&it["input"])), style, out);
+                    let style = if ok { Tone::Muted } else { Tone::Error };
+                    let out = it["output"]
+                        .as_str()
+                        .map(|s| s.lines().take(200).collect::<Vec<_>>().join("\n"));
+                    self.push_tool(
+                        format!("⚙ {name} {}", Self::call_summary(&it["input"])),
+                        style,
+                        out,
+                    );
                 }
                 _ => {}
             }
         }
-        self.push("── resumed ──", Style::new().dark_gray());
+        self.push("── resumed ──", Tone::Muted);
         let restored = std::mem::take(&mut self.lines);
         lines.extend(restored);
         lines.extend(hello);
@@ -1024,7 +1152,11 @@ impl App {
     fn input_height(&self, width: u16) -> u16 {
         let text: String = self.input.iter().collect();
         let w = width.max(1) as usize;
-        let h: usize = text.split('\n').map(|l| display_width(l).div_ceil(w).max(1)).sum::<usize>().max(1);
+        let h: usize = text
+            .split('\n')
+            .map(|l| display_width(l).div_ceil(w).max(1))
+            .sum::<usize>()
+            .max(1);
         (h.min(8)) as u16 + 1 // +1 for the rule above the input
     }
 
@@ -1036,12 +1168,20 @@ impl App {
     fn chat_lines(&self) -> Vec<ChatLine> {
         let mut out = Vec::with_capacity(self.lines.len());
         for l in &self.lines {
-            out.push(ChatLine { text: l.text.clone(), style: l.style, output: None });
+            out.push(ChatLine {
+                text: l.text.clone(),
+                tone: l.tone,
+                output: None,
+            });
             if self.verbose_tools
                 && let Some(o) = &l.output
             {
                 for cl in o.lines().take(200) {
-                    out.push(ChatLine { text: format!("  │ {cl}"), style: Style::new().dark_gray(), output: None });
+                    out.push(ChatLine {
+                        text: format!("  │ {cl}"),
+                        tone: Tone::Muted,
+                        output: None,
+                    });
                 }
             }
         }
@@ -1050,7 +1190,10 @@ impl App {
 
     fn visual_lines(lines: &[ChatLine], width: usize) -> usize {
         let w = width.max(1);
-        lines.iter().map(|l| display_width(&l.text).div_ceil(w).max(1)).sum()
+        lines
+            .iter()
+            .map(|l| display_width(&l.text).div_ceil(w).max(1))
+            .sum()
     }
 
     pub fn draw(&mut self, f: &mut Frame) {
@@ -1067,14 +1210,30 @@ impl App {
         // status bar
         let work = if self.busy { "● working" } else { "idle" };
         let mut spans = vec![
-            Span::styled(format!(" {} ", self.model), Style::new().black().on_white()),
-            Span::styled(format!(" {} ", self.mode), Style::new().dark_gray()),
-            Span::styled(format!(" ${:.4} ", self.cost), Style::new().yellow()),
-            Span::styled(format!(" {work} "), if self.busy { Style::new().green() } else { Style::new().dark_gray() }),
-            Span::styled(format!(" sess {} ", self.session), Style::new().dark_gray()),
+            Span::styled(format!(" {} ", self.model), self.theme.style(Tone::Badge)),
+            Span::styled(format!(" {} ", self.mode), self.theme.style(Tone::Muted)),
+            Span::styled(
+                format!(" ${:.4} ", self.cost),
+                self.theme.style(Tone::Warning),
+            ),
+            Span::styled(
+                format!(" {work} "),
+                if self.busy {
+                    self.theme.style(Tone::Success)
+                } else {
+                    self.theme.style(Tone::Muted)
+                },
+            ),
+            Span::styled(
+                format!(" sess {} ", self.session),
+                self.theme.style(Tone::Muted),
+            ),
         ];
         if self.verbose_tools {
-            spans.push(Span::styled(" tools▾ ", Style::new().black().on_yellow()));
+            spans.push(Span::styled(
+                " tools▾ ",
+                self.theme.style(Tone::ActiveBadge),
+            ));
         }
         f.render_widget(Paragraph::new(Line::from(spans)), status_a);
 
@@ -1082,11 +1241,15 @@ impl App {
         let shown: Vec<Line> = self
             .chat_lines()
             .into_iter()
-            .map(|l| Line::from(Span::styled(l.text, l.style)))
+            .map(|l| Line::from(Span::styled(l.text, self.theme.style(l.tone))))
             .collect();
         let inner_w = chat_a.width as usize;
         let total = Self::visual_lines(&self.chat_lines(), inner_w)
-            + if self.stream.is_empty() { 0 } else { display_width(&self.stream).div_ceil(inner_w.max(1)) };
+            + if self.stream.is_empty() {
+                0
+            } else {
+                display_width(&self.stream).div_ceil(inner_w.max(1))
+            };
         let offset = total.saturating_sub(chat_h.saturating_sub(self.scroll_back).max(1));
         // live assistant text (not committed yet) hangs off the last line, markdown stripped
         let mut shown = shown;
@@ -1095,7 +1258,9 @@ impl App {
             shown.push(Line::from(Span::raw(preview)));
         }
         f.render_widget(
-            Paragraph::new(Text::from(shown)).wrap(Wrap { trim: false }).scroll((offset as u16, 0)),
+            Paragraph::new(Text::from(shown))
+                .wrap(Wrap { trim: false })
+                .scroll((offset as u16, 0)),
             chat_a,
         );
 
@@ -1114,7 +1279,11 @@ impl App {
                 .iter()
                 .enumerate()
                 .map(|(i, item)| {
-                    let style = if i == p.sel { Style::new().black().on_white() } else { Style::new().dark_gray() };
+                    let style = if i == p.sel {
+                        self.theme.style(Tone::Badge)
+                    } else {
+                        self.theme.style(Tone::Muted)
+                    };
                     let desc = p.descs.get(i).cloned().unwrap_or_default();
                     Line::from(Span::styled(format!(" {item:<24}{desc}"), style))
                 })
@@ -1124,13 +1293,23 @@ impl App {
 
         // input
         f.render_widget(
-            Paragraph::new("─".repeat(area.width as usize)).style(Style::new().dark_gray()),
-            Rect { x: 0, y: input_a.y, width: area.width, height: 1 },
+            Paragraph::new("─".repeat(area.width as usize)).style(self.theme.style(Tone::Muted)),
+            Rect {
+                x: 0,
+                y: input_a.y,
+                width: area.width,
+                height: 1,
+            },
         );
         let input_text: String = self.input.iter().collect();
         f.render_widget(
             Paragraph::new(input_text.clone()).wrap(Wrap { trim: false }),
-            Rect { x: 0, y: input_a.y + 1, width: area.width, height: input_a.height.saturating_sub(1) },
+            Rect {
+                x: 0,
+                y: input_a.y + 1,
+                width: area.width,
+                height: input_a.height.saturating_sub(1),
+            },
         );
         // cursor: walk to the cursor char's wrapped position
         let w = area.width.max(1) as usize;
@@ -1145,7 +1324,10 @@ impl App {
         let cw = display_width(&cur_line);
         let row = rows + cw / w;
         let col = cw % w;
-        f.set_cursor_position(Position::new(input_a.x + col as u16, input_a.y + 1 + row as u16));
+        f.set_cursor_position(Position::new(
+            input_a.x + col as u16,
+            input_a.y + 1 + row as u16,
+        ));
 
         // model/session picker overlay
         if let Some(p) = &self.picker {
@@ -1174,21 +1356,28 @@ impl App {
                         if i == p.sel { "▸" } else { " " }
                     );
                     let style = if it.warn {
-                        Style::new().dark_gray()
+                        self.theme.style(Tone::Muted)
                     } else if i == p.sel {
-                        Style::new().bold()
+                        self.theme.style(Tone::Selected)
                     } else {
-                        Style::new()
+                        self.theme.style(Tone::Text)
                     };
                     let pad = label_w.saturating_sub(display_width(&it.label));
-                    let note: String = it.note.chars().take((w as usize).saturating_sub(label_w + 10)).collect();
-                    Line::from(Span::styled(format!(" {marks} {}{} {}", it.label, " ".repeat(pad), note), style))
+                    let note: String = it
+                        .note
+                        .chars()
+                        .take((w as usize).saturating_sub(label_w + 10))
+                        .collect();
+                    Line::from(Span::styled(
+                        format!(" {marks} {}{} {}", it.label, " ".repeat(pad), note),
+                        style,
+                    ))
                 })
                 .collect();
             if p.items.len() > 14 {
                 rows.push(Line::from(Span::styled(
                     format!("   {}–{} / {}", start + 1, start + win.len(), p.items.len()),
-                    Style::new().dark_gray(),
+                    self.theme.style(Tone::Muted),
                 )));
             }
             rows.push(Line::from(""));
@@ -1196,12 +1385,18 @@ impl App {
                 PickerKind::Model => " ↑↓ 选择 · enter 切换 · esc 取消 · ⚠=缺 key · ✓=当前",
                 PickerKind::Session => " ↑↓ 选择 · enter 恢复会话(重启 serve) · esc 取消 · ✓=当前",
             };
-            rows.push(Line::from(Span::styled(hint, Style::new().dark_gray())));
+            rows.push(Line::from(Span::styled(
+                hint,
+                self.theme.style(Tone::Muted),
+            )));
             let title = match p.kind {
                 PickerKind::Model => " 选择模型 ",
                 PickerKind::Session => " 选择会话 ",
             };
-            f.render_widget(Paragraph::new(rows).block(Block::bordered().title(title)), pop);
+            f.render_widget(
+                Paragraph::new(rows).block(Block::bordered().title(title)),
+                pop,
+            );
         }
 
         // permission modal
@@ -1216,11 +1411,17 @@ impl App {
             };
             f.render_widget(Clear, popup);
             let body = Paragraph::new(vec![
-                Line::from(Span::styled(p.reason.clone(), Style::new().yellow())),
+                Line::from(Span::styled(
+                    p.reason.clone(),
+                    self.theme.style(Tone::Warning),
+                )),
                 Line::from(""),
                 Line::from(Span::raw(p.detail.chars().take(240).collect::<String>())),
                 Line::from(""),
-                Line::from(Span::styled("y allow · n deny · a always (mode → auto)", Style::new().bold())),
+                Line::from(Span::styled(
+                    "y allow · n deny · a always (mode → auto)",
+                    self.theme.style(Tone::Selected),
+                )),
             ])
             .wrap(Wrap { trim: true })
             .block(Block::bordered().title(format!(" {} ", p.name)));
@@ -1242,6 +1443,29 @@ fn cursor_step(input: &[char], cursor: usize, left: bool) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retained_chat_lines_use_semantic_tones() {
+        let mut app = App::new();
+        app.push("old", Tone::Muted);
+        app.theme = Theme::light();
+        let lines = app.chat_lines();
+        assert_eq!(lines[0].tone, Tone::Muted);
+        assert_eq!(
+            app.theme.style(lines[0].tone),
+            Theme::light().style(Tone::Muted)
+        );
+    }
+
+    #[test]
+    fn hello_resolves_theme() {
+        let mut app = App::new();
+        app.frame(json!({
+            "type": "hello", "sessionId": "12345678", "model": "mock/mock",
+            "mode": "ask", "theme": "light", "tools": []
+        }));
+        assert!(app.theme.light);
+    }
 
     #[test]
     fn hello_restores_session_cost() {

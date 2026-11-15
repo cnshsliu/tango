@@ -4,6 +4,7 @@ use ratatui::style::{Color, Modifier, Style};
 pub enum Tone {
     Text,
     Muted,
+    Thinking,
     User,
     Success,
     Warning,
@@ -45,6 +46,9 @@ impl Theme {
     pub fn style(self, tone: Tone) -> Style {
         match (self.light, tone) {
             (_, Tone::Muted) => Style::new().fg(Color::DarkGray),
+            (_, Tone::Thinking) => Style::new()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::ITALIC),
             (false, Tone::User) => Style::new().fg(Color::Cyan),
             (true, Tone::User) => Style::new().fg(Color::Blue),
             (_, Tone::Success) => Style::new().fg(Color::Green),
