@@ -82,3 +82,37 @@ test('anthropic usage.input includes cache reads and writes', async () => {
     server.close();
   }
 });
+
+test('postJson retries a gateway 502 once, then reports upstream failure', async () => {
+  const { postJson } = await import('../src/core/models/util.js');
+  let hits = 0;
+  let failTimes = 1;
+  const server = createServer((req, res) => {
+    req.resume();
+    req.on('end', () => {
+      hits++;
+      if (hits <= failTimes) {
+        res.writeHead(502, { 'content-type': 'application/json' });
+        res.end('{"error":{"message":"Stream failed"}}');
+      } else {
+        res.writeHead(200, { 'content-type': 'text/plain' });
+        res.end('ok');
+      }
+    });
+  });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
+  const spec = { id: 'mock/mock', apiKey: 'X' } as unknown as ModelSpec;
+  try {
+    const res = await postJson(spec, url, {}, {});
+    assert.equal(res.status, 200);
+    assert.equal(hits, 2);
+
+    hits = 0;
+    failTimes = 5;
+    await assert.rejects(postJson(spec, url, {}, {}), /HTTP 502[\s\S]*retried once/);
+    assert.equal(hits, 2);
+  } finally {
+    server.close();
+  }
+});

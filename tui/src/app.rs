@@ -570,6 +570,16 @@ impl App {
             }
             Event::Stderr(l) => self.push(format!("! {l}"), Style::new().dark_gray()),
             Event::Resized(_, _) => {}
+            Event::Paste(s) => {
+                if self.permission.is_none() && self.picker.is_none() {
+                    let s = s.replace("\r\n", "\n").replace('\r', "\n");
+                    for c in s.chars() {
+                        self.input.insert(self.cursor, c);
+                        self.cursor += 1;
+                    }
+                    self.refresh_popup();
+                }
+            }
             Event::Mouse(m) => match m.kind {
                 MouseEventKind::ScrollUp => self.scroll_back += 3,
                 MouseEventKind::ScrollDown => self.scroll_back = self.scroll_back.saturating_sub(3),

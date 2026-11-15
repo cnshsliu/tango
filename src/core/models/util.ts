@@ -36,16 +36,25 @@ export async function postJson(
   signal?: AbortSignal
 ): Promise<Response> {
   let res: Response;
-  try {
-    res = await fetch(url, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', ...headers },
-      body: JSON.stringify(body),
-      signal
-    });
-  } catch (e: any) {
-    if (e?.name === 'AbortError') throw e;
-    throw new Error(`${spec.id}: cannot reach ${new URL(url).host}: ${describeNetError(e)}`);
+  for (let attempt = 0; ; attempt++) {
+    try {
+      res = await fetch(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...headers },
+        body: JSON.stringify(body),
+        signal
+      });
+    } catch (e: any) {
+      if (e?.name === 'AbortError') throw e;
+      throw new Error(`${spec.id}: cannot reach ${new URL(url).host}: ${describeNetError(e)}`);
+    }
+    // gateways answer 502/503/504 for transient upstream hiccups: one quiet retry before giving up
+    if (attempt === 0 && (res.status === 502 || res.status === 503 || res.status === 504) && !signal?.aborted) {
+      await res.body?.cancel().catch(() => {});
+      await new Promise((r) => setTimeout(r, 800));
+      continue;
+    }
+    break;
   }
   if (!res.ok || !res.body) {
     const text = (await res.text().catch(() => '')).slice(0, 2000);
@@ -54,7 +63,9 @@ export async function postJson(
       res.status === 401 || res.status === 403
         ? `\n${new URL(url).host} rejected the key ${env ? `from ${env}` : 'set in apiKey'}. ` +
           'China and international accounts use different keys; check the key matches this endpoint.'
-        : '';
+        : res.status >= 500
+          ? `\nthe provider failed upstream${[502, 503, 504].includes(res.status) ? ' (retried once)' : ''}. Try again later, or switch with /model.`
+          : '';
     throw new Error(`${spec.id}: HTTP ${res.status} ${text}`.trim() + hint);
   }
   return res;

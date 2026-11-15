@@ -19,7 +19,13 @@ use std::time::Duration;
 fn main() -> Result<(), Box<dyn Error>> {
     enable_raw_mode()?;
     let mut stdout = std::io::stdout();
-    execute!(stdout, EnterAlternateScreen, crossterm::cursor::Hide, crossterm::event::EnableMouseCapture)?;
+    execute!(
+        stdout,
+        EnterAlternateScreen,
+        crossterm::cursor::Hide,
+        crossterm::event::EnableMouseCapture,
+        crossterm::event::EnableBracketedPaste
+    )?;
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
 
     let result = run(&mut terminal);
@@ -27,6 +33,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     disable_raw_mode()?;
     execute!(
         terminal.backend_mut(),
+        crossterm::event::DisableBracketedPaste,
         crossterm::event::DisableMouseCapture,
         crossterm::cursor::Show,
         LeaveAlternateScreen
@@ -62,6 +69,11 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<(), Box<dyn 
                     }
                     Ok(CEvent::Resize(w, h)) => {
                         if tx.send(Event::Resized(w, h)).is_err() {
+                            return;
+                        }
+                    }
+                    Ok(CEvent::Paste(s)) => {
+                        if tx.send(Event::Paste(s)).is_err() {
                             return;
                         }
                     }

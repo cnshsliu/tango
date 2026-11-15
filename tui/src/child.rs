@@ -13,6 +13,8 @@ pub enum Event {
     Key(crossterm::event::KeyEvent),
     Mouse(crossterm::event::MouseEvent),
     Resized(u16, u16),
+    /// bracketed paste: the whole clipboard as one event, newlines kept, never "Enter"
+    Paste(String),
     Gone(u64), // the serve child of this epocheration exited
 }
 
