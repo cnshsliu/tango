@@ -116,9 +116,11 @@ and later web/IDE shells — plug into; the core never knows which face is attac
 `tui/target/release/tango-tui`. It spawns `tango serve` and speaks the protocol above — fullscreen
 alternate screen, mouse wheel scrolling, streaming answers, thinking lines, tool status lines with
 durations, a centered permission modal (y/n), a status bar (model · mode · cost · session) and a
-multi-line input. Keys follow one rule: nothing but `/exit` (or `/quit`) can leave the session.
+multi-line input with Tab-completed `/` commands and `@file` inlining (contents ride along in the
+prompt, 6KB cap), fences render as indented gray blocks, and Ctrl+O toggles full tool output
+under each tool line. Keys follow one rule: nothing but `/exit` (or `/quit`) can leave the session.
 Ctrl+C interrupts a running turn and clears the input when idle — press it as often as you like;
-Esc does the same (OpenCode-style). `TANGO_BIN`
+Esc closes popups, else does the same (OpenCode-style). `TANGO_BIN`
 overrides the server binary (e.g. `TANGO_BIN="node bin/tango.js"` for dev builds).
 
 ## Permissions
