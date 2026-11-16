@@ -1,7 +1,8 @@
 use crate::child::{Event, Serve};
 use crate::keys::{Action, Keymap};
 use crate::theme::{Theme, Tone};
-use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers, MouseEventKind};
+use crate::viewer::Viewer;
+use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::text::{Line, Span, Text};
@@ -36,7 +37,7 @@ pub fn display_width(s: &str) -> usize {
 struct ChatLine {
     text: String,
     tone: Tone,
-    /// full tool output; revealed under the status line when verbose mode is on (ctrl+o)
+    /// full tool output or collapsed user prompt; shown in the independent viewer
     output: Option<String>,
 }
 
@@ -136,9 +137,10 @@ pub struct App {
     pub cursor: usize,
     popup: Option<Popup>,
     picker: Option<Picker>,
+    viewer: Option<Viewer>,
+    chat_area: Rect,
     /// 0 = pinned to the newest line (follow mode); increases when scrolling back
     scroll_back: usize,
-    verbose_tools: bool,
     busy: bool,
     prompt_id: u64,
     pending: Vec<(u64, Pending)>,
@@ -167,8 +169,9 @@ impl App {
             cursor: 0,
             popup: None,
             picker: None,
+            viewer: None,
+            chat_area: Rect::default(),
             scroll_back: 0,
-            verbose_tools: false,
             busy: false,
             prompt_id: 0,
             pending: Vec::new(),
@@ -199,6 +202,7 @@ impl App {
         self.thinking.clear();
         self.pending.clear();
         self.permission = None;
+        self.viewer = None;
         self.busy = false;
         self.cost = 0.0;
         self.scroll_back = 0;
@@ -221,6 +225,60 @@ impl App {
             tone,
             output,
         });
+    }
+
+    fn push_user(&mut self, text: &str) {
+        let chars = text.chars().count();
+        let line_count = text.lines().count();
+        if chars > 600 || line_count > 8 {
+            let preview = text.lines().take(2).collect::<Vec<_>>().join(" ⏎ ");
+            let preview = preview.chars().take(160).collect::<String>();
+            self.push_tool(
+                format!("❯ [粘贴 {chars} 字 · {line_count} 行 · ctrl+o/点击展开]\n  {preview} …"),
+                Tone::User,
+                Some(text.to_string()),
+            );
+        } else {
+            self.push(format!("❯ {}", text.replace('\n', " ⏎ ")), Tone::User);
+        }
+    }
+
+    fn open_latest_viewer(&mut self) {
+        let found = self.lines.iter().rev().find_map(|line| {
+            line.output.as_ref().map(|output| {
+                let title = line
+                    .text
+                    .lines()
+                    .next()
+                    .unwrap_or("content")
+                    .chars()
+                    .take(64)
+                    .collect::<String>();
+                (title, output.clone())
+            })
+        });
+        if let Some((title, text)) = found {
+            self.viewer = Some(Viewer::new(title, text));
+        }
+    }
+
+    fn open_line_viewer(&mut self, index: usize) {
+        let found = self.lines.get(index).and_then(|line| {
+            line.output.as_ref().map(|output| {
+                let title = line
+                    .text
+                    .lines()
+                    .next()
+                    .unwrap_or("content")
+                    .chars()
+                    .take(64)
+                    .collect::<String>();
+                (title, output.clone())
+            })
+        });
+        if let Some((title, text)) = found {
+            self.viewer = Some(Viewer::new(title, text));
+        }
     }
 
     /// One-dimension summary of a tool call for its status line.
@@ -645,6 +703,7 @@ impl App {
             Event::Paste(s) => {
                 if self.permission.is_none()
                     && self.picker.is_none()
+                    && self.viewer.is_none()
                     && (!self.vim || self.edit_mode == EditMode::Insert)
                 {
                     let s = s.replace("\r\n", "\n").replace('\r', "\n");
@@ -655,11 +714,35 @@ impl App {
                     self.refresh_popup();
                 }
             }
-            Event::Mouse(m) => match m.kind {
-                MouseEventKind::ScrollUp => self.scroll_back += 3,
-                MouseEventKind::ScrollDown => self.scroll_back = self.scroll_back.saturating_sub(3),
-                _ => {}
-            },
+            Event::Mouse(m) => {
+                if let Some(viewer) = self.viewer.as_mut() {
+                    match m.kind {
+                        MouseEventKind::ScrollUp => viewer.scroll_by(-3, viewer.max_scroll),
+                        MouseEventKind::ScrollDown => viewer.scroll_by(3, viewer.max_scroll),
+                        _ => {}
+                    }
+                } else {
+                    match m.kind {
+                        MouseEventKind::ScrollUp => self.scroll_back += 3,
+                        MouseEventKind::ScrollDown => {
+                            self.scroll_back = self.scroll_back.saturating_sub(3)
+                        }
+                        MouseEventKind::Down(MouseButton::Left)
+                            if self.chat_area.contains(Position::new(m.column, m.row)) =>
+                        {
+                            let row = m.row.saturating_sub(self.chat_area.y);
+                            if let Some(index) = self.line_at_visual_row(
+                                self.chat_area.width as usize,
+                                self.chat_area.height as usize,
+                                row as usize,
+                            ) {
+                                self.open_line_viewer(index);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
             Event::Key(k) if k.kind == KeyEventKind::Release => {}
             Event::Key(k) => self.key(k, serve),
             Event::Server(_, v) => {
@@ -711,6 +794,23 @@ impl App {
 
     fn key(&mut self, k: crossterm::event::KeyEvent, serve: &mut Serve) {
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+        if self.viewer.is_some() {
+            if k.code == KeyCode::Esc || self.keys.matches(Action::ExpandTools, k) {
+                self.viewer = None;
+                return;
+            }
+            let viewer = self.viewer.as_mut().unwrap();
+            match k.code {
+                KeyCode::Up | KeyCode::Char('k') => viewer.scroll_by(-1, viewer.max_scroll),
+                KeyCode::Down | KeyCode::Char('j') => viewer.scroll_by(1, viewer.max_scroll),
+                KeyCode::PageUp => viewer.scroll_by(-10, viewer.max_scroll),
+                KeyCode::PageDown => viewer.scroll_by(10, viewer.max_scroll),
+                KeyCode::Home => viewer.home(),
+                KeyCode::End => viewer.end(viewer.max_scroll),
+                _ => {}
+            }
+            return;
+        }
         // permission modal grabs the keyboard
         if self.permission.is_some() {
             match k.code {
@@ -728,7 +828,7 @@ impl App {
             return;
         }
         if self.keys.matches(Action::ExpandTools, k) {
-            self.verbose_tools = !self.verbose_tools;
+            self.open_latest_viewer();
             return;
         }
         // Ctrl+C always remains a safe interrupt even when the action is remapped.
@@ -916,7 +1016,7 @@ impl App {
         for w in warns {
             self.push(format!("! {w}"), Tone::Muted);
         }
-        self.push(format!("❯ {}", text.replace('\n', " ⏎ ")), Tone::User);
+        self.push_user(&text);
         self.scroll_back = 0;
         self.busy = true;
         self.prompt_id = serve.command("prompt", vec![("text", Value::String(expanded))]);
@@ -1185,7 +1285,7 @@ impl App {
         for it in items {
             let text = it["text"].as_str().unwrap_or("");
             match it["kind"].as_str() {
-                Some("user") => self.push(format!("❯ {}", text.replace('\n', " ⏎ ")), Tone::User),
+                Some("user") => self.push_user(text),
                 Some("assistant") => {
                     self.stream = text.to_string();
                     self.commit_stream();
@@ -1230,36 +1330,40 @@ impl App {
         (area.height.saturating_sub(1 + input_h)) as usize
     }
 
-    /// the chat exactly as drawn, tool outputs expanded or not — scroll math uses this
+    /// the chat exactly as drawn — scroll math and mouse hit testing use the same lines
     fn chat_lines(&self) -> Vec<ChatLine> {
-        let mut out = Vec::with_capacity(self.lines.len());
-        for l in &self.lines {
-            out.push(ChatLine {
+        self.lines
+            .iter()
+            .map(|l| ChatLine {
                 text: l.text.clone(),
                 tone: l.tone,
                 output: None,
-            });
-            if self.verbose_tools
-                && let Some(o) = &l.output
-            {
-                for cl in o.lines().take(200) {
-                    out.push(ChatLine {
-                        text: format!("  │ {cl}"),
-                        tone: Tone::Muted,
-                        output: None,
-                    });
-                }
-            }
-        }
-        out
+            })
+            .collect()
     }
 
     fn visual_lines(lines: &[ChatLine], width: usize) -> usize {
         let w = width.max(1);
         lines
             .iter()
-            .map(|l| display_width(&l.text).div_ceil(w).max(1))
+            .flat_map(|l| l.text.split('\n'))
+            .map(|line| display_width(line).div_ceil(w).max(1))
             .sum()
+    }
+
+    fn line_at_visual_row(&self, width: usize, chat_height: usize, row: usize) -> Option<usize> {
+        let total = Self::visual_lines(&self.lines, width);
+        let offset = total.saturating_sub(chat_height.saturating_sub(self.scroll_back).max(1));
+        let target = offset + row;
+        let mut top = 0;
+        for (index, line) in self.lines.iter().enumerate() {
+            let height = Self::visual_lines(std::slice::from_ref(line), width);
+            if target >= top && target < top + height {
+                return line.output.is_some().then_some(index);
+            }
+            top += height;
+        }
+        None
     }
 
     pub fn draw(&mut self, f: &mut Frame) {
@@ -1272,6 +1376,8 @@ impl App {
             Constraint::Length(input_h),
         ])
         .areas(area);
+
+        self.chat_area = chat_a;
 
         // status bar
         let work = if self.busy { "● working" } else { "idle" };
@@ -1303,12 +1409,7 @@ impl App {
             };
             spans.push(Span::styled(mode, self.theme.style(Tone::Muted)));
         }
-        if self.verbose_tools {
-            spans.push(Span::styled(
-                " tools▾ ",
-                self.theme.style(Tone::ActiveBadge),
-            ));
-        }
+
         f.render_widget(Paragraph::new(Line::from(spans)), status_a);
 
         // chat with bottom-anchored scrolling (scroll_back=0 follows the newest line)
@@ -1501,6 +1602,35 @@ impl App {
             .block(Block::bordered().title(format!(" {} ", p.name)));
             f.render_widget(body, popup);
         }
+
+        if let Some(viewer) = self.viewer.as_mut() {
+            let w = (area.width * 9 / 10).max(20).min(area.width);
+            let h = (area.height * 9 / 10).max(8).min(area.height);
+            let pop = Rect {
+                x: (area.width.saturating_sub(w)) / 2,
+                y: (area.height.saturating_sub(h)) / 2,
+                width: w,
+                height: h,
+            };
+            let inner_width = w.saturating_sub(2).max(1) as usize;
+            let inner_height = h.saturating_sub(2) as usize;
+            let visual = viewer
+                .text
+                .lines()
+                .map(|line| display_width(line).div_ceil(inner_width).max(1))
+                .sum::<usize>();
+            viewer.max_scroll = visual.saturating_sub(inner_height);
+            viewer.scroll = viewer.scroll.min(viewer.max_scroll);
+            f.render_widget(Clear, pop);
+            let body = Paragraph::new(viewer.text.clone())
+                .wrap(Wrap { trim: false })
+                .scroll((viewer.scroll.min(u16::MAX as usize) as u16, 0))
+                .block(Block::bordered().title(format!(
+                    " {} · esc/ctrl+o 关闭 · ↑↓/滚轮滚动 ",
+                    viewer.title
+                )));
+            f.render_widget(body, pop);
+        }
     }
 }
 
@@ -1539,6 +1669,50 @@ mod tests {
             "mode": "ask", "theme": "light", "tools": []
         }));
         assert!(app.theme.light);
+    }
+
+    #[test]
+    fn long_user_prompt_is_collapsed_but_full_text_is_retained() {
+        let mut app = App::new();
+        let text = (1..=30)
+            .map(|n| format!("line-{n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        app.push_user(&text);
+        assert_eq!(app.lines.len(), 1);
+        assert!(app.lines[0].text.contains("粘贴"));
+        assert!(app.lines[0].text.contains("line-1"));
+        assert!(!app.lines[0].text.contains("line-30"));
+        assert_eq!(app.lines[0].output.as_deref(), Some(text.as_str()));
+    }
+
+    #[test]
+    fn short_user_prompt_stays_inline() {
+        let mut app = App::new();
+        app.push_user("hello\nworld");
+        assert_eq!(app.lines[0].text, "❯ hello ⏎ world");
+        assert_eq!(app.lines[0].output, None);
+    }
+
+    #[test]
+    fn latest_full_text_opens_in_viewer_without_moving_chat() {
+        let mut app = App::new();
+        app.push_user(&"x".repeat(1000));
+        app.scroll_back = 7;
+        app.open_latest_viewer();
+        assert_eq!(app.scroll_back, 7);
+        assert_eq!(app.viewer.as_ref().unwrap().text, "x".repeat(1000));
+    }
+
+    #[test]
+    fn click_row_maps_to_the_visible_expandable_card() {
+        let mut app = App::new();
+        app.push_tool("first", Tone::Muted, Some("one".into()));
+        app.push_tool("second", Tone::Muted, Some("two".into()));
+        app.push_tool("third", Tone::Muted, Some("three".into()));
+        assert_eq!(app.line_at_visual_row(80, 2, 0), Some(1));
+        assert_eq!(app.line_at_visual_row(80, 2, 1), Some(2));
+        assert_eq!(app.line_at_visual_row(80, 2, 2), None);
     }
 
     #[test]

@@ -2,6 +2,7 @@ mod app;
 mod child;
 mod keys;
 mod theme;
+mod viewer;
 
 use app::App;
 use child::{Event, Serve};

@@ -11,7 +11,6 @@ pub enum Tone {
     Error,
     Selected,
     Badge,
-    ActiveBadge,
 }
 
 #[derive(Clone, Copy)]
@@ -59,7 +58,6 @@ impl Theme {
             (true, Tone::Selected) => Style::new().fg(Color::Black).add_modifier(Modifier::BOLD),
             (false, Tone::Badge) => Style::new().fg(Color::Black).bg(Color::White),
             (true, Tone::Badge) => Style::new().fg(Color::White).bg(Color::Black),
-            (_, Tone::ActiveBadge) => Style::new().fg(Color::Black).bg(Color::Yellow),
             (true, Tone::Text) => Style::new().fg(Color::Black),
             (false, Tone::Text) => Style::new(),
         }
