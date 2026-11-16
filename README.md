@@ -134,6 +134,9 @@ same (OpenCode-style). `TANGO_BIN` overrides the server binary (e.g. `TANGO_BIN=
 for dev builds). Bare `/model` and `/resume` open centered pickers; picking a session kills the
 serve child and respawns it with `TANGO_RESUME`, so both the model context and the visible
 transcript come back. `/new` starts fresh while keeping the current model and permission mode.
+Set `theme` in `~/.tango/config.json` to `dark`, `light`, or `auto`; `auto` recognizes light
+terminal backgrounds 7, 15 and 255 in `COLORFGBG`. Missing, malformed or unknown values use dark.
+Restart the TUI to apply a theme change; sessions and model settings are unaffected.
 
 ## Permissions
 
@@ -186,7 +189,7 @@ All user state lives in `~/.tango/` (override with `TANGO_HOME`):
 
 | file | purpose |
 | --- | --- |
-| `config.json` | default model (`/model <id>` writes it); `feishuWebhook` for notify/tasks |
+| `config.json` | default model (`/model <id>` writes it); `feishuWebhook` for notify/tasks; `theme`: `dark` (default), `light`, or `auto` from the terminal's `COLORFGBG` |
 | `models.json` | extra/overriding model specs, same shape as built-in presets |
 | `tasks.json` | scheduled tasks (`tango task add`) |
 | `AGENTS.md` | global instructions appended to the system prompt |
