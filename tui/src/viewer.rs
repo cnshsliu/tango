@@ -1,8 +1,18 @@
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PromptState {
+    Draft,
+    Running,
+    Completed,
+}
+
+#[derive(Clone)]
 pub struct Viewer {
     pub title: String,
     pub text: String,
     pub scroll: usize,
     pub max_scroll: usize,
+    pub prompt_state: Option<PromptState>,
+    pub source_index: usize,
 }
 
 impl Viewer {
@@ -12,7 +22,21 @@ impl Viewer {
             text: text.into(),
             scroll: 0,
             max_scroll: 0,
+            prompt_state: None,
+            source_index: usize::MAX,
         }
+    }
+
+    pub fn with_source(
+        title: impl Into<String>,
+        text: impl Into<String>,
+        source_index: usize,
+        prompt_state: Option<PromptState>,
+    ) -> Self {
+        let mut viewer = Self::new(title, text);
+        viewer.source_index = source_index;
+        viewer.prompt_state = prompt_state;
+        viewer
     }
 
     pub fn scroll_by(&mut self, delta: i32, max_scroll: usize) {

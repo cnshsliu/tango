@@ -5,7 +5,7 @@
  * stdin: one JSON command per line.
  * stdout: one JSON frame per line, protocol only — human logs never touch stdout.
  *
- * commands:  prompt | interrupt | permission | models | set_model | set_mode | compact | sessions | history | save_skill | status
+ * commands:  prompt | interrupt | permission | models | set_model | set_mode | set_nvim_viewer | compact | sessions | history | save_skill | status
  * frames:    hello | stream | message | tool_result | permission_request | turn_end | error | result
  */
 import { createInterface } from 'node:readline';
@@ -104,6 +104,7 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
     theme: config.theme,
     editor: config.editor,
     keys: config.keys,
+    nvimViewer: config.nvimViewer,
     tools: buildTools().schemas().map(({ name, description }) => ({ name, description }))
   });
 
@@ -182,6 +183,14 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
         } catch (e: any) {
           reply(cmd, false, undefined, e.message);
         }
+        return;
+      }
+      case 'set_nvim_viewer': {
+        const mode = String(cmd.mode ?? '');
+        if (mode !== 'ask' && mode !== 'readonly')
+          return reply(cmd, false, undefined, `bad nvim viewer mode "${cmd.mode}" (ask|readonly)`);
+        await saveConfig({ ...(await loadConfig()), nvimViewer: mode });
+        reply(cmd, true, { nvimViewer: mode });
         return;
       }
       case 'set_mode': {

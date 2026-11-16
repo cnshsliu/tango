@@ -24,6 +24,8 @@ export interface Config {
   editor?: 'default' | 'vim';
   /** TUI action → key binding, e.g. { "expandTools": "ctrl+u" } */
   keys?: Record<string, string>;
+  /** Neovim viewer preference; standard Vim is never used */
+  nvimViewer?: 'ask' | 'readonly';
 }
 
 async function readJson<T>(path: string): Promise<T | undefined> {

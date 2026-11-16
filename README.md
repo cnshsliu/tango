@@ -109,7 +109,7 @@ a summary, or full hunks per file.
 stdin line, one JSON frame per stdout line. Human logs go to stderr; stdout is protocol-only.
 Commands: `prompt`, `interrupt`, `permission` (answers a `permission_request` frame by request id),
 `models` (list presets with key availability), `set_model` (also saved as the default),
-`set_mode`, `sessions` (list recent sessions, read-only), `history` (flattened transcript with
+`set_mode`, `set_nvim_viewer` (persist `ask`/`readonly`), `sessions` (list recent sessions, read-only), `history` (flattened transcript with
 paired tool calls/results, latest 300 items by default), `save_skill` (draft a skill from the
 session, or `finish <file>` to promote one), `compact`, `status`. Prompts run one at a time;
 `interrupt`, `permission`, `set_mode` and `status` skip that queue so they land mid-turn. A client
@@ -133,6 +133,11 @@ viewer restores the original chat position. All overlays use the shared `tui/src
 rounded complete borders, a themed surface and title background, bottom key hints, and content
 confined to the inner rectangle. Focus is viewer → permission → picker → completion → chat; modal
 scrolling never leaks into the chat, pickers support wheel/click, and Esc closes the focused layer.
+Opening full content checks `nvim` and `vim` with `--version`; only an actual `NVIM` is used,
+never standard Vim. On first detection, choose one-time read-only, persistent read-only
+(`nvimViewer: "readonly"`), edit, or the internal viewer. Ctrl+E edits the current item in Neovim.
+After saving, choose a new request, full reprocessing, or a correction containing a unified diff;
+the original session history and tool results are never rewritten. Unchanged saves submit nothing.
 Bracketed paste inserts multi-line text without submitting it. Keys follow
 one rule: nothing but `/exit` (or `/quit`) can leave the session. Ctrl+C interrupts a running turn
 and clears the input when idle — press it as often as you like; Esc closes popups, else does the

@@ -1,8 +1,9 @@
 use crate::child::{Event, Serve};
 use crate::dialog::render_dialog;
 use crate::keys::{Action, Keymap};
+use crate::nvim::{EditResolution, Neovim, NvimRequest, edit_submission};
 use crate::theme::{Theme, Tone};
-use crate::viewer::Viewer;
+use crate::viewer::{PromptState, Viewer};
 use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
@@ -40,6 +41,7 @@ struct ChatLine {
     tone: Tone,
     /// full tool output or collapsed user prompt; shown in the independent viewer
     output: Option<String>,
+    prompt_state: Option<PromptState>,
 }
 
 struct Permission {
@@ -59,12 +61,15 @@ enum Pending {
     Status,
     Skill,
     History,
+    NvimViewer,
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum PickerKind {
     Model,
     Session,
+    NvimBackend,
+    EditResolution,
 }
 
 #[derive(Clone)]
@@ -130,6 +135,11 @@ pub struct App {
     keys: Keymap,
     vim: bool,
     edit_mode: EditMode,
+    nvim: Option<Option<Neovim>>,
+    nvim_preference: String,
+    pending_viewer: Option<Viewer>,
+    edited: Option<(Viewer, String)>,
+    pub nvim_request: Option<NvimRequest>,
     lines: Vec<ChatLine>,
     /// assistant text arriving right now; committed as chat lines by the `message` frame
     stream: String,
@@ -166,6 +176,11 @@ impl App {
             keys: Keymap::from_json(None),
             vim: false,
             edit_mode: EditMode::Insert,
+            nvim: None,
+            nvim_preference: "ask".into(),
+            pending_viewer: None,
+            edited: None,
+            nvim_request: None,
             lines: Vec::new(),
             stream: String::new(),
             thinking: String::new(),
@@ -210,6 +225,9 @@ impl App {
         self.pending.clear();
         self.permission = None;
         self.viewer = None;
+        self.pending_viewer = None;
+        self.edited = None;
+        self.nvim_request = None;
         self.busy = false;
         self.cost = 0.0;
         self.scroll_back = 0;
@@ -222,6 +240,7 @@ impl App {
                 text: line.to_string(),
                 tone,
                 output: None,
+                prompt_state: None,
             });
         }
     }
@@ -231,6 +250,7 @@ impl App {
             text: text.into(),
             tone,
             output,
+            prompt_state: None,
         });
     }
 
@@ -248,6 +268,9 @@ impl App {
         } else {
             self.push(format!("❯ {}", text.replace('\n', " ⏎ ")), Tone::User);
         }
+        if let Some(line) = self.lines.last_mut() {
+            line.prompt_state = Some(PromptState::Draft);
+        }
     }
 
     fn viewer_title(line: &ChatLine) -> String {
@@ -261,14 +284,109 @@ impl App {
         }
     }
 
-    fn open_latest_viewer(&mut self) {
-        let found = self.lines.iter().rev().find_map(|line| {
-            line.output
-                .as_ref()
-                .map(|output| (Self::viewer_title(line), output.clone()))
+    fn detect_nvim(&mut self) -> Option<Neovim> {
+        self.nvim.get_or_insert_with(crate::nvim::detect).clone()
+    }
+
+    fn request_viewer(&mut self, viewer: Viewer) {
+        let preference = self.nvim_preference.clone();
+        match (preference.as_str(), self.detect_nvim()) {
+            ("readonly", Some(editor)) => self.launch_nvim(editor, viewer, true),
+            ("ask", Some(_)) => {
+                self.pending_viewer = Some(viewer);
+                let item = |id: &str, label: &str, note: &str| PickItem {
+                    id: id.into(),
+                    label: label.into(),
+                    note: note.into(),
+                    warn: false,
+                    current: false,
+                };
+                self.picker = Some(Picker {
+                    kind: PickerKind::NvimBackend,
+                    items: vec![
+                        item("once", "仅此次使用 Neovim 只读", "本次打开，下次仍询问"),
+                        item("always", "以后都使用 Neovim 只读", "保存到配置"),
+                        item("edit", "本次使用 Neovim 编辑", "保存后选择如何处理修改"),
+                        item("internal", "使用内置查看器", "不启动外部编辑器"),
+                    ],
+                    sel: 0,
+                });
+            }
+            _ => self.viewer = Some(viewer),
+        }
+    }
+
+    fn launch_nvim(&mut self, editor: Neovim, viewer: Viewer, read_only: bool) {
+        self.picker = None;
+        self.pending_viewer = None;
+        self.nvim_request = Some(NvimRequest {
+            editor,
+            viewer,
+            read_only,
         });
-        if let Some((title, text)) = found {
-            self.viewer = Some(Viewer::new(title, text));
+    }
+
+    pub fn finish_nvim(&mut self, viewer: Viewer, edited: String, read_only: bool) {
+        self.viewer = Some(viewer.clone());
+        if read_only {
+            return;
+        }
+        if viewer.text == edited {
+            self.push("内容未修改", Tone::Muted);
+            return;
+        }
+        self.viewer = None;
+        let notice = match viewer.prompt_state {
+            Some(PromptState::Running) => "原内容已提交且仍在处理；选择后将打断当前回合",
+            Some(PromptState::Completed) => "原内容已经处理完成；请选择修改后的处理方式",
+            _ => "内容已修改；请选择后续处理方式",
+        };
+        self.push(notice, Tone::Warning);
+        self.edited = Some((viewer, edited));
+        let item = |id: &str, label: &str, note: &str| PickItem {
+            id: id.into(),
+            label: label.into(),
+            note: note.into(),
+            warn: false,
+            current: false,
+        };
+        self.picker = Some(Picker {
+            kind: PickerKind::EditResolution,
+            items: vec![
+                item("new", "作为全新处理", "发送修改后的完整内容"),
+                item("reprocess", "重新处理", "用完整修改稿重做原请求"),
+                item("correct", "修正前面的处理", "只发送原始内容与修改稿的 diff"),
+            ],
+            sel: 0,
+        });
+    }
+
+    pub fn nvim_error(&mut self, viewer: Viewer, error: String) {
+        self.viewer = Some(viewer);
+        self.push(
+            format!("Neovim 启动失败：{error}；已回退内置查看器"),
+            Tone::Error,
+        );
+    }
+
+    fn open_latest_viewer(&mut self) {
+        let found = self
+            .lines
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(index, line)| {
+                line.output.as_ref().map(|output| {
+                    (
+                        Self::viewer_title(line),
+                        output.clone(),
+                        index,
+                        line.prompt_state,
+                    )
+                })
+            });
+        if let Some((title, text, index, state)) = found {
+            self.request_viewer(Viewer::with_source(title, text, index, state));
         }
     }
 
@@ -276,10 +394,10 @@ impl App {
         let found = self.lines.get(index).and_then(|line| {
             line.output
                 .as_ref()
-                .map(|output| (Self::viewer_title(line), output.clone()))
+                .map(|output| (Self::viewer_title(line), output.clone(), line.prompt_state))
         });
-        if let Some((title, text)) = found {
-            self.viewer = Some(Viewer::new(title, text));
+        if let Some((title, text, state)) = found {
+            self.request_viewer(Viewer::with_source(title, text, index, state));
         }
     }
 
@@ -825,7 +943,48 @@ impl App {
                     self.push(format!("↻ resuming session {} …", item.id), Tone::Muted);
                     self.switch_session(Some(item.id));
                 }
+                PickerKind::NvimBackend => {
+                    if let Some(viewer) = self.pending_viewer.take() {
+                        if item.id == "internal" {
+                            self.viewer = Some(viewer);
+                        } else if let Some(editor) = self.detect_nvim() {
+                            if item.id == "always" {
+                                let id = serve.command(
+                                    "set_nvim_viewer",
+                                    vec![("mode", Value::String("readonly".into()))],
+                                );
+                                self.pending.push((id, Pending::NvimViewer));
+                            }
+                            self.launch_nvim(editor, viewer, item.id != "edit");
+                        }
+                    }
+                }
+                PickerKind::EditResolution => {
+                    if let Some((viewer, edited)) = self.edited.take() {
+                        let resolution = match item.id.as_str() {
+                            "reprocess" => EditResolution::Reprocess,
+                            "correct" => EditResolution::Correct,
+                            _ => EditResolution::New,
+                        };
+                        if let Some(text) = edit_submission(resolution, &viewer.text, &edited) {
+                            if self.busy {
+                                serve.notify(json!({ "cmd": "interrupt" }));
+                            }
+                            self.submit_text(serve, text);
+                        }
+                    }
+                }
             }
+        }
+    }
+
+    fn submit_text(&mut self, serve: &mut Serve, text: String) {
+        self.push_user(&text);
+        self.scroll_back = 0;
+        self.busy = true;
+        self.prompt_id = serve.command("prompt", vec![("text", Value::String(text))]);
+        if let Some(line) = self.lines.last_mut() {
+            line.prompt_state = Some(PromptState::Running);
         }
     }
 
@@ -867,6 +1026,15 @@ impl App {
     fn key(&mut self, k: crossterm::event::KeyEvent, serve: &mut Serve) {
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         if self.viewer.is_some() {
+            if ctrl && k.code == KeyCode::Char('e') {
+                let viewer = self.viewer.clone().unwrap();
+                if let Some(editor) = self.detect_nvim() {
+                    self.launch_nvim(editor, viewer, false);
+                } else {
+                    self.push("未检测到 Neovim，继续使用内置查看器", Tone::Muted);
+                }
+                return;
+            }
             if k.code == KeyCode::Esc || self.keys.matches(Action::ExpandTools, k) {
                 self.viewer = None;
                 return;
@@ -922,7 +1090,17 @@ impl App {
                         p.sel = (p.sel + 1).min(p.items.len().saturating_sub(1));
                     }
                 }
-                KeyCode::Esc => self.picker = None,
+                KeyCode::Esc => {
+                    if self.picker.as_ref().map(|p| p.kind) == Some(PickerKind::NvimBackend)
+                        && let Some(viewer) = self.pending_viewer.take()
+                    {
+                        self.viewer = Some(viewer);
+                    }
+                    if self.picker.as_ref().map(|p| p.kind) == Some(PickerKind::EditResolution) {
+                        self.edited = None;
+                    }
+                    self.picker = None;
+                }
                 KeyCode::Enter | KeyCode::Tab => self.accept_picker(serve),
                 _ => {}
             }
@@ -1069,6 +1247,9 @@ impl App {
         self.scroll_back = 0;
         self.busy = true;
         self.prompt_id = serve.command("prompt", vec![("text", Value::String(expanded))]);
+        if let Some(line) = self.lines.last_mut() {
+            line.prompt_state = Some(PromptState::Running);
+        }
     }
 
     fn frame(&mut self, v: Value) {
@@ -1077,6 +1258,7 @@ impl App {
             "hello" => {
                 self.keys = Keymap::from_json(v.get("keys"));
                 self.vim = v["editor"].as_str() == Some("vim");
+                self.nvim_preference = v["nvimViewer"].as_str().unwrap_or("ask").into();
                 self.edit_mode = EditMode::Insert;
                 self.theme = Theme::resolve(
                     v["theme"].as_str(),
@@ -1151,6 +1333,11 @@ impl App {
                 let ok = v["ok"].as_bool().unwrap_or(false);
                 if id == self.prompt_id {
                     self.busy = false;
+                    for line in &mut self.lines {
+                        if line.prompt_state == Some(PromptState::Running) {
+                            line.prompt_state = Some(PromptState::Completed);
+                        }
+                    }
                     self.refresh_popup();
                     if !ok {
                         // the same failure usually arrived a moment ago as an `error` frame
@@ -1298,6 +1485,10 @@ impl App {
                             }
                         }
                         (Pending::History, true) => self.load_history(d),
+                        (Pending::NvimViewer, true) => {
+                            self.nvim_preference = d["nvimViewer"].as_str().unwrap_or("ask").into();
+                            self.push("Neovim 只读偏好已保存", Tone::Muted);
+                        }
                         (_, false) => self.push(
                             format!("error: {}", v["error"].as_str().unwrap_or("?")),
                             Tone::Error,
@@ -1334,7 +1525,12 @@ impl App {
         for it in items {
             let text = it["text"].as_str().unwrap_or("");
             match it["kind"].as_str() {
-                Some("user") => self.push_user(text),
+                Some("user") => {
+                    self.push_user(text);
+                    if let Some(line) = self.lines.last_mut() {
+                        line.prompt_state = Some(PromptState::Completed);
+                    }
+                }
                 Some("assistant") => {
                     self.stream = text.to_string();
                     self.commit_stream();
@@ -1387,6 +1583,7 @@ impl App {
                 text: l.text.clone(),
                 tone: l.tone,
                 output: None,
+                prompt_state: l.prompt_state,
             })
             .collect()
     }
@@ -1572,10 +1769,14 @@ impl App {
             let title = match p.kind {
                 PickerKind::Model => "选择模型",
                 PickerKind::Session => "选择会话",
+                PickerKind::NvimBackend => "检测到 Neovim，如何查看？",
+                PickerKind::EditResolution => "内容已修改，如何处理？",
             };
             let hint = match p.kind {
                 PickerKind::Model => "↑↓/滚轮 选择 · enter 切换 · esc 取消 · ⚠=缺 key · ✓=当前",
                 PickerKind::Session => "↑↓/滚轮 选择 · enter 恢复 · esc 取消 · ✓=当前",
+                PickerKind::NvimBackend => "↑↓/滚轮 选择 · enter 确认 · esc 使用内置查看器",
+                PickerKind::EditResolution => "↑↓ 选择 · enter 提交 · esc 取消",
             };
             let inner = render_dialog(f, pop, title, hint, self.theme);
             let label_w = (inner.width as usize).saturating_sub(28);
@@ -1661,7 +1862,13 @@ impl App {
                 height: h,
             };
             let title = viewer.title.clone();
-            let inner = render_dialog(f, pop, &title, "esc/ctrl+o 关闭 · ↑↓/滚轮滚动", self.theme);
+            let inner = render_dialog(
+                f,
+                pop,
+                &title,
+                "esc 关闭 · ctrl+e 编辑(nvim) · ↑↓/滚轮滚动",
+                self.theme,
+            );
             let inner_width = inner.width.max(1) as usize;
             let inner_height = inner.height as usize;
             let visual = viewer
@@ -1743,11 +1950,41 @@ mod tests {
     fn latest_full_text_opens_in_viewer_without_moving_chat() {
         let mut app = App::new();
         app.push_user(&"x".repeat(1000));
+        app.nvim = Some(None); // internal-viewer behavior does not depend on the host's editors
         app.scroll_back = 7;
         app.open_latest_viewer();
         assert_eq!(app.scroll_back, 7);
         assert_eq!(app.viewer.as_ref().unwrap().text, "x".repeat(1000));
         assert_eq!(app.viewer.as_ref().unwrap().title, "粘贴上下文");
+    }
+
+    #[test]
+    fn detected_nvim_prompts_before_the_first_external_view() {
+        let mut app = App::new();
+        app.push_user(&"x".repeat(1000));
+        app.nvim = Some(Some(Neovim {
+            executable: "nvim".into(),
+        }));
+        app.open_latest_viewer();
+        assert_eq!(
+            app.picker.as_ref().map(|p| p.kind),
+            Some(PickerKind::NvimBackend)
+        );
+        assert!(app.pending_viewer.is_some());
+        assert!(app.viewer.is_none());
+    }
+
+    #[test]
+    fn edited_content_requires_an_explicit_resolution() {
+        let mut app = App::new();
+        let viewer = Viewer::with_source("粘贴上下文", "old", 0, Some(PromptState::Completed));
+        app.finish_nvim(viewer, "new".into(), false);
+        assert_eq!(
+            app.picker.as_ref().map(|p| p.kind),
+            Some(PickerKind::EditResolution)
+        );
+        assert!(app.edited.is_some());
+        assert!(app.lines.iter().any(|l| l.text.contains("已经处理完成")));
     }
 
     #[test]

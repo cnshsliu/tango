@@ -1,0 +1,195 @@
+use crate::viewer::Viewer;
+use std::fs::{OpenOptions, read_to_string, remove_file};
+use std::io::{self, Write};
+use std::path::PathBuf;
+use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+#[derive(Clone)]
+pub struct Neovim {
+    pub executable: String,
+}
+
+pub struct NvimRequest {
+    pub editor: Neovim,
+    pub viewer: Viewer,
+    pub read_only: bool,
+}
+
+pub fn detect() -> Option<Neovim> {
+    for executable in ["nvim", "vim"] {
+        if let Ok(output) = Command::new(executable).arg("--version").output()
+            && output.status.success()
+        {
+            let version = String::from_utf8_lossy(&output.stdout);
+            if is_nvim_version(&version) {
+                return Some(Neovim {
+                    executable: executable.into(),
+                });
+            }
+        }
+    }
+    None
+}
+
+fn is_nvim_version(version: &str) -> bool {
+    version
+        .lines()
+        .next()
+        .is_some_and(|line| line.starts_with("NVIM v"))
+}
+
+pub fn write_temp(text: &str) -> io::Result<PathBuf> {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    for attempt in 0..100 {
+        let path =
+            std::env::temp_dir().join(format!("tango-{}-{stamp}-{attempt}.md", std::process::id()));
+        match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(mut file) => {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+                }
+                file.write_all(text.as_bytes())?;
+                return Ok(path);
+            }
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "cannot allocate Neovim temporary file",
+    ))
+}
+
+pub fn run(editor: &Neovim, text: &str, read_only: bool) -> io::Result<String> {
+    let path = write_temp(text)?;
+    let mut command = Command::new(&editor.executable);
+    command.args(["--cmd", "set binary noendofline"]);
+    if read_only {
+        command.arg("-R");
+    }
+    let result = command.arg("--").arg(&path).status();
+    let edited = if result.is_ok() {
+        read_to_string(&path)
+    } else {
+        result.map(|_| String::new())
+    };
+    let _ = remove_file(path);
+    edited
+}
+
+#[derive(Clone, Copy)]
+pub enum EditResolution {
+    New,
+    Reprocess,
+    Correct,
+}
+
+pub fn edit_submission(resolution: EditResolution, original: &str, edited: &str) -> Option<String> {
+    if original == edited {
+        return None;
+    }
+    match resolution {
+        EditResolution::New => Some(edited.to_string()),
+        EditResolution::Reprocess => Some(format!(
+            "用户修改了此前提交的内容。请基于以下修改后的完整内容重新处理此前的请求，并生成新的完整回答：\n\n<edited>\n{edited}\n</edited>"
+        )),
+        EditResolution::Correct => Some(format!(
+            "请修正此前的处理。用户修改了此前提交的内容，以下是 unified diff；请根据变化修正之前的理解和回答，未变化部分沿用原上下文：\n\n{}",
+            unified_diff(original, edited)
+        )),
+    }
+}
+
+fn unified_diff(original: &str, edited: &str) -> String {
+    let old = original.split('\n').collect::<Vec<_>>();
+    let new = edited.split('\n').collect::<Vec<_>>();
+    let mut prefix = 0;
+    while prefix < old.len() && prefix < new.len() && old[prefix] == new[prefix] {
+        prefix += 1;
+    }
+    let mut suffix = 0;
+    while suffix < old.len().saturating_sub(prefix)
+        && suffix < new.len().saturating_sub(prefix)
+        && old[old.len() - 1 - suffix] == new[new.len() - 1 - suffix]
+    {
+        suffix += 1;
+    }
+    let old_changed_end = old.len() - suffix;
+    let new_changed_end = new.len() - suffix;
+    let start = prefix.saturating_sub(3);
+    let old_end = (old_changed_end + 3).min(old.len());
+    let new_end = (new_changed_end + 3).min(new.len());
+    let mut out = format!(
+        "--- original\n+++ edited\n@@ -{},{} +{},{} @@\n",
+        start + 1,
+        old_end - start,
+        start + 1,
+        new_end - start
+    );
+    for line in &old[start..prefix] {
+        out.push_str(&format!(" {line}\n"));
+    }
+    for line in &old[prefix..old_changed_end] {
+        out.push_str(&format!("-{line}\n"));
+    }
+    for line in &new[prefix..new_changed_end] {
+        out.push_str(&format!("+{line}\n"));
+    }
+    for line in &old[old_changed_end..old_end] {
+        out.push_str(&format!(" {line}\n"));
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn version_detection_rejects_standard_vim() {
+        assert!(is_nvim_version("NVIM v0.12.1\nBuild type: Release"));
+        assert!(!is_nvim_version("VIM - Vi IMproved 9.1"));
+        assert!(!is_nvim_version("not an editor"));
+    }
+
+    #[test]
+    fn unchanged_edit_has_no_submission() {
+        assert_eq!(edit_submission(EditResolution::New, "same", "same"), None);
+    }
+
+    #[test]
+    fn new_processing_uses_the_complete_edited_text() {
+        assert_eq!(
+            edit_submission(EditResolution::New, "old", "new").as_deref(),
+            Some("new")
+        );
+    }
+
+    #[test]
+    fn correction_contains_a_unified_diff() {
+        let original = "one\ntwo\nthree\nfour";
+        let edited = "one\nTWO\nthree\nfour";
+        let submission = edit_submission(EditResolution::Correct, original, edited).unwrap();
+        assert!(submission.contains("修正此前的处理"));
+        assert!(submission.contains("--- original"));
+        assert!(submission.contains("+++ edited"));
+        assert!(submission.contains("-two"));
+        assert!(submission.contains("+TWO"));
+        assert!(!submission.contains("--- original\ntwo\n+++ edited"));
+    }
+
+    #[test]
+    fn reprocess_contains_the_complete_edited_text() {
+        let submission =
+            edit_submission(EditResolution::Reprocess, "old", "new\ncomplete").unwrap();
+        assert!(submission.contains("重新处理"));
+        assert!(submission.contains("new\ncomplete"));
+    }
+}

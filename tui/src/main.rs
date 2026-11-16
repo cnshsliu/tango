@@ -2,6 +2,7 @@ mod app;
 mod child;
 mod dialog;
 mod keys;
+mod nvim;
 mod theme;
 mod viewer;
 
@@ -17,6 +18,10 @@ use ratatui::{Terminal, backend::CrosstermBackend};
 use std::error::Error;
 use std::io::Stdout;
 use std::sync::mpsc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::thread;
 use std::time::Duration;
 
@@ -53,41 +58,47 @@ fn main() -> Result<(), Box<dyn Error>> {
 fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<(), Box<dyn Error>> {
     let (tx, rx) = mpsc::channel::<Event>();
     let mut serve = Serve::spawn(tx.clone(), 0, None, None, None)?;
+    let input_enabled = Arc::new(AtomicBool::new(true));
 
     // crossterm has no pollable fd we own: a thread forwards terminal input into the same queue
     thread::spawn({
         let tx = tx.clone();
+        let input_enabled = input_enabled.clone();
         move || {
-        loop {
-            match event::poll(Duration::from_millis(200)) {
-                Ok(true) => match event::read() {
-                    Ok(CEvent::Key(k)) => {
-                        if tx.send(Event::Key(k)).is_err() {
-                            return;
+            loop {
+                if !input_enabled.load(Ordering::Relaxed) {
+                    thread::sleep(Duration::from_millis(50));
+                    continue;
+                }
+                match event::poll(Duration::from_millis(200)) {
+                    Ok(true) => match event::read() {
+                        Ok(CEvent::Key(k)) => {
+                            if tx.send(Event::Key(k)).is_err() {
+                                return;
+                            }
                         }
-                    }
-                    Ok(CEvent::Mouse(m)) => {
-                        if tx.send(Event::Mouse(m)).is_err() {
-                            return;
+                        Ok(CEvent::Mouse(m)) => {
+                            if tx.send(Event::Mouse(m)).is_err() {
+                                return;
+                            }
                         }
-                    }
-                    Ok(CEvent::Resize(w, h)) => {
-                        if tx.send(Event::Resized(w, h)).is_err() {
-                            return;
+                        Ok(CEvent::Resize(w, h)) => {
+                            if tx.send(Event::Resized(w, h)).is_err() {
+                                return;
+                            }
                         }
-                    }
-                    Ok(CEvent::Paste(s)) => {
-                        if tx.send(Event::Paste(s)).is_err() {
-                            return;
+                        Ok(CEvent::Paste(s)) => {
+                            if tx.send(Event::Paste(s)).is_err() {
+                                return;
+                            }
                         }
-                    }
-                    Ok(_) => {}
-                    Err(_) => return,
-                },
-                Ok(false) => {}
-                Err(_) => return, // terminal gone; the main loop will notice via draw
+                        Ok(_) => {}
+                        Err(_) => return,
+                    },
+                    Ok(false) => {}
+                    Err(_) => return, // terminal gone; the main loop will notice via draw
+                }
             }
-        }
         }
     });
 
@@ -109,11 +120,49 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<(), Box<dyn 
                 }
             }
         }
+        if let Some(request) = app.nvim_request.take() {
+            input_enabled.store(false, Ordering::Relaxed);
+            // let the input thread finish its current poll before Neovim takes the tty
+            thread::sleep(Duration::from_millis(220));
+            disable_raw_mode()?;
+            execute!(
+                terminal.backend_mut(),
+                crossterm::event::DisableBracketedPaste,
+                crossterm::event::DisableMouseCapture,
+                crossterm::cursor::Show,
+                LeaveAlternateScreen
+            )?;
+            let result = crate::nvim::run(&request.editor, &request.viewer.text, request.read_only);
+            enable_raw_mode()?;
+            execute!(
+                terminal.backend_mut(),
+                EnterAlternateScreen,
+                crossterm::cursor::Hide,
+                crossterm::event::EnableMouseCapture,
+                crossterm::event::EnableBracketedPaste
+            )?;
+            terminal.clear()?;
+            input_enabled.store(true, Ordering::Relaxed);
+            match result {
+                Ok(text) => app.finish_nvim(request.viewer, text, request.read_only),
+                Err(error) => app.nvim_error(request.viewer, error.to_string()),
+            }
+        }
         // the app asked for another session (/resume) or a fresh one (/new): respawn serve
         if let Some(target) = app.respawn.take() {
             let mode = app.mode().to_string();
-            let model = if target.is_none() { Some(app.model().to_string()) } else { None };
-            let next = Serve::spawn(tx.clone(), serve.epoch + 1, target.as_deref(), Some(&mode), model.as_deref())?;
+            let model = if target.is_none() {
+                Some(app.model().to_string())
+            } else {
+                None
+            };
+            let next = Serve::spawn(
+                tx.clone(),
+                serve.epoch + 1,
+                target.as_deref(),
+                Some(&mode),
+                model.as_deref(),
+            )?;
             let _old = std::mem::replace(&mut serve, next); // drop kills the previous child
         }
     }

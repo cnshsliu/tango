@@ -225,7 +225,7 @@ test('serve: sessions listing, TANGO_RESUME restores context, TANGO_MODE, save_s
   const mock = await startMock();
   const home = await mkdtemp(join(tmpdir(), 'tango-serve-home-'));
   const work = await mkdtemp(join(tmpdir(), 'tango-serve-work-'));
-  await writeFile(join(home, 'config.json'), JSON.stringify({ theme: 'light', editor: 'vim', keys: { expandTools: 'ctrl+u' } }));
+  await writeFile(join(home, 'config.json'), JSON.stringify({ theme: 'light', editor: 'vim', keys: { expandTools: 'ctrl+u' }, nvimViewer: 'readonly' }));
   await writeFile(
     join(home, 'models.json'),
     JSON.stringify([
@@ -256,6 +256,7 @@ test('serve: sessions listing, TANGO_RESUME restores context, TANGO_MODE, save_s
     assert.equal(hello.theme, 'light');
     assert.equal(hello.editor, 'vim');
     assert.deepEqual(hello.keys, { expandTools: 'ctrl+u' });
+    assert.equal(hello.nvimViewer, 'readonly');
 
     b.send({ id: 2, cmd: 'sessions' });
     const list = await b.until((f) => f.type === 'result' && f.id === 2, 'sessions result');
@@ -281,6 +282,12 @@ test('serve: sessions listing, TANGO_RESUME restores context, TANGO_MODE, save_s
     const saved = await b.until((f) => f.type === 'result' && f.id === 5, 'save_skill result');
     assert.equal(saved.ok, true);
     assert.match(saved.data.draft, /\.draft\.md$/);
+
+    b.send({ id: 7, cmd: 'set_nvim_viewer', mode: 'ask' });
+    const viewer = await b.until((f) => f.type === 'result' && f.id === 7, 'nvim viewer result');
+    assert.deepEqual(viewer.data, { nvimViewer: 'ask' });
+    const config = JSON.parse(await readFile(join(home, 'config.json'), 'utf8'));
+    assert.equal(config.nvimViewer, 'ask');
   } finally {
     b.child.kill();
     mock.server.close();
