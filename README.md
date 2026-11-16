@@ -137,6 +137,16 @@ transcript come back. `/new` starts fresh while keeping the current model and pe
 Set `theme` in `~/.tango/config.json` to `dark`, `light`, or `auto`; `auto` recognizes light
 terminal backgrounds 7, 15 and 255 in `COLORFGBG`. Missing, malformed or unknown values use dark.
 Restart the TUI to apply a theme change; sessions and model settings are unaffected.
+Set `editor` to `vim` for modal editing (the default is `default`). Vim starts in INSERT; Esc enters
+NORMAL, where `h`/`l`, `0`/`$`, `x`, `i`/`a`/`I`/`A` edit and `j`/`k` scroll. `/` and `@` return to
+INSERT. The optional `keys` object remaps `expandTools`, `newline`, `interrupt`, `clearInput`,
+`scrollUp`, `scrollDown`, `pageUp`, and `pageDown`, using values such as `ctrl+u` or `alt+enter`.
+Unknown actions, keys, and editor values fall back to defaults. Ctrl+C always remains a safe
+interrupt/clear binding even when `interrupt` is remapped. Example:
+
+```json
+{ "editor": "vim", "keys": { "expandTools": "ctrl+u" } }
+```
 
 ## Permissions
 

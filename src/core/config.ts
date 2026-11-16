@@ -20,6 +20,10 @@ export interface Config {
   feishuWebhook?: string;
   /** TUI palette: fixed dark/light or terminal COLORFGBG detection */
   theme?: 'dark' | 'light' | 'auto';
+  /** Input editing mode; missing/unknown values use the default Emacs-like editing */
+  editor?: 'default' | 'vim';
+  /** TUI action → key binding, e.g. { "expandTools": "ctrl+u" } */
+  keys?: Record<string, string>;
 }
 
 async function readJson<T>(path: string): Promise<T | undefined> {

@@ -225,7 +225,7 @@ test('serve: sessions listing, TANGO_RESUME restores context, TANGO_MODE, save_s
   const mock = await startMock();
   const home = await mkdtemp(join(tmpdir(), 'tango-serve-home-'));
   const work = await mkdtemp(join(tmpdir(), 'tango-serve-work-'));
-  await writeFile(join(home, 'config.json'), JSON.stringify({ theme: 'light' }));
+  await writeFile(join(home, 'config.json'), JSON.stringify({ theme: 'light', editor: 'vim', keys: { expandTools: 'ctrl+u' } }));
   await writeFile(
     join(home, 'models.json'),
     JSON.stringify([
@@ -254,6 +254,8 @@ test('serve: sessions listing, TANGO_RESUME restores context, TANGO_MODE, save_s
     assert.equal(hello.mode, 'auto');
     assert.equal(hello.totalCostUsd, 0.002);
     assert.equal(hello.theme, 'light');
+    assert.equal(hello.editor, 'vim');
+    assert.deepEqual(hello.keys, { expandTools: 'ctrl+u' });
 
     b.send({ id: 2, cmd: 'sessions' });
     const list = await b.until((f) => f.type === 'result' && f.id === 2, 'sessions result');

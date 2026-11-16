@@ -1,4 +1,5 @@
 use crate::child::{Event, Serve};
+use crate::keys::{Action, Keymap};
 use crate::theme::{Theme, Tone};
 use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers, MouseEventKind};
 use ratatui::Frame;
@@ -116,8 +117,17 @@ const SLASH: &[(&str, &str)] = &[
 /// inline @path tokens are expanded into file contents at send time (Claude Code style)
 const AT_FILE_CAP: usize = 6000;
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum EditMode {
+    Insert,
+    Normal,
+}
+
 pub struct App {
     theme: Theme,
+    keys: Keymap,
+    vim: bool,
+    edit_mode: EditMode,
     lines: Vec<ChatLine>,
     /// assistant text arriving right now; committed as chat lines by the `message` frame
     stream: String,
@@ -147,6 +157,9 @@ impl App {
     pub fn new() -> Self {
         Self {
             theme: Theme::dark(),
+            keys: Keymap::from_json(None),
+            vim: false,
+            edit_mode: EditMode::Insert,
             lines: Vec::new(),
             stream: String::new(),
             thinking: String::new(),
@@ -472,7 +485,7 @@ impl App {
                     Tone::Muted,
                 );
                 self.push(
-                    "  tab / ↑↓      complete · ctrl+o tool output · esc interrupt/clear",
+                    "  tab / ↑↓      complete · ctrl+o tools (default) · esc interrupt/clear/mode",
                     Tone::Muted,
                 );
             }
@@ -630,7 +643,10 @@ impl App {
             Event::Stderr(l) => self.push(format!("! {l}"), Tone::Muted),
             Event::Resized(_, _) => {}
             Event::Paste(s) => {
-                if self.permission.is_none() && self.picker.is_none() {
+                if self.permission.is_none()
+                    && self.picker.is_none()
+                    && (!self.vim || self.edit_mode == EditMode::Insert)
+                {
                     let s = s.replace("\r\n", "\n").replace('\r', "\n");
                     for c in s.chars() {
                         self.input.insert(self.cursor, c);
@@ -658,6 +674,41 @@ impl App {
         false
     }
 
+    fn normal_edit(&mut self, code: KeyCode) -> bool {
+        match code {
+            KeyCode::Char('h') => self.cursor = cursor_step(&self.input, self.cursor, true),
+            KeyCode::Char('l') => self.cursor = cursor_step(&self.input, self.cursor, false),
+            KeyCode::Char('0') => self.cursor = 0,
+            KeyCode::Char('$') => self.cursor = self.input.len(),
+            KeyCode::Char('x') if self.cursor < self.input.len() => {
+                self.input.remove(self.cursor);
+                self.refresh_popup();
+            }
+            KeyCode::Char('i') => self.edit_mode = EditMode::Insert,
+            KeyCode::Char('a') => {
+                self.cursor = min(self.cursor + 1, self.input.len());
+                self.edit_mode = EditMode::Insert;
+            }
+            KeyCode::Char('I') => {
+                self.cursor = 0;
+                self.edit_mode = EditMode::Insert;
+            }
+            KeyCode::Char('A') => {
+                self.cursor = self.input.len();
+                self.edit_mode = EditMode::Insert;
+            }
+            KeyCode::Char('j') => self.scroll_back = self.scroll_back.saturating_sub(1),
+            KeyCode::Char('k') => self.scroll_back += 1,
+            KeyCode::Char('/') | KeyCode::Char('@') => {
+                self.edit_mode = EditMode::Insert;
+                return false;
+            }
+            KeyCode::Enter => return false,
+            _ => {}
+        }
+        true
+    }
+
     fn key(&mut self, k: crossterm::event::KeyEvent, serve: &mut Serve) {
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         // permission modal grabs the keyboard
@@ -676,21 +727,26 @@ impl App {
             }
             return;
         }
-        // Ctrl+C never quits (that is /exit's job): busy turns get interrupted,
-        // idle input gets cleared — mashing it is always safe.
-        if ctrl && k.code == KeyCode::Char('c') {
-            if self.busy {
-                serve.notify(json!({ "cmd": "interrupt" }));
-                self.push("[interrupt requested]", Tone::Muted);
-            } else if !self.input.is_empty() {
-                self.input.clear();
-                self.cursor = 0;
-                self.popup = None;
-            }
+        if self.keys.matches(Action::ExpandTools, k) {
+            self.verbose_tools = !self.verbose_tools;
             return;
         }
-        if ctrl && k.code == KeyCode::Char('o') {
-            self.verbose_tools = !self.verbose_tools;
+        // Ctrl+C always remains a safe interrupt even when the action is remapped.
+        if self.busy && (self.keys.matches(Action::Interrupt, k) || k.code == KeyCode::Esc) {
+            serve.notify(json!({ "cmd": "interrupt" }));
+            self.push("[interrupt requested]", Tone::Muted);
+            return;
+        }
+        if self.vim && self.edit_mode == EditMode::Insert && k.code == KeyCode::Esc {
+            self.edit_mode = EditMode::Normal;
+            self.popup = None;
+            self.cursor = self.cursor.saturating_sub(1);
+            return;
+        }
+        if self.keys.matches(Action::Interrupt, k) || self.keys.matches(Action::ClearInput, k) {
+            self.input.clear();
+            self.cursor = 0;
+            self.popup = None;
             return;
         }
         // the picker grabs navigation keys while it is open
@@ -761,14 +817,32 @@ impl App {
                 _ => {}
             }
         }
+        if self.keys.matches(Action::ScrollUp, k) {
+            self.scroll_back += 1;
+            return;
+        }
+        if self.keys.matches(Action::ScrollDown, k) {
+            self.scroll_back = self.scroll_back.saturating_sub(1);
+            return;
+        }
+        if self.keys.matches(Action::PageUp, k) {
+            self.scroll_back += 20;
+            return;
+        }
+        if self.keys.matches(Action::PageDown, k) {
+            self.scroll_back = self.scroll_back.saturating_sub(20);
+            return;
+        }
+        if self.keys.matches(Action::Newline, k) {
+            self.input.insert(self.cursor, '\n');
+            self.cursor += 1;
+            self.refresh_popup();
+            return;
+        }
+        if self.vim && self.edit_mode == EditMode::Normal && self.normal_edit(k.code) {
+            return;
+        }
         match k.code {
-            KeyCode::Esc if self.busy => {
-                serve.notify(json!({ "cmd": "interrupt" }));
-            }
-            KeyCode::Esc => {
-                self.input.clear();
-                self.cursor = 0;
-            }
             KeyCode::Enter if !self.busy => self.send_prompt(serve),
             KeyCode::Enter
                 if self
@@ -785,14 +859,7 @@ impl App {
             KeyCode::Enter => {
                 self.push("[queued — ctrl+c interrupts]", Tone::Muted);
             }
-            KeyCode::Char('\n') | KeyCode::Char('\r')
-                if k.modifiers.contains(KeyModifiers::ALT) =>
-            {
-                self.input.insert(self.cursor, '\n');
-                self.cursor += 1;
-                self.refresh_popup();
-            }
-            KeyCode::Char(c) if !ctrl => {
+            KeyCode::Char(c) if !ctrl && (!self.vim || self.edit_mode == EditMode::Insert) => {
                 self.input.insert(self.cursor, c);
                 self.cursor += 1;
                 self.refresh_popup();
@@ -814,10 +881,6 @@ impl App {
             KeyCode::Right => self.cursor = cursor_step(&self.input, self.cursor, false),
             KeyCode::Home => self.cursor = 0,
             KeyCode::End => self.cursor = self.input.len(),
-            KeyCode::Up => self.scroll_back += 1,
-            KeyCode::Down => self.scroll_back = self.scroll_back.saturating_sub(1),
-            KeyCode::PageUp => self.scroll_back += 20,
-            KeyCode::PageDown => self.scroll_back = self.scroll_back.saturating_sub(20),
             _ => {}
         }
     }
@@ -863,6 +926,9 @@ impl App {
         let t = v.get("type").and_then(Value::as_str).unwrap_or("");
         match t {
             "hello" => {
+                self.keys = Keymap::from_json(v.get("keys"));
+                self.vim = v["editor"].as_str() == Some("vim");
+                self.edit_mode = EditMode::Insert;
                 self.theme = Theme::resolve(
                     v["theme"].as_str(),
                     std::env::var("COLORFGBG").ok().as_deref(),
@@ -1229,6 +1295,14 @@ impl App {
                 self.theme.style(Tone::Muted),
             ),
         ];
+        if self.vim {
+            let mode = if self.edit_mode == EditMode::Insert {
+                " INSERT "
+            } else {
+                " NORMAL "
+            };
+            spans.push(Span::styled(mode, self.theme.style(Tone::Muted)));
+        }
         if self.verbose_tools {
             spans.push(Span::styled(
                 " tools▾ ",
@@ -1465,6 +1539,40 @@ mod tests {
             "mode": "ask", "theme": "light", "tools": []
         }));
         assert!(app.theme.light);
+    }
+
+    #[test]
+    fn hello_configures_custom_keys_and_vim() {
+        let mut app = App::new();
+        app.frame(json!({
+            "type": "hello", "sessionId": "12345678", "model": "mock/mock",
+            "mode": "ask", "editor": "vim", "keys": { "expandTools": "ctrl+u" }, "tools": []
+        }));
+        assert!(app.keys.matches(
+            Action::ExpandTools,
+            crossterm::event::KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL)
+        ));
+        assert!(app.vim);
+        assert_eq!(app.edit_mode, EditMode::Insert);
+    }
+
+    #[test]
+    fn vim_normal_mode_moves_deletes_and_returns_to_insert() {
+        let mut app = App::new();
+        app.vim = true;
+        app.edit_mode = EditMode::Normal;
+        app.input = "abc".chars().collect();
+        app.cursor = 3;
+        assert!(app.normal_edit(KeyCode::Char('h')));
+        assert_eq!(app.cursor, 2);
+        assert!(app.normal_edit(KeyCode::Char('x')));
+        assert_eq!(app.input.iter().collect::<String>(), "ab");
+        assert!(app.normal_edit(KeyCode::Char('0')));
+        assert_eq!(app.cursor, 0);
+        assert!(app.normal_edit(KeyCode::Char('$')));
+        assert_eq!(app.cursor, 2);
+        assert!(app.normal_edit(KeyCode::Char('i')));
+        assert_eq!(app.edit_mode, EditMode::Insert);
     }
 
     #[test]

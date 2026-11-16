@@ -1,5 +1,6 @@
 mod app;
 mod child;
+mod keys;
 mod theme;
 
 use app::App;

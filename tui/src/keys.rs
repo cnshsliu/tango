@@ -1,0 +1,198 @@
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use serde_json::Value;
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum Action {
+    ExpandTools,
+    Newline,
+    Interrupt,
+    ClearInput,
+    ScrollUp,
+    ScrollDown,
+    PageUp,
+    PageDown,
+}
+
+#[derive(Clone, Copy)]
+struct Binding {
+    code: KeyCode,
+    modifiers: KeyModifiers,
+}
+
+impl Binding {
+    fn parse(value: &str) -> Option<Self> {
+        let mut modifiers = KeyModifiers::NONE;
+        let normalized = value.trim().to_ascii_lowercase();
+        let mut parts = normalized.split('+').collect::<Vec<_>>();
+        let key = parts.pop()?;
+        for part in parts {
+            match part.trim() {
+                "ctrl" | "control" => modifiers |= KeyModifiers::CONTROL,
+                "alt" => modifiers |= KeyModifiers::ALT,
+                "shift" => modifiers |= KeyModifiers::SHIFT,
+                _ => return None,
+            }
+        }
+        let code = match key.trim() {
+            "esc" => KeyCode::Esc,
+            "enter" => KeyCode::Enter,
+            "up" => KeyCode::Up,
+            "down" => KeyCode::Down,
+            "left" => KeyCode::Left,
+            "right" => KeyCode::Right,
+            "pageup" => KeyCode::PageUp,
+            "pagedown" => KeyCode::PageDown,
+            "home" => KeyCode::Home,
+            "end" => KeyCode::End,
+            "space" => KeyCode::Char(' '),
+            "tab" => KeyCode::Tab,
+            "backspace" => KeyCode::Backspace,
+            "delete" => KeyCode::Delete,
+            one if one.chars().count() == 1 => KeyCode::Char(one.chars().next()?),
+            _ => return None,
+        };
+        Some(Self { code, modifiers })
+    }
+
+    fn matches(self, key: KeyEvent) -> bool {
+        self.code == key.code && self.modifiers == key.modifiers
+    }
+}
+
+pub struct Keymap {
+    bindings: [(Action, Binding); 8],
+}
+
+impl Keymap {
+    pub fn from_json(config: Option<&Value>) -> Self {
+        let ctrl = |c| Binding {
+            code: KeyCode::Char(c),
+            modifiers: KeyModifiers::CONTROL,
+        };
+        let plain = |code| Binding {
+            code,
+            modifiers: KeyModifiers::NONE,
+        };
+        let mut keys = Self {
+            bindings: [
+                (Action::ExpandTools, ctrl('o')),
+                (
+                    Action::Newline,
+                    Binding {
+                        code: KeyCode::Enter,
+                        modifiers: KeyModifiers::ALT,
+                    },
+                ),
+                (Action::Interrupt, ctrl('c')),
+                (Action::ClearInput, plain(KeyCode::Esc)),
+                (Action::ScrollUp, plain(KeyCode::Up)),
+                (Action::ScrollDown, plain(KeyCode::Down)),
+                (Action::PageUp, plain(KeyCode::PageUp)),
+                (Action::PageDown, plain(KeyCode::PageDown)),
+            ],
+        };
+        let names = [
+            "expandTools",
+            "newline",
+            "interrupt",
+            "clearInput",
+            "scrollUp",
+            "scrollDown",
+            "pageUp",
+            "pageDown",
+        ];
+        if let Some(object) = config.and_then(Value::as_object) {
+            for (slot, name) in keys.bindings.iter_mut().zip(names) {
+                if let Some(binding) = object
+                    .get(name)
+                    .and_then(Value::as_str)
+                    .and_then(Binding::parse)
+                {
+                    slot.1 = binding;
+                }
+            }
+        }
+        keys
+    }
+
+    pub fn matches(&self, action: Action, key: KeyEvent) -> bool {
+        let custom = self
+            .bindings
+            .iter()
+            .any(|(a, b)| *a == action && b.matches(key));
+        custom
+            || (matches!(action, Action::Interrupt)
+                && key.code == KeyCode::Char('c')
+                && key.modifiers == KeyModifiers::CONTROL)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use serde_json::json;
+
+    #[test]
+    fn defaults_match_existing_bindings() {
+        let keys = Keymap::from_json(None);
+        assert!(keys.matches(
+            Action::ExpandTools,
+            KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL)
+        ));
+        assert!(keys.matches(
+            Action::Newline,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT)
+        ));
+        assert!(keys.matches(
+            Action::Interrupt,
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)
+        ));
+        assert!(keys.matches(
+            Action::ClearInput,
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)
+        ));
+        assert!(keys.matches(
+            Action::PageUp,
+            KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE)
+        ));
+    }
+
+    #[test]
+    fn custom_binding_replaces_default_but_ctrl_c_interrupt_is_safe() {
+        let keys = Keymap::from_json(Some(
+            &json!({ "expandTools": "ctrl+u", "interrupt": "ctrl+x" }),
+        ));
+        assert!(keys.matches(
+            Action::ExpandTools,
+            KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL)
+        ));
+        assert!(!keys.matches(
+            Action::ExpandTools,
+            KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL)
+        ));
+        assert!(keys.matches(
+            Action::Interrupt,
+            KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL)
+        ));
+        assert!(keys.matches(
+            Action::Interrupt,
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)
+        ));
+    }
+
+    #[test]
+    fn malformed_values_fall_back_to_defaults() {
+        let keys = Keymap::from_json(Some(
+            &json!({ "expandTools": "not a key", "newline": 42, "unknown": "ctrl+z" }),
+        ));
+        assert!(keys.matches(
+            Action::ExpandTools,
+            KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL)
+        ));
+        assert!(keys.matches(
+            Action::Newline,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT)
+        ));
+    }
+}

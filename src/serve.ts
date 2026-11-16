@@ -102,6 +102,8 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
     mode: perm.mode,
     totalCostUsd: sessionCostUsd,
     theme: config.theme,
+    editor: config.editor,
+    keys: config.keys,
     tools: buildTools().schemas().map(({ name, description }) => ({ name, description }))
   });
 
