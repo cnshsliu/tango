@@ -1,4 +1,5 @@
 use crate::child::{Event, Serve};
+use crate::dialog::render_dialog;
 use crate::keys::{Action, Keymap};
 use crate::theme::{Theme, Tone};
 use crate::viewer::Viewer;
@@ -6,7 +7,7 @@ use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEv
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Paragraph, Wrap};
 use serde_json::{Value, json};
 use std::cmp::min;
 use std::fs;
@@ -139,6 +140,9 @@ pub struct App {
     picker: Option<Picker>,
     viewer: Option<Viewer>,
     chat_area: Rect,
+    picker_area: Rect,
+    picker_start: usize,
+    popup_area: Rect,
     /// 0 = pinned to the newest line (follow mode); increases when scrolling back
     scroll_back: usize,
     busy: bool,
@@ -171,6 +175,9 @@ impl App {
             picker: None,
             viewer: None,
             chat_area: Rect::default(),
+            picker_area: Rect::default(),
+            picker_start: 0,
+            popup_area: Rect::default(),
             scroll_back: 0,
             busy: false,
             prompt_id: 0,
@@ -243,19 +250,22 @@ impl App {
         }
     }
 
+    fn viewer_title(line: &ChatLine) -> String {
+        let first = line.text.lines().next().unwrap_or("content");
+        if first.starts_with("❯ [粘贴") {
+            "粘贴上下文".into()
+        } else if let Some(tool) = first.strip_prefix("⚙ ") {
+            format!("工具输出 · {}", tool.chars().take(48).collect::<String>())
+        } else {
+            first.chars().take(64).collect()
+        }
+    }
+
     fn open_latest_viewer(&mut self) {
         let found = self.lines.iter().rev().find_map(|line| {
-            line.output.as_ref().map(|output| {
-                let title = line
-                    .text
-                    .lines()
-                    .next()
-                    .unwrap_or("content")
-                    .chars()
-                    .take(64)
-                    .collect::<String>();
-                (title, output.clone())
-            })
+            line.output
+                .as_ref()
+                .map(|output| (Self::viewer_title(line), output.clone()))
         });
         if let Some((title, text)) = found {
             self.viewer = Some(Viewer::new(title, text));
@@ -264,17 +274,9 @@ impl App {
 
     fn open_line_viewer(&mut self, index: usize) {
         let found = self.lines.get(index).and_then(|line| {
-            line.output.as_ref().map(|output| {
-                let title = line
-                    .text
-                    .lines()
-                    .next()
-                    .unwrap_or("content")
-                    .chars()
-                    .take(64)
-                    .collect::<String>();
-                (title, output.clone())
-            })
+            line.output
+                .as_ref()
+                .map(|output| (Self::viewer_title(line), output.clone()))
         });
         if let Some((title, text)) = found {
             self.viewer = Some(Viewer::new(title, text));
@@ -721,6 +723,51 @@ impl App {
                         MouseEventKind::ScrollDown => viewer.scroll_by(3, viewer.max_scroll),
                         _ => {}
                     }
+                } else if self.permission.is_some() {
+                    // permission answers are deliberate keyboard choices; never click through
+                } else if self.picker.is_some() {
+                    match m.kind {
+                        MouseEventKind::ScrollUp => {
+                            let p = self.picker.as_mut().unwrap();
+                            p.sel = p.sel.saturating_sub(1);
+                        }
+                        MouseEventKind::ScrollDown => {
+                            let p = self.picker.as_mut().unwrap();
+                            p.sel = (p.sel + 1).min(p.items.len().saturating_sub(1));
+                        }
+                        MouseEventKind::Down(MouseButton::Left)
+                            if self.picker_area.contains(Position::new(m.column, m.row)) =>
+                        {
+                            let row = m.row.saturating_sub(self.picker_area.y + 1) as usize;
+                            let index = self.picker_start + row;
+                            if index < self.picker.as_ref().unwrap().items.len() {
+                                self.picker.as_mut().unwrap().sel = index;
+                                self.accept_picker(serve);
+                            }
+                        }
+                        _ => {}
+                    }
+                } else if self.popup.is_some() {
+                    match m.kind {
+                        MouseEventKind::ScrollUp => {
+                            let p = self.popup.as_mut().unwrap();
+                            p.sel = p.sel.saturating_sub(1);
+                        }
+                        MouseEventKind::ScrollDown => {
+                            let p = self.popup.as_mut().unwrap();
+                            p.sel = (p.sel + 1).min(p.items.len().saturating_sub(1));
+                        }
+                        MouseEventKind::Down(MouseButton::Left)
+                            if self.popup_area.contains(Position::new(m.column, m.row)) =>
+                        {
+                            let row = m.row.saturating_sub(self.popup_area.y + 1) as usize;
+                            if row < self.popup.as_ref().unwrap().items.len() {
+                                self.popup.as_mut().unwrap().sel = row;
+                                self.accept_popup();
+                            }
+                        }
+                        _ => {}
+                    }
                 } else {
                     match m.kind {
                         MouseEventKind::ScrollUp => self.scroll_back += 3,
@@ -755,6 +802,31 @@ impl App {
             }
         }
         false
+    }
+
+    fn accept_picker(&mut self, serve: &mut Serve) {
+        let picked = self
+            .picker
+            .as_ref()
+            .and_then(|p| p.items.get(p.sel).map(|i| (p.kind, i.clone())));
+        self.picker = None;
+        if let Some((kind, item)) = picked {
+            match kind {
+                PickerKind::Model => {
+                    if item.warn {
+                        self.push(
+                            format!("! {} has no api key configured", item.id),
+                            Tone::Muted,
+                        );
+                    }
+                    self.run_slash(&format!("/model {}", item.id), serve);
+                }
+                PickerKind::Session => {
+                    self.push(format!("↻ resuming session {} …", item.id), Tone::Muted);
+                    self.switch_session(Some(item.id));
+                }
+            }
+        }
     }
 
     fn normal_edit(&mut self, code: KeyCode) -> bool {
@@ -837,18 +909,6 @@ impl App {
             self.push("[interrupt requested]", Tone::Muted);
             return;
         }
-        if self.vim && self.edit_mode == EditMode::Insert && k.code == KeyCode::Esc {
-            self.edit_mode = EditMode::Normal;
-            self.popup = None;
-            self.cursor = self.cursor.saturating_sub(1);
-            return;
-        }
-        if self.keys.matches(Action::Interrupt, k) || self.keys.matches(Action::ClearInput, k) {
-            self.input.clear();
-            self.cursor = 0;
-            self.popup = None;
-            return;
-        }
         // the picker grabs navigation keys while it is open
         if self.picker.is_some() {
             match k.code {
@@ -863,30 +923,7 @@ impl App {
                     }
                 }
                 KeyCode::Esc => self.picker = None,
-                KeyCode::Enter | KeyCode::Tab => {
-                    let picked = self
-                        .picker
-                        .as_ref()
-                        .and_then(|p| p.items.get(p.sel).map(|i| (p.kind, i.clone())));
-                    self.picker = None;
-                    if let Some((kind, item)) = picked {
-                        match kind {
-                            PickerKind::Model => {
-                                if item.warn {
-                                    self.push(
-                                        format!("! {} has no api key configured", item.id),
-                                        Tone::Muted,
-                                    );
-                                }
-                                self.run_slash(&format!("/model {}", item.id), serve);
-                            }
-                            PickerKind::Session => {
-                                self.push(format!("↻ resuming session {} …", item.id), Tone::Muted);
-                                self.switch_session(Some(item.id));
-                            }
-                        }
-                    }
-                }
+                KeyCode::Enter | KeyCode::Tab => self.accept_picker(serve),
                 _ => {}
             }
             return;
@@ -916,6 +953,18 @@ impl App {
                 }
                 _ => {}
             }
+        }
+        if self.vim && self.edit_mode == EditMode::Insert && k.code == KeyCode::Esc {
+            self.edit_mode = EditMode::Normal;
+            self.popup = None;
+            self.cursor = self.cursor.saturating_sub(1);
+            return;
+        }
+        if self.keys.matches(Action::Interrupt, k) || self.keys.matches(Action::ClearInput, k) {
+            self.input.clear();
+            self.cursor = 0;
+            self.popup = None;
+            return;
         }
         if self.keys.matches(Action::ScrollUp, k) {
             self.scroll_back += 1;
@@ -1441,14 +1490,19 @@ impl App {
 
         // completion popup, glued above the input rule
         if let Some(p) = &self.popup {
-            let ph = (p.items.len().min(6) + 1) as u16;
+            let ph = (p.items.len().min(6) + 2) as u16;
             let pop = Rect {
                 x: 0,
                 y: input_a.y.saturating_sub(ph),
                 width: area.width,
                 height: ph,
             };
-            f.render_widget(Clear, pop);
+            let title = match p.kind {
+                PopKind::Slash => "命令补全",
+                PopKind::File => "文件引用",
+            };
+            self.popup_area = pop;
+            let inner = render_dialog(f, pop, title, "tab/enter 选择 · esc 关闭", self.theme);
             let rows: Vec<Line> = p
                 .items
                 .iter()
@@ -1463,7 +1517,7 @@ impl App {
                     Line::from(Span::styled(format!(" {item:<24}{desc}"), style))
                 })
                 .collect();
-            f.render_widget(Paragraph::new(rows), pop);
+            f.render_widget(Paragraph::new(rows), inner);
         }
 
         // input
@@ -1506,18 +1560,28 @@ impl App {
 
         // model/session picker overlay
         if let Some(p) = &self.picker {
-            let h = (p.items.len().min(14) + 3) as u16;
-            let w = (area.width.min(72)).max(44);
+            let pagination = usize::from(p.items.len() > 14);
+            let h = (p.items.len().min(14) + pagination + 2) as u16;
+            let w = (area.width.min(72)).max(44).min(area.width);
             let pop = Rect {
                 x: (area.width.saturating_sub(w)) / 2,
                 y: (area.height.saturating_sub(h)) / 2,
                 width: w,
                 height: h,
             };
-            f.render_widget(Clear, pop);
-            let label_w = (w as usize).saturating_sub(30);
-            // keep the selection inside the 14-row window
+            let title = match p.kind {
+                PickerKind::Model => "选择模型",
+                PickerKind::Session => "选择会话",
+            };
+            let hint = match p.kind {
+                PickerKind::Model => "↑↓/滚轮 选择 · enter 切换 · esc 取消 · ⚠=缺 key · ✓=当前",
+                PickerKind::Session => "↑↓/滚轮 选择 · enter 恢复 · esc 取消 · ✓=当前",
+            };
+            let inner = render_dialog(f, pop, title, hint, self.theme);
+            let label_w = (inner.width as usize).saturating_sub(28);
             let start = if p.sel < 13 { 0 } else { p.sel - 12 };
+            self.picker_area = pop;
+            self.picker_start = start;
             let win = &p.items[start..(start + 14).min(p.items.len())];
             let mut rows: Vec<Line> = win
                 .iter()
@@ -1541,7 +1605,7 @@ impl App {
                     let note: String = it
                         .note
                         .chars()
-                        .take((w as usize).saturating_sub(label_w + 10))
+                        .take((inner.width as usize).saturating_sub(label_w + 9))
                         .collect();
                     Line::from(Span::styled(
                         format!(" {marks} {}{} {}", it.label, " ".repeat(pad), note),
@@ -1555,36 +1619,26 @@ impl App {
                     self.theme.style(Tone::Muted),
                 )));
             }
-            rows.push(Line::from(""));
-            let hint = match p.kind {
-                PickerKind::Model => " ↑↓ 选择 · enter 切换 · esc 取消 · ⚠=缺 key · ✓=当前",
-                PickerKind::Session => " ↑↓ 选择 · enter 恢复会话(重启 serve) · esc 取消 · ✓=当前",
-            };
-            rows.push(Line::from(Span::styled(
-                hint,
-                self.theme.style(Tone::Muted),
-            )));
-            let title = match p.kind {
-                PickerKind::Model => " 选择模型 ",
-                PickerKind::Session => " 选择会话 ",
-            };
-            f.render_widget(
-                Paragraph::new(rows).block(Block::bordered().title(title)),
-                pop,
-            );
+            f.render_widget(Paragraph::new(rows), inner);
         }
 
         // permission modal
         if let Some(p) = &self.permission {
-            let w = (area.width.min(72)).max(40);
-            let h = 7;
+            let w = (area.width.min(72)).max(40).min(area.width);
+            let h = 7.min(area.height);
             let popup = Rect {
                 x: (area.width.saturating_sub(w)) / 2,
                 y: (area.height.saturating_sub(h)) / 2,
                 width: w,
                 height: h,
             };
-            f.render_widget(Clear, popup);
+            let inner = render_dialog(
+                f,
+                popup,
+                &p.name,
+                "y 允许 · n 拒绝 · a 始终允许",
+                self.theme,
+            );
             let body = Paragraph::new(vec![
                 Line::from(Span::styled(
                     p.reason.clone(),
@@ -1592,15 +1646,9 @@ impl App {
                 )),
                 Line::from(""),
                 Line::from(Span::raw(p.detail.chars().take(240).collect::<String>())),
-                Line::from(""),
-                Line::from(Span::styled(
-                    "y allow · n deny · a always (mode → auto)",
-                    self.theme.style(Tone::Selected),
-                )),
             ])
-            .wrap(Wrap { trim: true })
-            .block(Block::bordered().title(format!(" {} ", p.name)));
-            f.render_widget(body, popup);
+            .wrap(Wrap { trim: true });
+            f.render_widget(body, inner);
         }
 
         if let Some(viewer) = self.viewer.as_mut() {
@@ -1612,8 +1660,10 @@ impl App {
                 width: w,
                 height: h,
             };
-            let inner_width = w.saturating_sub(2).max(1) as usize;
-            let inner_height = h.saturating_sub(2) as usize;
+            let title = viewer.title.clone();
+            let inner = render_dialog(f, pop, &title, "esc/ctrl+o 关闭 · ↑↓/滚轮滚动", self.theme);
+            let inner_width = inner.width.max(1) as usize;
+            let inner_height = inner.height as usize;
             let visual = viewer
                 .text
                 .lines()
@@ -1621,15 +1671,10 @@ impl App {
                 .sum::<usize>();
             viewer.max_scroll = visual.saturating_sub(inner_height);
             viewer.scroll = viewer.scroll.min(viewer.max_scroll);
-            f.render_widget(Clear, pop);
             let body = Paragraph::new(viewer.text.clone())
                 .wrap(Wrap { trim: false })
-                .scroll((viewer.scroll.min(u16::MAX as usize) as u16, 0))
-                .block(Block::bordered().title(format!(
-                    " {} · esc/ctrl+o 关闭 · ↑↓/滚轮滚动 ",
-                    viewer.title
-                )));
-            f.render_widget(body, pop);
+                .scroll((viewer.scroll.min(u16::MAX as usize) as u16, 0));
+            f.render_widget(body, inner);
         }
     }
 }
@@ -1702,6 +1747,7 @@ mod tests {
         app.open_latest_viewer();
         assert_eq!(app.scroll_back, 7);
         assert_eq!(app.viewer.as_ref().unwrap().text, "x".repeat(1000));
+        assert_eq!(app.viewer.as_ref().unwrap().title, "粘贴上下文");
     }
 
     #[test]

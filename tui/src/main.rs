@@ -1,5 +1,6 @@
 mod app;
 mod child;
+mod dialog;
 mod keys;
 mod theme;
 mod viewer;

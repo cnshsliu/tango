@@ -129,7 +129,11 @@ multi-line input with Tab-completed `/` commands and `@file` inlining (contents 
 prompt, 6KB cap), fences render as indented gray blocks, and long pasted prompts collapse to a
 short summary (over 600 chars or 8 lines). Ctrl+O opens the latest full prompt/tool output in an
 independent scrollable viewer; clicking a specific summary/tool line opens that item. Closing the
-viewer restores the original chat position. Bracketed paste inserts multi-line text without submitting it. Keys follow
+viewer restores the original chat position. All overlays use the shared `tui/src/dialog.rs` frame:
+rounded complete borders, a themed surface and title background, bottom key hints, and content
+confined to the inner rectangle. Focus is viewer → permission → picker → completion → chat; modal
+scrolling never leaks into the chat, pickers support wheel/click, and Esc closes the focused layer.
+Bracketed paste inserts multi-line text without submitting it. Keys follow
 one rule: nothing but `/exit` (or `/quit`) can leave the session. Ctrl+C interrupts a running turn
 and clears the input when idle — press it as often as you like; Esc closes popups, else does the
 same (OpenCode-style). `TANGO_BIN` overrides the server binary (e.g. `TANGO_BIN="node bin/tango.js"`
