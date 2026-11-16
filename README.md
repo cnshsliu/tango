@@ -72,8 +72,9 @@ tango --models         list models   tango --sessions   list sessions   --cwd <d
 tango repl             line-mode REPL — dev fallback, not the product
 ```
 
-TUI commands: `/model`, `/resume`, `/new`, `/mode`, `/compact`, `/skill`, `/cost`, `/status`,
-`/clear`, `/help`, `/exit`. `/model <id>` also saves the choice as the default for new sessions.
+TUI commands: `/model`, `/resume`, `/new`, `/mode`, `/vim`, `/nvim`, `/btw`, `/diff`, `/focus`,
+`/mouse`, `/theme`, `/compact`, `/skill`, `/cost`, `/status`, `/clear`, `/help`, `/exit`.
+`/model <id>` also saves the choice as the default for new sessions.
 
 ## Scheduled tasks
 
@@ -107,16 +108,19 @@ a summary, or full hunks per file.
 
 `tango serve` speaks JSONL over stdin/stdout (the only transport today): one JSON command per
 stdin line, one JSON frame per stdout line. Human logs go to stderr; stdout is protocol-only.
-Commands: `prompt`, `interrupt`, `permission` (answers a `permission_request` frame by request id),
-`models` (list presets with key availability), `set_model` (also saved as the default),
-`set_mode`, `set_nvim_viewer` (persist `ask`/`readonly`), `sessions` (list recent sessions, read-only), `history` (flattened transcript with
-paired tool calls/results, latest 300 items by default), `save_skill` (draft a skill from the
-session, or `finish <file>` to promote one), `compact`, `status`. Prompts run one at a time;
-`interrupt`, `permission`, `set_mode` and `status` skip that queue so they land mid-turn. A client
-switches sessions by respawning the child with `TANGO_RESUME=<id or prefix>` (and optionally
-`TANGO_MODE`, `TANGO_MODEL`) in the environment — serve takes them from there, no flags. Frames: `hello` (session/model/tools) → `stream` (token deltas) →
-`tool_result` / `permission_request` → `message` → `turn_end` (usage + running cost) → `result`
-(per command). stdin EOF lets queued work finish, so pipes work too. This is the seam the TUI —
+Commands: `prompt`, `btw` (ephemeral, tool-free side question), `interrupt`, `permission`
+(answers a `permission_request` frame by request id), `models` (list presets with key availability),
+`set_model` (also saved as the default), `set_mode`, `set_nvim_viewer` (persist `ask`/`readonly`),
+`set_theme`, `set_mouse`, `diff` (read-only working-tree/staged patch), `sessions`, `history`
+(flattened transcript with paired tool calls/results, latest 300 items by default), `save_skill`,
+`compact`, `status`. Prompts run one at a time; `interrupt`, `permission`, `set_mode` and `status`
+skip that queue so they land mid-turn. A client switches sessions by respawning the child with
+`TANGO_RESUME=<id or prefix>` (and optionally `TANGO_MODE`, `TANGO_MODEL`) in the environment —
+serve takes them from there, no flags. Frames: `hello` (session/model/tools/context) → `stream`
+(token deltas) → `tool_result` / `permission_request` → `message` → `turn_end` (usage, context
+window/tokens + running cost) → `result` (per command). Side questions use request-id-tagged
+`btw_stream` frames and never enter session history. stdin EOF lets queued work finish, so pipes
+work too. This is the seam the TUI —
 and later web/IDE shells — plug into; the core never knows which face is attached.
 
 ## TUI
@@ -124,8 +128,8 @@ and later web/IDE shells — plug into; the core never knows which face is attac
 `tui/` holds the Rust client (ratatui + crossterm): `cargo build --release` in `tui/`, then run
 `tango` (`tango -c` / `tango -r <id>` open a previous session). It spawns `tango serve` and speaks the protocol above — fullscreen
 alternate screen, mouse wheel scrolling, streaming answers, thinking lines, tool status lines with
-durations, a centered permission modal (y/n/a), a status bar (model · mode · cost · session) and a
-multi-line input with Tab-completed `/` commands and `@file` inlining (contents ride along in the
+durations, a centered permission modal (y/n/a), a bottom status bar below the input (model · mode ·
+cost · session) and a multi-line input with Tab-completed `/` commands and `@file` inlining (contents ride along in the
 prompt, 6KB cap), fences render as indented gray blocks, and long pasted prompts collapse to a
 short summary (over 600 chars or 8 lines). Ctrl+O opens the latest full prompt/tool output in an
 independent scrollable viewer; clicking a specific summary/tool line opens that item. Closing the
@@ -135,22 +139,48 @@ confined to the inner rectangle. Focus is viewer → permission → picker → c
 scrolling never leaks into the chat, pickers support wheel/click, and Esc closes the focused layer.
 Opening full content checks `nvim` and `vim` with `--version`; only an actual `NVIM` is used,
 never standard Vim. On first detection, choose one-time read-only, persistent read-only
-(`nvimViewer: "readonly"`), edit, or the internal viewer. Ctrl+E edits the current item in Neovim.
-After saving, choose a new request, full reprocessing, or a correction containing a unified diff;
-the original session history and tool results are never rewritten. Unchanged saves submit nothing.
-Bracketed paste inserts multi-line text without submitting it. Keys follow
+(`nvimViewer: "readonly"`), edit, or the internal viewer. In the internal viewer, Ctrl+E edits the
+current item in Neovim. After saving, choose a new request, full reprocessing, or a correction
+containing a unified diff; the original session history and tool results are never rewritten.
+Unchanged saves submit nothing. Leaving Neovim returns to the prompt (or to the edit-resolution
+picker when submitted text changed), not to the internal viewer. In the input, Ctrl+E opens the
+current unsubmitted draft in external Neovim; bare `/nvim` starts with an empty draft. Saving and
+quitting returns the edited text to the input without submitting it or opening the diff-resolution
+picker; Enter or Ctrl+S sends it explicitly. If Neovim is unavailable, the draft stays in place.
+Bracketed paste never submits by itself: multi-line and long pasted text is
+shown as `[Pasted text #N +M lines]` followed by a fresh input line, while the full original text is
+kept for submission. Further typing stays visible, and the input scrolls to keep the cursor in view.
+Keys follow
 one rule: nothing but `/exit` (or `/quit`) can leave the session. Ctrl+C interrupts a running turn
 and clears the input when idle — press it as often as you like; Esc closes popups, else does the
 same (OpenCode-style). `TANGO_BIN` overrides the server binary (e.g. `TANGO_BIN="node bin/tango.js"`
 for dev builds). Bare `/model` and `/resume` open centered pickers; picking a session kills the
 serve child and respawns it with `TANGO_RESUME`, so both the model context and the visible
 transcript come back. `/new` starts fresh while keeping the current model and permission mode.
+Ctrl+P opens a filterable command palette; model/session pickers use the same filtering and mouse
+routing. Ctrl+R searches original prompt history, and Alt+S stashes/restores the complete draft
+(including collapsed paste metadata) without submitting it. File references accept inclusive line
+ranges: `@path#20-45`, `@path#L20-L45`, or `@path#20`. Scrolling up pauses auto-follow and keeps the
+reading position stable; new output shows an unread badge, and clicking it or Ctrl+End resumes
+following. Ctrl+T opens a transcript with `/` search, `n/N` matches, `{`/`}` prompt navigation,
+and `c` to copy. Tool failures show key output inline; `/focus` hides successful tools and thinking
+but never errors. The status bar includes context tokens/window/percentage with 60%/80% warning
+thresholds. `/diff` opens a read-only working-tree patch (`--staged` and optional paths supported).
+`/btw <question>` opens a separate streamed answer without tools or session-history writes.
 Set `theme` in `~/.tango/config.json` to `dark`, `light`, or `auto`; `auto` recognizes light
 terminal backgrounds 7, 15 and 255 in `COLORFGBG`. Missing, malformed or unknown values use dark.
-Restart the TUI to apply a theme change; sessions and model settings are unaffected.
-Set `editor` to `vim` for modal editing (the default is `default`). Vim starts in INSERT; Esc enters
-NORMAL, where `h`/`l`, `0`/`$`, `x`, `i`/`a`/`I`/`A` edit and `j`/`k` scroll. `/` and `@` return to
-INSERT. The optional `keys` object remaps `expandTools`, `newline`, `interrupt`, `clearInput`,
+`/theme` applies and saves changes immediately. `/mouse [on|off]` controls mouse capture; off keeps
+keyboard scrolling and native terminal selection. Both settings persist in config.
+Set `editor` to `vim` for modal editing (the default is `default`), or toggle it for the current
+TUI process with `/vim` (also `/vim on` / `/vim off`). This is the TUI's built-in lightweight
+Vim-style key handling, not an embedded Neovim process. Entry prints a short key hint, and the
+status bar continuously shows `VIM INSERT`, `VIM NORMAL`, or `VIM COMMAND`. Vim starts in INSERT;
+Esc enters NORMAL, where `h`/`l`, `0`/`$`, `x`, `i`/`a`/`I`/`A` edit and `j`/`k` move the input
+cursor between logical lines (arrow keys still scroll chat). `/` and `@` return to INSERT. In Vim INSERT, Enter adds a newline instead of submitting; NORMAL Enter does
+nothing. Ctrl+S submits the complete draft in either mode (and in non-Vim mode); NORMAL `:wq` and
+`:wqa` also submit. Entering `:` expands the input by one row: the draft stays visible above and
+the command has its own bottom line. Esc cancels that line without clearing the draft. The optional `keys`
+object remaps `expandTools`, `newline`, `interrupt`, `clearInput`,
 `scrollUp`, `scrollDown`, `pageUp`, and `pageDown`, using values such as `ctrl+u` or `alt+enter`.
 Unknown actions, keys, and editor values fall back to defaults. Ctrl+C always remains a safe
 interrupt/clear binding even when `interrupt` is remapped. Example:

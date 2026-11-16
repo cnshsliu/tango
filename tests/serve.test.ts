@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createServer } from 'node:http';
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -72,7 +72,7 @@ test('serve: hello, status, prompt with a permission denial, session persistence
   await writeFile(
     join(home, 'models.json'),
     JSON.stringify([
-      { id: 'mock/mock', provider: 'mock', model: 'mock-model', api: 'openai-completions', baseUrl: `http://127.0.0.1:${(mock.server.address() as AddressInfo).port}/v1`, apiKey: 'MOCK_SERVE_KEY' }
+      { id: 'mock/mock', provider: 'mock', model: 'mock-model', api: 'openai-completions', baseUrl: `http://127.0.0.1:${(mock.server.address() as AddressInfo).port}/v1`, apiKey: 'MOCK_SERVE_KEY', contextWindow: 200 }
     ])
   );
 
@@ -91,12 +91,17 @@ test('serve: hello, status, prompt with a permission denial, session persistence
     assert.equal(hello.protocol, 1);
     assert.equal(hello.model, 'mock/mock');
     assert.equal(hello.mode, 'ask');
+    assert.equal(hello.contextWindow, 200);
+    assert.equal(hello.contextTokens, 0);
     assert.ok(hello.sessionId && hello.tools.some((t: any) => t.name === 'write'));
 
     s.send({ id: 1, cmd: 'status' });
     const status = await s.until((f) => f.type === 'result' && f.id === 1, 'status result');
     assert.equal(status.ok, true);
     assert.equal(status.data.model, 'mock/mock');
+    s.send({ id: 6, cmd: 'set_model', modelId: 'mock/mock' });
+    const model = await s.until((f) => f.type === 'result' && f.id === 6, 'set_model result');
+    assert.equal(model.data.contextWindow, 200);
 
     s.send({ id: 2, cmd: 'prompt', text: '把文件写到上一级目录' });
     const perm = await s.until((f) => f.type === 'permission_request', 'permission request');
@@ -112,6 +117,8 @@ test('serve: hello, status, prompt with a permission denial, session persistence
     assert.equal(msg.message.content[0].text, '好，不写了');
     const te = await s.until((f) => f.type === 'turn_end', 'turn_end');
     assert.equal(te.usage.input, 40);
+    assert.equal(te.contextTokens, 40);
+    assert.equal(te.contextWindow, 200);
     const res = await s.until((f) => f.type === 'result' && f.id === 2, 'prompt result');
     assert.deepEqual(res.data, { stopReason: 'stop' });
 
@@ -253,6 +260,7 @@ test('serve: sessions listing, TANGO_RESUME restores context, TANGO_MODE, save_s
     assert.equal(hello.sessionId, firstId);
     assert.equal(hello.mode, 'auto');
     assert.equal(hello.totalCostUsd, 0.002);
+    assert.equal(hello.contextTokens, 1000);
     assert.equal(hello.theme, 'light');
     assert.equal(hello.editor, 'vim');
     assert.deepEqual(hello.keys, { expandTools: 'ctrl+u' });
@@ -332,6 +340,135 @@ test('serve: set_mode lands mid-turn while a permission dialog is open ("always 
     }, 'prompt result');
     assert.equal(seen.filter((t) => t === 'permission_request').length, 0);
     assert.equal(seen.filter((t) => t === 'tool_result').length, 2);
+  } finally {
+    s.child.kill();
+    mock.server.close();
+  }
+});
+
+test('serve: theme and mouse settings persist without dropping other config', async () => {
+  const mock = await startMock();
+  const home = await mkdtemp(join(tmpdir(), 'tango-serve-home-'));
+  const work = await mkdtemp(join(tmpdir(), 'tango-serve-work-'));
+  await writeFile(
+    join(home, 'models.json'),
+    JSON.stringify([
+      { id: 'mock/mock', provider: 'mock', model: 'mock-model', api: 'openai-completions', baseUrl: `http://127.0.0.1:${(mock.server.address() as AddressInfo).port}/v1`, apiKey: 'MOCK_SERVE_KEY' }
+    ])
+  );
+  await writeFile(join(home, 'config.json'), JSON.stringify({ theme: 'dark', editor: 'vim', nvimViewer: 'readonly' }));
+  const s = await startServe(home, work, 0);
+  try {
+    const hello = await s.next();
+    assert.equal(hello.mouse, true);
+    s.send({ id: 1, cmd: 'set_theme', theme: 'light' });
+    const theme = await s.until((f) => f.type === 'result' && f.id === 1, 'set_theme result');
+    assert.equal(theme.data.theme, 'light');
+    s.send({ id: 2, cmd: 'set_mouse', mouse: false });
+    const mouse = await s.until((f) => f.type === 'result' && f.id === 2, 'set_mouse result');
+    assert.equal(mouse.data.mouse, false);
+    const config = JSON.parse(await readFile(join(home, 'config.json'), 'utf8'));
+    assert.deepEqual(config, { theme: 'light', mouse: false, editor: 'vim', nvimViewer: 'readonly' });
+    s.send({ id: 3, cmd: 'set_theme', theme: 'blue' });
+    const badTheme = await s.until((f) => f.type === 'result' && f.id === 3, 'bad theme result');
+    assert.equal(badTheme.ok, false);
+    s.send({ id: 4, cmd: 'set_mouse', mouse: 'no' });
+    const badMouse = await s.until((f) => f.type === 'result' && f.id === 4, 'bad mouse result');
+    assert.equal(badMouse.ok, false);
+  } finally {
+    s.child.kill();
+    mock.server.close();
+  }
+});
+
+test('serve: diff returns working-tree and staged patches without mutations', async () => {
+  const mock = await startMock();
+  const home = await mkdtemp(join(tmpdir(), 'tango-serve-home-'));
+  const work = await mkdtemp(join(tmpdir(), 'tango-serve-work-'));
+  await writeFile(
+    join(home, 'models.json'),
+    JSON.stringify([
+      { id: 'mock/mock', provider: 'mock', model: 'mock-model', api: 'openai-completions', baseUrl: `http://127.0.0.1:${(mock.server.address() as AddressInfo).port}/v1`, apiKey: 'MOCK_SERVE_KEY' }
+    ])
+  );
+  const git = (args: string[], cwd = work) => {
+    const result = spawnSync('git', args, { cwd, encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+  };
+  git(['init']);
+  git(['config', 'user.email', 'tango@example.test']);
+  git(['config', 'user.name', 'Tango Test']);
+  await writeFile(join(work, 'file.txt'), 'old\n');
+  git(['add', 'file.txt']);
+  git(['commit', '-m', 'initial']);
+  await writeFile(join(work, 'file.txt'), 'old\nnew\n');
+
+  const s = await startServe(home, work, 0);
+  try {
+    await s.next();
+    s.send({ id: 1, cmd: 'diff' });
+    const working = await s.until((f) => f.type === 'result' && f.id === 1, 'working diff');
+    assert.match(working.data.diff, /\+new/);
+    git(['add', 'file.txt']);
+    s.send({ id: 2, cmd: 'diff', staged: true });
+    const staged = await s.until((f) => f.type === 'result' && f.id === 2, 'staged diff');
+    assert.match(staged.data.diff, /\+new/);
+    git(['reset', '--hard', 'HEAD']);
+    s.send({ id: 3, cmd: 'diff' });
+    const clean = await s.until((f) => f.type === 'result' && f.id === 3, 'clean diff');
+    assert.equal(clean.data.diff, 'clean — nothing changed');
+  } finally {
+    s.child.kill();
+  }
+
+  const plain = await mkdtemp(join(tmpdir(), 'tango-serve-plain-'));
+  const other = await startServe(home, plain, 0);
+  try {
+    await other.next();
+    other.send({ id: 1, cmd: 'diff' });
+    const failure = await other.until((f) => f.type === 'result' && f.id === 1, 'non-repo diff');
+    assert.equal(failure.data.isError, true);
+    assert.match(failure.data.diff, /not a git repository/);
+  } finally {
+    other.child.kill();
+    mock.server.close();
+  }
+});
+
+test('serve: btw streams an ephemeral answer outside session history', async () => {
+  const mock = await startMock();
+  const home = await mkdtemp(join(tmpdir(), 'tango-serve-home-'));
+  const work = await mkdtemp(join(tmpdir(), 'tango-serve-work-'));
+  await writeFile(
+    join(home, 'models.json'),
+    JSON.stringify([
+      { id: 'mock/mock', provider: 'mock', model: 'mock-model', api: 'openai-completions', baseUrl: `http://127.0.0.1:${(mock.server.address() as AddressInfo).port}/v1`, apiKey: 'MOCK_SERVE_KEY' }
+    ])
+  );
+  let call = 0;
+  mock.setScript(() => {
+    const content = ['formal answer', 'side answer', 'final answer'][call++] ?? 'done';
+    return SSE({ choices: [{ delta: { content }, finish_reason: 'stop' }] }) + 'data: [DONE]\n\n';
+  });
+  const s = await startServe(home, work, 0);
+  try {
+    await s.next();
+    s.send({ id: 1, cmd: 'prompt', text: 'formal question' });
+    await s.until((f) => f.type === 'result' && f.id === 1, 'formal result');
+    s.send({ id: 2, cmd: 'btw', text: 'side question' });
+    const stream = await s.until((f) => f.type === 'btw_stream', 'btw stream');
+    assert.equal(stream.id, 2);
+    const side = await s.until((f) => f.type === 'result' && f.id === 2, 'btw result');
+    assert.equal(side.data.text, 'side answer');
+    s.send({ id: 3, cmd: 'history' });
+    const history = await s.until((f) => f.type === 'result' && f.id === 3, 'history after btw');
+    assert.equal(JSON.stringify(history.data.items).includes('side question'), false);
+    assert.equal(JSON.stringify(history.data.items).includes('side answer'), false);
+    s.send({ id: 4, cmd: 'prompt', text: 'final question' });
+    await s.until((f) => f.type === 'result' && f.id === 4, 'final result');
+    assert.equal(JSON.stringify(mock.requests[2].messages).includes('side question'), false);
+    assert.equal(JSON.stringify(mock.requests[2].messages).includes('side answer'), false);
+    assert.equal(mock.requests[1].tools, undefined);
   } finally {
     s.child.kill();
     mock.server.close();

@@ -66,6 +66,10 @@ export class Agent {
     void this.store.setModel(model.id);
   }
 
+  contextTokenEstimate(): number {
+    return this.estimateTokens();
+  }
+
   /** Append a user message and loop (model → tools → model) until the model stops. */
   async prompt(text: string, onStream?: (ev: StreamEvent) => void): Promise<Message> {
     const user: Message = { role: 'user', content: [{ type: 'text', text }] };
@@ -112,6 +116,45 @@ export class Agent {
         const msg: Message = { role: 'assistant', content: [], stopReason: 'aborted' };
         await this.store.appendMessage(msg);
         return msg;
+      }
+      await this.events.emit('error', { error: e instanceof Error ? e : new Error(String(e)) });
+      throw e;
+    } finally {
+      this.controller = undefined;
+    }
+  }
+
+  /** Ask a side question with the current context, without tools or session writes. */
+  async ask(text: string, onStream?: (ev: StreamEvent) => void): Promise<Message> {
+    const user: Message = { role: 'user', content: [{ type: 'text', text }] };
+    this.controller = new AbortController();
+    try {
+      const { systemPrompt } = await buildContext(this.cwd);
+      const req: CompletionRequest = {
+        system: systemPrompt,
+        messages: [...this.store.messages(), user],
+        tools: [],
+        maxTokens: this.model.maxTokens,
+        signal: this.controller.signal
+      };
+      let message: Message | undefined;
+      for await (const ev of adapterFor(this.model).stream(this.model, req)) {
+        onStream?.(ev);
+        if (ev.type === 'done') message = ev.message;
+      }
+      if (!message) throw new Error(`${this.model.id}: stream ended without a final message`);
+      const usage = message.usage ?? { input: 0, output: 0 };
+      const cost = costUsd(this.model, usage);
+      this.totalCostUsd += cost;
+      await this.events.emit('turn_end', {
+        stopReason: message.stopReason ?? 'stop',
+        usage,
+        costUsd: cost
+      });
+      return message;
+    } catch (e: any) {
+      if (this.controller.signal.aborted || e?.name === 'AbortError') {
+        return { role: 'assistant', content: [], stopReason: 'aborted' };
       }
       await this.events.emit('error', { error: e instanceof Error ? e : new Error(String(e)) });
       throw e;

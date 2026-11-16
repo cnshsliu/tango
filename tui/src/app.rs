@@ -1,7 +1,7 @@
 use crate::child::{Event, Serve};
 use crate::dialog::render_dialog;
 use crate::keys::{Action, Keymap};
-use crate::nvim::{EditResolution, Neovim, NvimRequest, edit_submission};
+use crate::nvim::{EditResolution, Neovim, NvimRequest, NvimTarget, edit_submission};
 use crate::theme::{Theme, Tone};
 use crate::viewer::{PromptState, Viewer};
 use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind};
@@ -42,6 +42,7 @@ struct ChatLine {
     /// full tool output or collapsed user prompt; shown in the independent viewer
     output: Option<String>,
     prompt_state: Option<PromptState>,
+    source_index: usize,
 }
 
 struct Permission {
@@ -62,12 +63,19 @@ enum Pending {
     Skill,
     History,
     NvimViewer,
+    Theme,
+    Mouse,
+    Diff,
+    Btw,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum PickerKind {
     Model,
     Session,
+    Command,
+    History,
+    Theme,
     NvimBackend,
     EditResolution,
 }
@@ -87,6 +95,60 @@ struct Picker {
     kind: PickerKind,
     items: Vec<PickItem>,
     sel: usize,
+    query: String,
+}
+
+impl Picker {
+    fn new(kind: PickerKind, items: Vec<PickItem>) -> Self {
+        let sel = items.iter().position(|item| item.current).unwrap_or(0);
+        Self {
+            kind,
+            items,
+            sel,
+            query: String::new(),
+        }
+    }
+
+    fn filterable(&self) -> bool {
+        matches!(
+            self.kind,
+            PickerKind::Model | PickerKind::Session | PickerKind::Command | PickerKind::History
+        )
+    }
+
+    fn filtered_items(&self) -> Vec<&PickItem> {
+        let query = self.query.trim().to_lowercase();
+        self.items
+            .iter()
+            .filter(|item| {
+                query.is_empty()
+                    || [&item.id, &item.label, &item.note]
+                        .into_iter()
+                        .any(|text| text.to_lowercase().contains(&query))
+            })
+            .collect()
+    }
+
+    fn selected_item(&self) -> Option<PickItem> {
+        self.filtered_items()
+            .get(self.sel)
+            .map(|item| (*item).clone())
+    }
+
+    fn filter_key(&mut self, code: KeyCode, ctrl: bool) -> bool {
+        if !self.filterable() || ctrl {
+            return false;
+        }
+        match code {
+            KeyCode::Char(c) => self.query.push(c),
+            KeyCode::Backspace => {
+                self.query.pop();
+            }
+            _ => return false,
+        }
+        self.sel = 0;
+        true
+    }
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -102,16 +164,46 @@ struct Popup {
     kind: PopKind,
 }
 
+#[derive(Clone, Copy)]
+struct PastedSpan {
+    start: usize,
+    end: usize,
+    id: usize,
+    extra_lines: usize,
+}
+
+struct InputDraft {
+    input: Vec<char>,
+    cursor: usize,
+    pastes: Vec<PastedSpan>,
+}
+
+struct RenderedInput {
+    text: String,
+    cursor: usize,
+}
+
+struct InputLayout {
+    lines: Vec<String>,
+    cursor_row: usize,
+    cursor_col: usize,
+}
+
 const SLASH: &[(&str, &str)] = &[
+    ("/btw <q>", "临时提问当前上下文，不写入会话"),
     ("/clear", "清空屏幕（上下文保留）"),
     ("/compact", "压缩较早的上下文"),
     ("/cost", "本会话花费与上下文条数"),
+    ("/diff", "只读查看工作区 diff · /diff --staged [paths]"),
     ("/exit", "退出"),
+    ("/focus", "安静模式：隐藏成功工具与思考，保留错误"),
     ("/help", "命令列表"),
     ("/interrupt", "停止当前回合"),
     ("/model <id>", "切换模型（存为默认），裸 /model 打开列表"),
     ("/mode <m>", "ask | auto | readonly"),
+    ("/mouse", "切换鼠标捕获 · /mouse on|off"),
     ("/new", "开新会话"),
+    ("/nvim", "用外部 Neovim 编辑草稿 · ctrl+e 编辑当前草稿"),
     ("/quit", "退出"),
     ("/resume", "切换到历史会话，打开列表"),
     (
@@ -119,6 +211,8 @@ const SLASH: &[(&str, &str)] = &[
         "把本会话存成技能草稿 · /skill finish <file> 定稿",
     ),
     ("/status", "会话信息"),
+    ("/theme", "选择并实时应用 dark/light/auto 主题"),
+    ("/vim", "切换 Vim 编辑 · ctrl+s 发送 · :wq/:wqa 发送"),
 ];
 
 /// inline @path tokens are expanded into file contents at send time (Claude Code style)
@@ -132,9 +226,12 @@ enum EditMode {
 
 pub struct App {
     theme: Theme,
+    mouse: bool,
+    pub mouse_capture: Option<bool>,
     keys: Keymap,
     vim: bool,
     edit_mode: EditMode,
+    vim_command: Option<String>,
     nvim: Option<Option<Neovim>>,
     nvim_preference: String,
     pending_viewer: Option<Viewer>,
@@ -146,6 +243,10 @@ pub struct App {
     thinking: String,
     pub input: Vec<char>,
     pub cursor: usize,
+    pastes: Vec<PastedSpan>,
+    next_paste: usize,
+    prompt_history: Vec<String>,
+    stashed_draft: Option<InputDraft>,
     popup: Option<Popup>,
     picker: Option<Picker>,
     viewer: Option<Viewer>,
@@ -153,16 +254,25 @@ pub struct App {
     picker_area: Rect,
     picker_start: usize,
     popup_area: Rect,
+    jump_area: Rect,
     /// 0 = pinned to the newest line (follow mode); increases when scrolling back
     scroll_back: usize,
+    last_visual_total: usize,
+    unread_rows: usize,
+    focus: bool,
     busy: bool,
     prompt_id: u64,
+    btw_id: Option<u64>,
+    btw_title: Option<String>,
+    vim_override: Option<bool>,
     pending: Vec<(u64, Pending)>,
     permission: Option<Permission>,
     model: String,
     mode: String,
     session: String,
     cost: f64,
+    context_tokens: u64,
+    context_window: u64,
     pub quit: bool,
     /// serve respawn request for the main loop: Some(Some(id)) resumes, Some(None) starts fresh
     pub respawn: Option<Option<String>>,
@@ -173,9 +283,12 @@ impl App {
     pub fn new() -> Self {
         Self {
             theme: Theme::dark(),
+            mouse: true,
+            mouse_capture: None,
             keys: Keymap::from_json(None),
             vim: false,
             edit_mode: EditMode::Insert,
+            vim_command: None,
             nvim: None,
             nvim_preference: "ask".into(),
             pending_viewer: None,
@@ -186,6 +299,10 @@ impl App {
             thinking: String::new(),
             input: Vec::new(),
             cursor: 0,
+            pastes: Vec::new(),
+            next_paste: 1,
+            prompt_history: Vec::new(),
+            stashed_draft: None,
             popup: None,
             picker: None,
             viewer: None,
@@ -193,15 +310,24 @@ impl App {
             picker_area: Rect::default(),
             picker_start: 0,
             popup_area: Rect::default(),
+            jump_area: Rect::default(),
             scroll_back: 0,
+            last_visual_total: 0,
+            unread_rows: 0,
+            focus: false,
             busy: false,
             prompt_id: 0,
+            btw_id: None,
+            btw_title: None,
+            vim_override: None,
             pending: Vec::new(),
             permission: None,
             model: "…".into(),
             mode: String::new(),
             session: String::new(),
             cost: 0.0,
+            context_tokens: 0,
+            context_window: 0,
             quit: false,
             respawn: None,
             err: None,
@@ -216,6 +342,32 @@ impl App {
         &self.model
     }
 
+    pub fn mouse_enabled(&self) -> bool {
+        self.mouse
+    }
+
+    fn context_tone(&self) -> Tone {
+        if self.context_window == 0 {
+            return Tone::Muted;
+        }
+        let percent = self.context_tokens.saturating_mul(100) / self.context_window;
+        if percent >= 80 {
+            Tone::Error
+        } else if percent >= 60 {
+            Tone::Warning
+        } else {
+            Tone::Success
+        }
+    }
+
+    fn token_count(count: u64) -> String {
+        if count >= 1000 {
+            format!("{:.1}k", count as f64 / 1000.0)
+        } else {
+            count.to_string()
+        }
+    }
+
     /// switching context means a new serve child; wipe the old transcript and turn state
     fn switch_session(&mut self, target: Option<String>) {
         let keep: Vec<ChatLine> = self.lines.drain(..).last().into_iter().collect();
@@ -223,6 +375,8 @@ impl App {
         self.stream.clear();
         self.thinking.clear();
         self.pending.clear();
+        self.btw_id = None;
+        self.btw_title = None;
         self.permission = None;
         self.viewer = None;
         self.pending_viewer = None;
@@ -230,8 +384,25 @@ impl App {
         self.nvim_request = None;
         self.busy = false;
         self.cost = 0.0;
+        self.context_tokens = 0;
+        self.context_window = 0;
         self.scroll_back = 0;
+        self.last_visual_total = 0;
+        self.unread_rows = 0;
+        self.jump_area = Rect::default();
         self.respawn = Some(target);
+    }
+
+    fn jump_to_bottom(&mut self) {
+        self.scroll_back = 0;
+        self.unread_rows = 0;
+    }
+
+    fn scroll_chat_down(&mut self, rows: usize) {
+        self.scroll_back = self.scroll_back.saturating_sub(rows);
+        if self.scroll_back == 0 {
+            self.unread_rows = 0;
+        }
     }
 
     fn push(&mut self, text: impl Into<String>, tone: Tone) {
@@ -241,6 +412,7 @@ impl App {
                 tone,
                 output: None,
                 prompt_state: None,
+                source_index: usize::MAX,
             });
         }
     }
@@ -251,6 +423,7 @@ impl App {
             tone,
             output,
             prompt_state: None,
+            source_index: usize::MAX,
         });
     }
 
@@ -301,16 +474,15 @@ impl App {
                     warn: false,
                     current: false,
                 };
-                self.picker = Some(Picker {
-                    kind: PickerKind::NvimBackend,
-                    items: vec![
+                self.picker = Some(Picker::new(
+                    PickerKind::NvimBackend,
+                    vec![
                         item("once", "仅此次使用 Neovim 只读", "本次打开，下次仍询问"),
                         item("always", "以后都使用 Neovim 只读", "保存到配置"),
                         item("edit", "本次使用 Neovim 编辑", "保存后选择如何处理修改"),
                         item("internal", "使用内置查看器", "不启动外部编辑器"),
                     ],
-                    sel: 0,
-                });
+                ));
             }
             _ => self.viewer = Some(viewer),
         }
@@ -319,15 +491,59 @@ impl App {
     fn launch_nvim(&mut self, editor: Neovim, viewer: Viewer, read_only: bool) {
         self.picker = None;
         self.pending_viewer = None;
+        self.viewer = None;
         self.nvim_request = Some(NvimRequest {
             editor,
             viewer,
             read_only,
+            target: NvimTarget::Viewer,
         });
     }
 
+    fn edit_draft(&mut self) {
+        let Some(editor) = self.detect_nvim() else {
+            self.push("未检测到 Neovim，草稿已保留", Tone::Muted);
+            return;
+        };
+        let draft: String = self.input.iter().collect();
+        self.popup = None;
+        self.vim_command = None;
+        self.nvim_request = Some(NvimRequest {
+            editor,
+            viewer: Viewer::new("输入草稿", draft),
+            read_only: false,
+            target: NvimTarget::Draft,
+        });
+    }
+
+    pub fn finish_draft_nvim(&mut self, original: &str, edited: impl Into<String>) {
+        let edited = edited.into();
+        let replacement: Vec<char> = edited.chars().collect();
+        let end = self.input.len();
+        self.replace_input_range(0, end, &replacement);
+        self.cursor = self.input.len();
+        self.popup = None;
+        self.viewer = None;
+        self.push(
+            if original == edited {
+                "草稿未修改"
+            } else {
+                "Neovim 草稿已更新 · 尚未发送"
+            },
+            Tone::Muted,
+        );
+    }
+
+    pub fn nvim_draft_error(&mut self, original: &str, error: String) {
+        let replacement: Vec<char> = original.chars().collect();
+        let end = self.input.len();
+        self.replace_input_range(0, end, &replacement);
+        self.cursor = self.input.len();
+        self.push(format!("Neovim 启动失败：{error}；草稿已保留"), Tone::Error);
+    }
+
     pub fn finish_nvim(&mut self, viewer: Viewer, edited: String, read_only: bool) {
-        self.viewer = Some(viewer.clone());
+        self.viewer = None;
         if read_only {
             return;
         }
@@ -335,7 +551,6 @@ impl App {
             self.push("内容未修改", Tone::Muted);
             return;
         }
-        self.viewer = None;
         let notice = match viewer.prompt_state {
             Some(PromptState::Running) => "原内容已提交且仍在处理；选择后将打断当前回合",
             Some(PromptState::Completed) => "原内容已经处理完成；请选择修改后的处理方式",
@@ -350,15 +565,14 @@ impl App {
             warn: false,
             current: false,
         };
-        self.picker = Some(Picker {
-            kind: PickerKind::EditResolution,
-            items: vec![
+        self.picker = Some(Picker::new(
+            PickerKind::EditResolution,
+            vec![
                 item("new", "作为全新处理", "发送修改后的完整内容"),
                 item("reprocess", "重新处理", "用完整修改稿重做原请求"),
                 item("correct", "修正前面的处理", "只发送原始内容与修改稿的 diff"),
             ],
-            sel: 0,
-        });
+        ));
     }
 
     pub fn nvim_error(&mut self, viewer: Viewer, error: String) {
@@ -388,6 +602,30 @@ impl App {
         if let Some((title, text, index, state)) = found {
             self.request_viewer(Viewer::with_source(title, text, index, state));
         }
+    }
+
+    fn open_transcript(&mut self) {
+        let mut text = String::new();
+        let mut prompt_rows = Vec::new();
+        let mut row = 0;
+        for line in self.chat_lines() {
+            for (index, part) in line.text.split('\n').enumerate() {
+                if index == 0 && line.prompt_state.is_some() {
+                    prompt_rows.push(row);
+                }
+                text.push_str(part);
+                text.push('\n');
+                row += 1;
+            }
+        }
+        if !self.stream.is_empty() {
+            text.push_str(&self.stream);
+        }
+        self.viewer = Some(Viewer::transcript(
+            "Transcript",
+            text.trim_end(),
+            prompt_rows,
+        ));
     }
 
     fn open_line_viewer(&mut self, index: usize) {
@@ -542,7 +780,7 @@ impl App {
     fn refresh_popup(&mut self) {
         let text: String = self.input.iter().collect();
         // slash palette: input is the command word only, idle
-        if !self.busy && text.starts_with('/') && !text.contains(' ') {
+        if !self.busy && self.pastes.is_empty() && text.starts_with('/') && !text.contains(' ') {
             let items: Vec<(&str, &str)> = SLASH
                 .iter()
                 .copied()
@@ -618,32 +856,105 @@ impl App {
             PopKind::Slash => {
                 // never insert the "<id>"-style placeholder; commands with args get a trailing space
                 let word = item.split(' ').next().unwrap_or(&item);
-                let has_arg = item.contains(' ');
-                self.input = word.chars().collect();
-                if has_arg {
-                    self.input.push(' ');
+                let mut replacement: Vec<char> = word.chars().collect();
+                if item.contains(' ') {
+                    replacement.push(' ');
                 }
-                self.cursor = self.input.len();
+                let end = self.input.len();
+                self.replace_input_range(0, end, &replacement);
             }
             PopKind::File => {
-                let (tok, start, end) = self.token_at_cursor();
-                let _ = tok;
+                let (_tok, start, end) = self.token_at_cursor();
                 let s: String = self.input.iter().collect();
                 let cb = self.cursor_byte();
                 let sb: usize = s[..min(start, cb)].chars().count();
                 let eb: usize = s[..min(end, s.len())].chars().count();
-                let mut next: Vec<char> = self.input[..sb].to_vec();
-                next.extend(item.chars());
-                next.extend(self.input[eb..].iter());
-                let adv = item.chars().count();
-                self.input = next;
-                self.cursor = sb + adv;
+                let replacement: Vec<char> = item.chars().collect();
+                self.replace_input_range(sb, eb, &replacement);
             }
         }
         self.popup = None;
     }
 
     // ---------- slash commands ----------
+
+    fn set_vim(&mut self, enabled: bool) {
+        let was_vim = self.vim;
+        self.vim = enabled;
+        self.vim_command = None;
+        self.edit_mode = EditMode::Insert;
+        self.popup = None;
+        if enabled {
+            self.push(
+                "Vim 已开启 · INSERT 输入 · Esc 转 NORMAL · Ctrl+S 发送 · Enter 换行",
+                Tone::Success,
+            );
+        } else if was_vim {
+            self.push("Vim 已关闭 · Enter 发送", Tone::Muted);
+        }
+    }
+
+    fn open_command_palette(&mut self) {
+        let items = SLASH
+            .iter()
+            .map(|(command, description)| PickItem {
+                id: command.split(' ').next().unwrap_or(command).into(),
+                label: (*command).into(),
+                note: (*description).into(),
+                warn: false,
+                current: false,
+            })
+            .collect();
+        self.picker = Some(Picker::new(PickerKind::Command, items));
+    }
+
+    fn open_prompt_history(&mut self) {
+        if self.prompt_history.is_empty() {
+            self.push("暂无 prompt 历史", Tone::Muted);
+            return;
+        }
+        let items = self
+            .prompt_history
+            .iter()
+            .enumerate()
+            .rev()
+            .map(|(index, text)| PickItem {
+                id: index.to_string(),
+                label: text.lines().next().unwrap_or("").chars().take(80).collect(),
+                note: text.clone(),
+                warn: false,
+                current: false,
+            })
+            .collect();
+        self.picker = Some(Picker::new(PickerKind::History, items));
+    }
+
+    fn restore_prompt(&mut self, text: String) {
+        let replacement: Vec<char> = text.chars().collect();
+        let end = self.input.len();
+        self.replace_input_range(0, end, &replacement);
+        self.cursor = self.input.len();
+        self.popup = None;
+    }
+
+    fn toggle_draft_stash(&mut self) {
+        if !self.input.is_empty() {
+            self.stashed_draft = Some(InputDraft {
+                input: std::mem::take(&mut self.input),
+                cursor: self.cursor,
+                pastes: std::mem::take(&mut self.pastes),
+            });
+            self.cursor = 0;
+            self.popup = None;
+            self.push("草稿已暂存 · alt+s 恢复", Tone::Muted);
+        } else if let Some(draft) = self.stashed_draft.take() {
+            self.input = draft.input;
+            self.cursor = draft.cursor;
+            self.pastes = draft.pastes;
+            self.popup = None;
+            self.push("草稿已恢复", Tone::Muted);
+        }
+    }
 
     fn run_slash(&mut self, text: &str, serve: &mut Serve) {
         let trimmed = text.trim();
@@ -663,11 +974,24 @@ impl App {
                     Tone::Muted,
                 );
                 self.push(
-                    "  tab / ↑↓      complete · ctrl+o tools (default) · esc interrupt/clear/mode",
+                    "  tab / ↑↓      complete · ctrl+o tools · ctrl+s send · esc interrupt/clear/mode",
                     Tone::Muted,
                 );
             }
             "/clear" => self.lines.clear(),
+            "/focus" => {
+                self.focus = !self.focus;
+                self.last_visual_total = 0;
+                self.jump_to_bottom();
+                self.push(
+                    if self.focus {
+                        "focus 已开启 · 仅保留对话与错误"
+                    } else {
+                        "focus 已关闭 · 显示全部工具活动"
+                    },
+                    Tone::Muted,
+                );
+            }
             "/new" => {
                 self.push("↻ new session …", Tone::Muted);
                 self.switch_session(None);
@@ -676,6 +1000,25 @@ impl App {
             "/cost" => {
                 let id = serve.command("status", vec![]);
                 self.pending.push((id, Pending::Status));
+            }
+            "/diff" => {
+                let staged = rest.split_whitespace().any(|part| part == "--staged");
+                let mut paths: Vec<Value> = rest
+                    .split_whitespace()
+                    .filter(|part| *part != "--staged")
+                    .map(|part| Value::String(part.into()))
+                    .collect();
+                if paths.is_empty() {
+                    paths.push(Value::String(".".into()));
+                }
+                let id = serve.command(
+                    "diff",
+                    vec![
+                        ("staged", Value::Bool(staged)),
+                        ("paths", Value::Array(paths)),
+                    ],
+                );
+                self.pending.push((id, Pending::Diff));
             }
             "/skill" | "/save-as-skill" => {
                 let id = serve.command("save_skill", vec![("arg", Value::String(rest.into()))]);
@@ -694,12 +1037,81 @@ impl App {
                     self.pending.push((id, Pending::Model));
                 }
             }
+            "/theme" => {
+                if rest.is_empty() {
+                    let items = ["dark", "light", "auto"]
+                        .into_iter()
+                        .map(|theme| PickItem {
+                            id: theme.into(),
+                            label: theme.into(),
+                            note: match theme {
+                                "dark" => "深色背景",
+                                "light" => "浅色背景",
+                                _ => "跟随终端 COLORFGBG",
+                            }
+                            .into(),
+                            warn: false,
+                            current: false,
+                        })
+                        .collect();
+                    self.picker = Some(Picker::new(PickerKind::Theme, items));
+                } else if matches!(rest, "dark" | "light" | "auto") {
+                    let id =
+                        serve.command("set_theme", vec![("theme", Value::String(rest.into()))]);
+                    self.pending.push((id, Pending::Theme));
+                } else {
+                    self.push("usage: /theme [dark|light|auto]", Tone::Muted);
+                }
+            }
+            "/mouse" => {
+                let enabled = match rest {
+                    "" => !self.mouse,
+                    "on" => true,
+                    "off" => false,
+                    _ => {
+                        self.push("usage: /mouse [on|off]", Tone::Muted);
+                        return;
+                    }
+                };
+                let id = serve.command("set_mouse", vec![("mouse", Value::Bool(enabled))]);
+                self.pending.push((id, Pending::Mouse));
+                self.mouse_capture = Some(enabled);
+            }
+            "/vim" => {
+                let enabled = match rest {
+                    "" => !self.vim,
+                    "on" => true,
+                    "off" => false,
+                    _ => {
+                        self.push("usage: /vim [on|off]", Tone::Muted);
+                        return;
+                    }
+                };
+                self.set_vim(enabled);
+                // the toggle lasts for the whole TUI process; a serve respawn must not
+                // re-apply the persisted config's editor over the user's choice
+                self.vim_override = Some(enabled);
+            }
+            "/nvim" => self.edit_draft(),
             "/mode" => {
                 if rest.is_empty() {
                     self.push("usage: /mode ask|auto|readonly", Tone::Muted);
                 } else {
                     let id = serve.command("set_mode", vec![("mode", Value::String(rest.into()))]);
                     self.pending.push((id, Pending::Mode));
+                }
+            }
+            "/btw" => {
+                if rest.is_empty() {
+                    self.push("usage: /btw <question>", Tone::Muted);
+                } else {
+                    let id = serve.command("btw", vec![("text", Value::String(rest.into()))]);
+                    self.pending.push((id, Pending::Btw));
+                    self.btw_id = Some(id);
+                    let title = format!("临时提问 · {}", rest.chars().take(40).collect::<String>());
+                    self.btw_title = Some(title.clone());
+                    self.viewer = Some(Viewer::read_only(title, ""));
+                    self.busy = true; // ctrl+c must be able to abort a slow side question
                 }
             }
             "/compact" => {
@@ -722,9 +1134,29 @@ impl App {
 
     // ---------- @file expansion ----------
 
+    fn at_line_range(raw: &str) -> Option<(String, (usize, usize))> {
+        let (path, spec) = raw.rsplit_once('#')?;
+        if path.is_empty() {
+            return None;
+        }
+        let spec = spec.strip_prefix('L').unwrap_or(spec);
+        let (start, end) = spec.split_once('-').unwrap_or((spec, spec));
+        let end = end.strip_prefix('L').unwrap_or(end);
+        if start.is_empty()
+            || end.is_empty()
+            || !start.bytes().all(|b| b.is_ascii_digit())
+            || !end.bytes().all(|b| b.is_ascii_digit())
+        {
+            return None;
+        }
+        let start = start.parse::<usize>().ok()?;
+        let end = end.parse::<usize>().ok()?;
+        (start > 0 && end >= start).then(|| (path.to_string(), (start, end)))
+    }
+
     fn expand_at(text: &str) -> (String, Vec<String>) {
         let chars: Vec<char> = text.chars().collect();
-        let mut hits: Vec<(usize, usize, String)> = Vec::new(); // [start,end) char range, path
+        let mut hits = Vec::new();
         let mut i = 0;
         while i < chars.len() {
             let boundary = i == 0 || chars[i - 1].is_whitespace();
@@ -734,10 +1166,17 @@ impl App {
                     j += 1;
                 }
                 let raw: String = chars[i + 1..j].iter().collect();
-                let path = raw.trim_end_matches(|c: char| ")]}.,;:!?\"'".contains(c));
-                let p = Path::new(path);
-                if !path.is_empty() && (p.is_file() || p.is_dir()) {
-                    hits.push((i, j, path.to_string()));
+                let token = raw.trim_end_matches(|c: char| ")]}.,;:!?\"'".contains(c));
+                let (path, range) = if Path::new(token).is_file() || Path::new(token).is_dir() {
+                    (token.to_string(), None)
+                } else if let Some((path, range)) = Self::at_line_range(token) {
+                    (path, Some(range))
+                } else {
+                    (token.to_string(), None)
+                };
+                let p = Path::new(&path);
+                if !path.is_empty() && (p.is_file() || (p.is_dir() && range.is_none())) {
+                    hits.push((i, j, token.to_string(), path, range));
                 }
                 i = j.max(i + 1);
                 continue;
@@ -747,7 +1186,7 @@ impl App {
         let mut warns = Vec::new();
         let mut out = String::new();
         let mut pos = 0;
-        for (start, end, path) in hits {
+        for (start, end, token, path, range) in hits {
             out.extend(chars[pos..start].iter());
             pos = end;
             if Path::new(&path).is_dir() {
@@ -756,15 +1195,32 @@ impl App {
             }
             match fs::read_to_string(&path) {
                 Ok(body) => {
-                    let clipped: String = body.chars().take(AT_FILE_CAP).collect();
-                    let tail = if body.chars().count() > AT_FILE_CAP {
+                    let selected = if let Some((first, last)) = range {
+                        let lines: Vec<&str> = body.lines().collect();
+                        if first > lines.len() {
+                            warns.push(format!(
+                                "@{token}: line {first} exceeds file length {}",
+                                lines.len()
+                            ));
+                            out.extend(chars[start..end].iter());
+                            continue;
+                        }
+                        lines[first - 1..last.min(lines.len())].join("\n")
+                    } else {
+                        body
+                    };
+                    let clipped: String = selected.chars().take(AT_FILE_CAP).collect();
+                    let tail = if selected.chars().count() > AT_FILE_CAP {
                         "\n…[truncated]"
                     } else {
                         ""
                     };
-                    out.push_str(&format!("{path}:\n{clipped}{tail}"));
+                    out.push_str(&format!("{token}:\n{clipped}{tail}"));
                 }
-                Err(e) => warns.push(format!("@{path}: {e}")),
+                Err(e) => {
+                    warns.push(format!("@{token}: {e}"));
+                    out.extend(chars[start..end].iter());
+                }
             }
         }
         out.extend(chars[pos..].iter());
@@ -807,6 +1263,234 @@ impl App {
         out
     }
 
+    fn replace_input_range(&mut self, start: usize, end: usize, replacement: &[char]) {
+        // an edit that touches part of a collapsed paste consumes the whole block,
+        // so pasted spans stay atomic instead of silently expanding into raw lines
+        let mut start = start;
+        let mut end = end;
+        while let Some(index) = self
+            .pastes
+            .iter()
+            .position(|paste| paste.start < end && paste.end > start)
+        {
+            let paste = self.pastes.remove(index);
+            start = start.min(paste.start);
+            end = end.max(paste.end);
+        }
+        let old_len = end - start;
+        let new_len = replacement.len();
+        self.pastes.retain_mut(|paste| {
+            if paste.end <= start {
+                return true;
+            }
+            if paste.start >= end {
+                if new_len >= old_len {
+                    let delta = new_len - old_len;
+                    paste.start += delta;
+                    paste.end += delta;
+                } else {
+                    let delta = old_len - new_len;
+                    paste.start -= delta;
+                    paste.end -= delta;
+                }
+                return true;
+            }
+            false
+        });
+        self.input.splice(start..end, replacement.iter().copied());
+        if self.cursor >= end {
+            if new_len >= old_len {
+                self.cursor += new_len - old_len;
+            } else {
+                self.cursor -= old_len - new_len;
+            }
+        } else if self.cursor > start {
+            self.cursor = start + new_len;
+        }
+    }
+
+    fn insert_char(&mut self, c: char) {
+        let cursor = self.cursor;
+        self.replace_input_range(cursor, cursor, &[c]);
+    }
+
+    fn insert_paste(&mut self, text: &str) {
+        let text = text.replace("\r\n", "\n").replace('\r', "\n");
+        let chars: Vec<char> = text.chars().collect();
+        if chars.is_empty() {
+            return;
+        }
+        if !text.contains('\n') && chars.len() <= 200 {
+            let cursor = self.cursor;
+            self.replace_input_range(cursor, cursor, &chars);
+            return;
+        }
+        let start = self.cursor;
+        let end = start + chars.len();
+        let extra_lines = text.lines().count().saturating_sub(1);
+        self.replace_input_range(start, start, &chars);
+        if chars.last() != Some(&'\n') {
+            self.insert_char('\n');
+        }
+        let hidden_end = if chars.last() == Some(&'\n') {
+            end - 1
+        } else {
+            end
+        };
+        self.pastes.push(PastedSpan {
+            start,
+            end: hidden_end,
+            id: self.next_paste,
+            extra_lines,
+        });
+        self.next_paste += 1;
+    }
+
+    fn clear_input(&mut self) {
+        self.input.clear();
+        self.pastes.clear();
+        self.cursor = 0;
+        self.popup = None;
+    }
+
+    fn backspace_input(&mut self) {
+        if let Some(paste) = self
+            .pastes
+            .iter()
+            .find(|paste| paste.end == self.cursor)
+            .copied()
+        {
+            self.replace_input_range(paste.start, paste.end, &[]);
+        } else if self.cursor > 0 {
+            let cursor = self.cursor;
+            self.replace_input_range(cursor - 1, cursor, &[]);
+        }
+    }
+
+    fn delete_input(&mut self) {
+        if let Some(paste) = self
+            .pastes
+            .iter()
+            .find(|paste| paste.start == self.cursor)
+            .copied()
+        {
+            self.replace_input_range(paste.start, paste.end, &[]);
+        } else if self.cursor < self.input.len() {
+            let cursor = self.cursor;
+            self.replace_input_range(cursor, cursor + 1, &[]);
+        }
+    }
+
+    fn move_input_cursor(&mut self, left: bool) {
+        self.cursor = if left {
+            self.pastes
+                .iter()
+                .find(|paste| paste.end == self.cursor)
+                .map_or(self.cursor.saturating_sub(1), |paste| paste.start)
+        } else {
+            self.pastes
+                .iter()
+                .find(|paste| paste.start == self.cursor)
+                .map_or(min(self.cursor + 1, self.input.len()), |paste| paste.end)
+        };
+    }
+
+    fn rendered_input(&self) -> RenderedInput {
+        let mut pastes = self.pastes.clone();
+        pastes.sort_by_key(|paste| paste.start);
+        let mut text = String::new();
+        let mut positions = vec![0; self.input.len() + 1];
+        let mut raw = 0;
+        let mut display = 0;
+        for paste in pastes {
+            while raw < paste.start {
+                positions[raw] = display;
+                text.push(self.input[raw]);
+                raw += 1;
+                display += 1;
+            }
+            positions[raw] = display;
+            let label = if paste.extra_lines > 0 {
+                format!("[Pasted text #{} +{} lines]", paste.id, paste.extra_lines)
+            } else {
+                format!("[Pasted text #{}]", paste.id)
+            };
+            display += label.chars().count();
+            text.push_str(&label);
+            while raw < paste.end {
+                positions[raw] = display;
+                raw += 1;
+            }
+            positions[raw] = display;
+        }
+        while raw < self.input.len() {
+            positions[raw] = display;
+            text.push(self.input[raw]);
+            raw += 1;
+            display += 1;
+        }
+        positions[self.input.len()] = display;
+        RenderedInput {
+            text,
+            cursor: positions[self.cursor],
+        }
+    }
+
+    fn input_layout(&self, width: u16) -> InputLayout {
+        let rendered = self.rendered_input();
+        let width = width.max(1) as usize;
+        let mut lines = vec![String::new()];
+        let mut row = 0;
+        let mut col = 0;
+        let mut cursor = None;
+        for (index, c) in rendered.text.chars().enumerate() {
+            if c == '\n' {
+                if index == rendered.cursor {
+                    cursor = Some(if col >= width {
+                        (row + 1, 0)
+                    } else {
+                        (row, col)
+                    });
+                }
+                lines.push(String::new());
+                row += 1;
+                col = 0;
+                continue;
+            }
+            let char_width = display_width(&c.to_string());
+            if col >= width || (col > 0 && col + char_width > width) {
+                lines.push(String::new());
+                row += 1;
+                col = 0;
+            }
+            if index == rendered.cursor {
+                cursor = Some((row, col));
+            }
+            lines[row].push(c);
+            col += char_width;
+        }
+        if rendered.cursor == rendered.text.chars().count() {
+            if col >= width {
+                lines.push(String::new());
+                row += 1;
+                col = 0;
+            }
+            cursor = Some((row, col));
+        }
+        let (mut cursor_row, mut cursor_col) = cursor.unwrap_or((row, col));
+        if let Some(command) = &self.vim_command {
+            let command_line = format!(":{command}");
+            cursor_col = display_width(&command_line);
+            lines.push(command_line);
+            cursor_row = lines.len() - 1;
+        }
+        InputLayout {
+            lines,
+            cursor_row,
+            cursor_col,
+        }
+    }
+
     // ---------- event handling ----------
 
     /// Handle one event; returns true when the loop should end.
@@ -819,18 +1503,14 @@ impl App {
                 return true;
             }
             Event::Stderr(l) => self.push(format!("! {l}"), Tone::Muted),
-            Event::Resized(_, _) => {}
+            Event::Resized(_, _) => self.last_visual_total = 0,
             Event::Paste(s) => {
                 if self.permission.is_none()
                     && self.picker.is_none()
                     && self.viewer.is_none()
                     && (!self.vim || self.edit_mode == EditMode::Insert)
                 {
-                    let s = s.replace("\r\n", "\n").replace('\r', "\n");
-                    for c in s.chars() {
-                        self.input.insert(self.cursor, c);
-                        self.cursor += 1;
-                    }
+                    self.insert_paste(&s);
                     self.refresh_popup();
                 }
             }
@@ -851,14 +1531,17 @@ impl App {
                         }
                         MouseEventKind::ScrollDown => {
                             let p = self.picker.as_mut().unwrap();
-                            p.sel = (p.sel + 1).min(p.items.len().saturating_sub(1));
+                            let len = p.filtered_items().len();
+                            p.sel = (p.sel + 1).min(len.saturating_sub(1));
                         }
                         MouseEventKind::Down(MouseButton::Left)
                             if self.picker_area.contains(Position::new(m.column, m.row)) =>
                         {
                             let row = m.row.saturating_sub(self.picker_area.y + 1) as usize;
-                            let index = self.picker_start + row;
-                            if index < self.picker.as_ref().unwrap().items.len() {
+                            let p = self.picker.as_ref().unwrap();
+                            let query_rows = usize::from(p.filterable());
+                            let index = self.picker_start + row.saturating_sub(query_rows);
+                            if row >= query_rows && index < p.filtered_items().len() {
                                 self.picker.as_mut().unwrap().sel = index;
                                 self.accept_picker(serve);
                             }
@@ -889,8 +1572,11 @@ impl App {
                 } else {
                     match m.kind {
                         MouseEventKind::ScrollUp => self.scroll_back += 3,
-                        MouseEventKind::ScrollDown => {
-                            self.scroll_back = self.scroll_back.saturating_sub(3)
+                        MouseEventKind::ScrollDown => self.scroll_chat_down(3),
+                        MouseEventKind::Down(MouseButton::Left)
+                            if self.jump_area.contains(Position::new(m.column, m.row)) =>
+                        {
+                            self.jump_to_bottom();
                         }
                         MouseEventKind::Down(MouseButton::Left)
                             if self.chat_area.contains(Position::new(m.column, m.row)) =>
@@ -926,7 +1612,7 @@ impl App {
         let picked = self
             .picker
             .as_ref()
-            .and_then(|p| p.items.get(p.sel).map(|i| (p.kind, i.clone())));
+            .and_then(|p| p.selected_item().map(|item| (p.kind, item)));
         self.picker = None;
         if let Some((kind, item)) = picked {
             match kind {
@@ -942,6 +1628,15 @@ impl App {
                 PickerKind::Session => {
                     self.push(format!("↻ resuming session {} …", item.id), Tone::Muted);
                     self.switch_session(Some(item.id));
+                }
+                PickerKind::Command => self.run_slash(&item.id, serve),
+                PickerKind::Theme => self.run_slash(&format!("/theme {}", item.id), serve),
+                PickerKind::History => {
+                    if let Ok(index) = item.id.parse::<usize>()
+                        && let Some(text) = self.prompt_history.get(index).cloned()
+                    {
+                        self.restore_prompt(text);
+                    }
                 }
                 PickerKind::NvimBackend => {
                     if let Some(viewer) = self.pending_viewer.take() {
@@ -980,7 +1675,7 @@ impl App {
 
     fn submit_text(&mut self, serve: &mut Serve, text: String) {
         self.push_user(&text);
-        self.scroll_back = 0;
+        self.jump_to_bottom();
         self.busy = true;
         self.prompt_id = serve.command("prompt", vec![("text", Value::String(text))]);
         if let Some(line) = self.lines.last_mut() {
@@ -988,14 +1683,72 @@ impl App {
         }
     }
 
+    fn move_input_vertical(&mut self, down: bool) {
+        let mut lines = Vec::new();
+        let mut start = 0;
+        for (index, c) in self.input.iter().enumerate() {
+            if *c == '\n' {
+                lines.push((start, index));
+                start = index + 1;
+            }
+        }
+        lines.push((start, self.input.len()));
+        let Some(current) = lines
+            .iter()
+            .position(|(start, end)| self.cursor >= *start && self.cursor <= *end)
+        else {
+            return;
+        };
+        let target = if down {
+            if current + 1 >= lines.len() {
+                return;
+            }
+            current + 1
+        } else {
+            if current == 0 {
+                return;
+            }
+            current - 1
+        };
+        let (start, _) = lines[current];
+        let before_cursor = self.input[start..self.cursor].iter().collect::<String>();
+        let column = display_width(&before_cursor);
+        let (target_start, target_end) = lines[target];
+        let mut target_cursor = target_end;
+        let mut width = 0;
+        for index in target_start..target_end {
+            let char_width = display_width(&self.input[index].to_string());
+            if width + char_width > column {
+                target_cursor = index;
+                break;
+            }
+            width += char_width;
+            target_cursor = index + 1;
+        }
+        self.cursor = target_cursor;
+        self.snap_cursor_to_paste_boundary();
+    }
+
+    /// Vertical movement lands on a raw column, which can fall inside a collapsed
+    /// paste; pastes are atomic, so rest on the leading edge.
+    fn snap_cursor_to_paste_boundary(&mut self) {
+        if let Some(paste) = self
+            .pastes
+            .iter()
+            .find(|paste| self.cursor > paste.start && self.cursor < paste.end)
+        {
+            self.cursor = paste.start;
+        }
+    }
+
     fn normal_edit(&mut self, code: KeyCode) -> bool {
         match code {
-            KeyCode::Char('h') => self.cursor = cursor_step(&self.input, self.cursor, true),
-            KeyCode::Char('l') => self.cursor = cursor_step(&self.input, self.cursor, false),
+            KeyCode::Char('h') => self.move_input_cursor(true),
+            KeyCode::Char('l') => self.move_input_cursor(false),
             KeyCode::Char('0') => self.cursor = 0,
             KeyCode::Char('$') => self.cursor = self.input.len(),
             KeyCode::Char('x') if self.cursor < self.input.len() => {
-                self.input.remove(self.cursor);
+                self.delete_input();
                 self.refresh_popup();
             }
             KeyCode::Char('i') => self.edit_mode = EditMode::Insert,
@@ -1011,8 +1764,9 @@ impl App {
                 self.cursor = self.input.len();
                 self.edit_mode = EditMode::Insert;
             }
-            KeyCode::Char('j') => self.scroll_back = self.scroll_back.saturating_sub(1),
-            KeyCode::Char('k') => self.scroll_back += 1,
+            KeyCode::Char('j') => self.move_input_vertical(true),
+            KeyCode::Char('k') => self.move_input_vertical(false),
+            KeyCode::Char(':') => self.vim_command = Some(String::new()),
             KeyCode::Char('/') | KeyCode::Char('@') => {
                 self.edit_mode = EditMode::Insert;
                 return false;
@@ -1023,11 +1777,59 @@ impl App {
         true
     }
 
+    fn vim_command_key(&mut self, code: KeyCode) -> Option<bool> {
+        self.vim_command.as_ref()?;
+        Some(match code {
+            KeyCode::Char(c) => {
+                self.vim_command.as_mut().unwrap().push(c);
+                false
+            }
+            KeyCode::Backspace => {
+                let command = self.vim_command.as_mut().unwrap();
+                if command.is_empty() {
+                    self.vim_command = None;
+                } else {
+                    command.pop();
+                }
+                false
+            }
+            KeyCode::Esc => {
+                self.vim_command = None;
+                false
+            }
+            KeyCode::Enter => {
+                let command = self.vim_command.take().unwrap();
+                match command.as_str() {
+                    "wq" | "wqa" => true,
+                    _ => {
+                        self.push(
+                            format!("不支持的 Vim 命令 :{command} · 使用 :wq、:wqa 或 ctrl+s"),
+                            Tone::Error,
+                        );
+                        false
+                    }
+                }
+            }
+            _ => false,
+        })
+    }
+
     fn key(&mut self, k: crossterm::event::KeyEvent, serve: &mut Serve) {
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         if self.viewer.is_some() {
+            // Ctrl+C always remains a safe interrupt even when the action is remapped —
+            // and even while a viewer (e.g. an in-flight /btw answer) has the keys
+            if self.busy && self.keys.matches(Action::Interrupt, k) {
+                serve.notify(json!({ "cmd": "interrupt" }));
+                self.push("[interrupt requested]", Tone::Muted);
+                return;
+            }
             if ctrl && k.code == KeyCode::Char('e') {
                 let viewer = self.viewer.clone().unwrap();
+                if viewer.read_only {
+                    self.push("该查看器为只读", Tone::Muted);
+                    return;
+                }
                 if let Some(editor) = self.detect_nvim() {
                     self.launch_nvim(editor, viewer, false);
                 } else {
@@ -1035,12 +1837,45 @@ impl App {
                 }
                 return;
             }
-            if k.code == KeyCode::Esc || self.keys.matches(Action::ExpandTools, k) {
+            if ctrl && k.code == KeyCode::Char('t') {
+                self.viewer = None;
+                return;
+            }
+            if self.viewer.as_ref().unwrap().search_input {
+                let viewer = self.viewer.as_mut().unwrap();
+                match k.code {
+                    KeyCode::Esc => viewer.cancel_search(),
+                    KeyCode::Enter => viewer.accept_search(),
+                    KeyCode::Backspace => viewer.search_backspace(),
+                    KeyCode::Char(c) if !ctrl => viewer.search_push(c),
+                    _ => {}
+                }
+                return;
+            }
+            if !ctrl && k.code == KeyCode::Char('c') {
+                let result = crate::clipboard::copy(&self.viewer.as_ref().unwrap().text);
+                match result {
+                    Ok(()) => self.push("已复制查看器全文", Tone::Success),
+                    Err(error) => self.push(format!("复制失败：{error}"), Tone::Error),
+                }
+                return;
+            }
+            if k.code == KeyCode::Esc
+                || k.code == KeyCode::Char('q')
+                || self.keys.matches(Action::ExpandTools, k)
+            {
                 self.viewer = None;
                 return;
             }
             let viewer = self.viewer.as_mut().unwrap();
             match k.code {
+                // search lives in the transcript; elsewhere '/' would open an invisible
+                // search row that swallows keys
+                KeyCode::Char('/') if viewer.transcript => viewer.start_search(),
+                KeyCode::Char('n') => viewer.next_match(true),
+                KeyCode::Char('N') => viewer.next_match(false),
+                KeyCode::Char('{') => viewer.next_prompt(false),
+                KeyCode::Char('}') => viewer.next_prompt(true),
                 KeyCode::Up | KeyCode::Char('k') => viewer.scroll_by(-1, viewer.max_scroll),
                 KeyCode::Down | KeyCode::Char('j') => viewer.scroll_by(1, viewer.max_scroll),
                 KeyCode::PageUp => viewer.scroll_by(-10, viewer.max_scroll),
@@ -1067,6 +1902,50 @@ impl App {
             }
             return;
         }
+        if ctrl && k.code == KeyCode::Char('t') {
+            self.open_transcript();
+            return;
+        }
+        if ctrl && k.code == KeyCode::Char('p') && self.viewer.is_none() {
+            self.open_command_palette();
+            return;
+        }
+        if ctrl && k.code == KeyCode::Char('r') && self.picker.is_none() && self.popup.is_none() {
+            self.open_prompt_history();
+            return;
+        }
+        if k.modifiers.contains(KeyModifiers::ALT)
+            && k.code == KeyCode::Char('s')
+            && self.picker.is_none()
+            && self.popup.is_none()
+        {
+            self.toggle_draft_stash();
+            return;
+        }
+        if ctrl && k.code == KeyCode::Char('s') && self.picker.is_none() && self.popup.is_none() {
+            if self.busy {
+                self.push("[queued — ctrl+c interrupts]", Tone::Muted);
+            } else {
+                self.send_prompt(serve);
+            }
+            return;
+        }
+        // control keys (notably ctrl+c) must fall through to the interrupt handling
+        // even while a ':' command line is open
+        if !ctrl && let Some(send) = self.vim_command_key(k.code) {
+            if send {
+                if self.busy {
+                    self.push("[queued — ctrl+c interrupts]", Tone::Muted);
+                } else {
+                    self.send_prompt(serve);
+                }
+            }
+            return;
+        }
+        if ctrl && k.code == KeyCode::End {
+            self.jump_to_bottom();
+            return;
+        }
         if self.keys.matches(Action::ExpandTools, k) {
             self.open_latest_viewer();
             return;
@@ -1087,7 +1966,8 @@ impl App {
                 }
                 KeyCode::Down => {
                     if let Some(p) = self.picker.as_mut() {
-                        p.sel = (p.sel + 1).min(p.items.len().saturating_sub(1));
+                        let len = p.filtered_items().len();
+                        p.sel = (p.sel + 1).min(len.saturating_sub(1));
                     }
                 }
                 KeyCode::Esc => {
@@ -1102,7 +1982,11 @@ impl App {
                     self.picker = None;
                 }
                 KeyCode::Enter | KeyCode::Tab => self.accept_picker(serve),
-                _ => {}
+                _ => {
+                    if let Some(p) = self.picker.as_mut() {
+                        p.filter_key(k.code, ctrl);
+                    }
+                }
             }
             return;
         }
@@ -1132,6 +2016,10 @@ impl App {
                 _ => {}
             }
         }
+        if ctrl && k.code == KeyCode::Char('e') && self.popup.is_none() {
+            self.edit_draft();
+            return;
+        }
         if self.vim && self.edit_mode == EditMode::Insert && k.code == KeyCode::Esc {
             self.edit_mode = EditMode::Normal;
             self.popup = None;
@@ -1139,9 +2027,7 @@ impl App {
             return;
         }
         if self.keys.matches(Action::Interrupt, k) || self.keys.matches(Action::ClearInput, k) {
-            self.input.clear();
-            self.cursor = 0;
-            self.popup = None;
+            self.clear_input();
             return;
         }
         if self.keys.matches(Action::ScrollUp, k) {
@@ -1149,7 +2035,7 @@ impl App {
             return;
         }
         if self.keys.matches(Action::ScrollDown, k) {
-            self.scroll_back = self.scroll_back.saturating_sub(1);
+            self.scroll_chat_down(1);
             return;
         }
         if self.keys.matches(Action::PageUp, k) {
@@ -1157,12 +2043,11 @@ impl App {
             return;
         }
         if self.keys.matches(Action::PageDown, k) {
-            self.scroll_back = self.scroll_back.saturating_sub(20);
+            self.scroll_chat_down(20);
             return;
         }
         if self.keys.matches(Action::Newline, k) {
-            self.input.insert(self.cursor, '\n');
-            self.cursor += 1;
+            self.insert_char('\n');
             self.refresh_popup();
             return;
         }
@@ -1170,7 +2055,6 @@ impl App {
             return;
         }
         match k.code {
-            KeyCode::Enter if !self.busy => self.send_prompt(serve),
             KeyCode::Enter
                 if self
                     .input
@@ -1179,33 +2063,33 @@ impl App {
                     .trim_start()
                     .starts_with('/') =>
             {
-                let text: String = std::mem::take(&mut self.input).iter().collect();
-                self.cursor = 0;
+                let text: String = self.input.iter().collect();
+                self.clear_input();
                 self.run_slash(&text, serve); // commands stay live during a turn
             }
+            KeyCode::Enter if self.vim && self.edit_mode == EditMode::Insert => {
+                self.insert_char('\n');
+                self.refresh_popup();
+            }
+            KeyCode::Enter if self.vim => {}
+            KeyCode::Enter if !self.busy => self.send_prompt(serve),
             KeyCode::Enter => {
                 self.push("[queued — ctrl+c interrupts]", Tone::Muted);
             }
             KeyCode::Char(c) if !ctrl && (!self.vim || self.edit_mode == EditMode::Insert) => {
-                self.input.insert(self.cursor, c);
-                self.cursor += 1;
+                self.insert_char(c);
                 self.refresh_popup();
             }
             KeyCode::Backspace => {
-                if self.cursor > 0 {
-                    self.cursor -= 1;
-                    self.input.remove(self.cursor);
-                    self.refresh_popup();
-                }
+                self.backspace_input();
+                self.refresh_popup();
             }
             KeyCode::Delete => {
-                if self.cursor < self.input.len() {
-                    self.input.remove(self.cursor);
-                    self.refresh_popup();
-                }
+                self.delete_input();
+                self.refresh_popup();
             }
-            KeyCode::Left => self.cursor = cursor_step(&self.input, self.cursor, true),
-            KeyCode::Right => self.cursor = cursor_step(&self.input, self.cursor, false),
+            KeyCode::Left => self.move_input_cursor(true),
+            KeyCode::Right => self.move_input_cursor(false),
             KeyCode::Home => self.cursor = 0,
             KeyCode::End => self.cursor = self.input.len(),
             _ => {}
@@ -1232,19 +2116,20 @@ impl App {
         if text.trim().is_empty() {
             return;
         }
-        self.input.clear();
-        self.cursor = 0;
-        self.popup = None;
+        self.clear_input();
         if text.trim().starts_with('/') || text.trim() == ":q" {
             self.run_slash(&text, serve);
             return;
+        }
+        if self.prompt_history.last() != Some(&text) {
+            self.prompt_history.push(text.clone());
         }
         let (expanded, warns) = Self::expand_at(&text);
         for w in warns {
             self.push(format!("! {w}"), Tone::Muted);
         }
         self.push_user(&text);
-        self.scroll_back = 0;
+        self.jump_to_bottom();
         self.busy = true;
         self.prompt_id = serve.command("prompt", vec![("text", Value::String(expanded))]);
         if let Some(line) = self.lines.last_mut() {
@@ -1257,13 +2142,17 @@ impl App {
         match t {
             "hello" => {
                 self.keys = Keymap::from_json(v.get("keys"));
-                self.vim = v["editor"].as_str() == Some("vim");
+                if self.vim_override.is_none() {
+                    // /vim's process-wide choice wins over the persisted config on respawns
+                    self.set_vim(v["editor"].as_str() == Some("vim"));
+                }
                 self.nvim_preference = v["nvimViewer"].as_str().unwrap_or("ask").into();
-                self.edit_mode = EditMode::Insert;
                 self.theme = Theme::resolve(
                     v["theme"].as_str(),
                     std::env::var("COLORFGBG").ok().as_deref(),
                 );
+                self.mouse = v["mouse"].as_bool().unwrap_or(true);
+                self.mouse_capture = Some(self.mouse);
                 self.model = v["model"].as_str().unwrap_or("?").into();
                 self.mode = v["mode"].as_str().unwrap_or("?").into();
                 self.session = v["sessionId"]
@@ -1273,6 +2162,8 @@ impl App {
                     .take(8)
                     .collect();
                 self.cost = v["totalCostUsd"].as_f64().unwrap_or(0.0);
+                self.context_tokens = v["contextTokens"].as_u64().unwrap_or(0);
+                self.context_window = v["contextWindow"].as_u64().unwrap_or(0);
                 let n = v["tools"].as_array().map_or(0, |a| a.len());
                 self.push(
                     format!("tango serve · session {} · {n} tools · /help · esc/ctrl+c interrupt · /exit quits", self.session),
@@ -1327,6 +2218,23 @@ impl App {
                 if let Some(c) = v["totalCostUsd"].as_f64() {
                     self.cost = c;
                 }
+                self.context_tokens = v["contextTokens"]
+                    .as_u64()
+                    .or_else(|| v["usage"]["input"].as_u64())
+                    .unwrap_or(self.context_tokens);
+                self.context_window = v["contextWindow"].as_u64().unwrap_or(self.context_window);
+            }
+            "btw_stream" => {
+                let btw_title = self.btw_title.clone();
+                if self.btw_id == v["id"].as_u64()
+                    && v["event"]["type"].as_str() == Some("text")
+                    && let Some(viewer) = self.viewer.as_mut()
+                    && btw_title.as_deref() == Some(viewer.title.as_str())
+                {
+                    viewer
+                        .text
+                        .push_str(v["event"]["delta"].as_str().unwrap_or(""));
+                }
             }
             "result" => {
                 let id = v["id"].as_u64().unwrap_or(0);
@@ -1351,6 +2259,12 @@ impl App {
                 if let Some(pos) = self.pending.iter().position(|(pid, _)| *pid == id) {
                     let kind = self.pending.remove(pos).1;
                     let d = &v["data"];
+                    if ok {
+                        self.context_tokens =
+                            d["contextTokens"].as_u64().unwrap_or(self.context_tokens);
+                        self.context_window =
+                            d["contextWindow"].as_u64().unwrap_or(self.context_window);
+                    }
                     match (kind, ok) {
                         (Pending::Models, true) => {
                             let cur = d["current"].as_str().unwrap_or("").to_string();
@@ -1376,12 +2290,7 @@ impl App {
                                         .collect()
                                 })
                                 .unwrap_or_default();
-                            let sel = items.iter().position(|i| i.current).unwrap_or(0);
-                            self.picker = Some(Picker {
-                                kind: PickerKind::Model,
-                                items,
-                                sel,
-                            });
+                            self.picker = Some(Picker::new(PickerKind::Model, items));
                         }
                         (Pending::Sessions, true) => {
                             let items: Vec<PickItem> = d["sessions"]
@@ -1424,12 +2333,7 @@ impl App {
                             if items.is_empty() {
                                 self.push("no sessions yet", Tone::Muted);
                             } else {
-                                let sel = items.iter().position(|i| i.current).unwrap_or(0);
-                                self.picker = Some(Picker {
-                                    kind: PickerKind::Session,
-                                    items,
-                                    sel,
-                                });
+                                self.picker = Some(Picker::new(PickerKind::Session, items));
                             }
                         }
                         (Pending::Model, true) => {
@@ -1484,10 +2388,74 @@ impl App {
                                 }
                             }
                         }
+                        (Pending::Diff, true) => {
+                            let title = if d["isError"].as_bool().unwrap_or(false) {
+                                "diff 错误"
+                            } else if d["staged"].as_bool().unwrap_or(false) {
+                                "暂存 diff"
+                            } else {
+                                "工作区 diff"
+                            };
+                            self.viewer = Some(Viewer::read_only(
+                                title,
+                                d["diff"].as_str().unwrap_or("clean — nothing changed"),
+                            ));
+                        }
+                        (Pending::Btw, true) => {
+                            self.btw_id = None;
+                            self.busy = false;
+                            let title = self.btw_title.take().unwrap_or_else(|| "临时提问".into());
+                            let text = d["text"].as_str().unwrap_or("");
+                            if !text.is_empty() {
+                                if let Some(viewer) = self.viewer.as_mut()
+                                    && viewer.title == title
+                                {
+                                    viewer.text = text.into();
+                                } else {
+                                    // the viewer was closed or replaced mid-flight; the
+                                    // answer was paid for, so reopen it rather than drop it
+                                    self.viewer = Some(Viewer::read_only(title, text));
+                                }
+                            }
+                        }
                         (Pending::History, true) => self.load_history(d),
+                        (Pending::Theme, true) => {
+                            self.theme = Theme::resolve(
+                                d["theme"].as_str(),
+                                std::env::var("COLORFGBG").ok().as_deref(),
+                            );
+                            self.push(
+                                format!("theme → {}", d["theme"].as_str().unwrap_or("auto")),
+                                Tone::Muted,
+                            );
+                        }
+                        (Pending::Mouse, true) => {
+                            self.mouse = d["mouse"].as_bool().unwrap_or(true);
+                            self.push(
+                                format!("mouse → {}", if self.mouse { "on" } else { "off" }),
+                                Tone::Muted,
+                            );
+                        }
                         (Pending::NvimViewer, true) => {
                             self.nvim_preference = d["nvimViewer"].as_str().unwrap_or("ask").into();
                             self.push("Neovim 只读偏好已保存", Tone::Muted);
+                        }
+                        (Pending::Btw, false) => {
+                            self.btw_id = None;
+                            let title = self.btw_title.take();
+                            self.busy = false;
+                            if title.is_some()
+                                && self
+                                    .viewer
+                                    .as_ref()
+                                    .is_some_and(|v| Some(&v.title) == title.as_ref())
+                            {
+                                self.viewer = None; // close the empty side-question dialog
+                            }
+                            self.push(
+                                format!("btw error: {}", v["error"].as_str().unwrap_or("?")),
+                                Tone::Error,
+                            );
                         }
                         (_, false) => self.push(
                             format!("error: {}", v["error"].as_str().unwrap_or("?")),
@@ -1561,14 +2529,7 @@ impl App {
     // ---------- rendering ----------
 
     fn input_height(&self, width: u16) -> u16 {
-        let text: String = self.input.iter().collect();
-        let w = width.max(1) as usize;
-        let h: usize = text
-            .split('\n')
-            .map(|l| display_width(l).div_ceil(w).max(1))
-            .sum::<usize>()
-            .max(1);
-        (h.min(8)) as u16 + 1 // +1 for the rule above the input
+        (self.input_layout(width).lines.len().min(8)) as u16 + 1 // +1 for the rule above the input
     }
 
     fn chat_height(&self, area: Rect, input_h: u16) -> usize {
@@ -1579,11 +2540,41 @@ impl App {
     fn chat_lines(&self) -> Vec<ChatLine> {
         self.lines
             .iter()
-            .map(|l| ChatLine {
-                text: l.text.clone(),
-                tone: l.tone,
-                output: None,
-                prompt_state: l.prompt_state,
+            .enumerate()
+            .filter(|(_, line)| {
+                !self.focus
+                    || (line.tone != Tone::Thinking
+                        && !(line.tone == Tone::Muted && line.text.starts_with("⚙ ")))
+            })
+            .map(|(source_index, line)| {
+                let mut text = line.text.clone();
+                if line.tone == Tone::Error
+                    && let Some(output) = &line.output
+                {
+                    let preview = output
+                        .lines()
+                        .filter(|line| !line.trim().is_empty())
+                        .take(8)
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    if !preview.is_empty() {
+                        text.push('\n');
+                        text.push_str(
+                            &preview
+                                .lines()
+                                .map(|line| format!("  {line}"))
+                                .collect::<Vec<_>>()
+                                .join("\n"),
+                        );
+                    }
+                }
+                ChatLine {
+                    text,
+                    tone: line.tone,
+                    output: line.output.clone(),
+                    prompt_state: line.prompt_state,
+                    source_index,
+                }
             })
             .collect()
     }
@@ -1598,14 +2589,15 @@ impl App {
     }
 
     fn line_at_visual_row(&self, width: usize, chat_height: usize, row: usize) -> Option<usize> {
-        let total = Self::visual_lines(&self.lines, width);
-        let offset = total.saturating_sub(chat_height.saturating_sub(self.scroll_back).max(1));
+        let lines = self.chat_lines();
+        let total = Self::visual_lines(&lines, width);
+        let offset = total.saturating_sub(chat_height + self.scroll_back);
         let target = offset + row;
         let mut top = 0;
-        for (index, line) in self.lines.iter().enumerate() {
+        for line in &lines {
             let height = Self::visual_lines(std::slice::from_ref(line), width);
             if target >= top && target < top + height {
-                return line.output.is_some().then_some(index);
+                return line.output.is_some().then_some(line.source_index);
             }
             top += height;
         }
@@ -1616,10 +2608,10 @@ impl App {
         let area = f.area();
         let input_h = self.input_height(area.width);
         let chat_h = self.chat_height(area, input_h);
-        let [status_a, chat_a, input_a] = Layout::vertical([
-            Constraint::Length(1),
+        let [chat_a, input_a, status_a] = Layout::vertical([
             Constraint::Min(1),
             Constraint::Length(input_h),
+            Constraint::Length(1),
         ])
         .areas(area);
 
@@ -1647,13 +2639,33 @@ impl App {
                 self.theme.style(Tone::Muted),
             ),
         ];
+        if self.context_window > 0 {
+            let percent = self.context_tokens.saturating_mul(100) / self.context_window;
+            spans.push(Span::styled(
+                format!(
+                    " ctx {}/{} {}% ",
+                    Self::token_count(self.context_tokens),
+                    Self::token_count(self.context_window),
+                    percent
+                ),
+                self.theme.style(self.context_tone()),
+            ));
+        }
+        if self.focus {
+            spans.push(Span::styled(" focus ", self.theme.style(Tone::Badge)));
+        }
         if self.vim {
-            let mode = if self.edit_mode == EditMode::Insert {
-                " INSERT "
+            let mode = if self.vim_command.is_some() {
+                "COMMAND"
+            } else if self.edit_mode == EditMode::Insert {
+                "INSERT"
             } else {
-                " NORMAL "
+                "NORMAL"
             };
-            spans.push(Span::styled(mode, self.theme.style(Tone::Muted)));
+            spans.push(Span::styled(
+                format!(" VIM {mode} "),
+                self.theme.style(Tone::Badge),
+            ));
         }
 
         f.render_widget(Paragraph::new(Line::from(spans)), status_a);
@@ -1665,13 +2677,25 @@ impl App {
             .map(|l| Line::from(Span::styled(l.text, self.theme.style(l.tone))))
             .collect();
         let inner_w = chat_a.width as usize;
-        let total = Self::visual_lines(&self.chat_lines(), inner_w)
-            + if self.stream.is_empty() {
-                0
-            } else {
-                display_width(&self.stream).div_ceil(inner_w.max(1))
-            };
-        let offset = total.saturating_sub(chat_h.saturating_sub(self.scroll_back).max(1));
+        let stream_rows = if self.stream.is_empty() {
+            0
+        } else {
+            self.stream
+                .split('\n')
+                .map(|line| display_width(line).div_ceil(inner_w.max(1)).max(1))
+                .sum::<usize>()
+        };
+        let total = Self::visual_lines(&self.chat_lines(), inner_w) + stream_rows;
+        if self.last_visual_total > 0 && total > self.last_visual_total && self.scroll_back > 0 {
+            let added = total - self.last_visual_total;
+            self.scroll_back += added;
+            self.unread_rows += added;
+        }
+        if self.scroll_back == 0 {
+            self.unread_rows = 0;
+        }
+        self.last_visual_total = total;
+        let offset = total.saturating_sub(chat_h + self.scroll_back);
         // live assistant text (not committed yet) hangs off the last line, markdown stripped
         let mut shown = shown;
         if !self.stream.is_empty() {
@@ -1684,6 +2708,21 @@ impl App {
                 .scroll((offset as u16, 0)),
             chat_a,
         );
+        self.jump_area = Rect::default();
+        if self.unread_rows > 0 && chat_a.height > 0 {
+            let label = format!(" ↓ {} 行新内容 · ctrl+end 回到底部 ", self.unread_rows);
+            let width = (display_width(&label) as u16).min(chat_a.width);
+            self.jump_area = Rect {
+                x: chat_a.x + chat_a.width.saturating_sub(width),
+                y: chat_a.y + chat_a.height - 1,
+                width,
+                height: 1,
+            };
+            f.render_widget(
+                Paragraph::new(label).style(self.theme.style(Tone::Badge)),
+                self.jump_area,
+            );
+        }
 
         // completion popup, glued above the input rule
         if let Some(p) = &self.popup {
@@ -1727,9 +2766,12 @@ impl App {
                 height: 1,
             },
         );
-        let input_text: String = self.input.iter().collect();
+        let layout = self.input_layout(area.width);
+        let visible = input_a.height.saturating_sub(1).max(1) as usize;
+        let input_scroll = layout.cursor_row.saturating_sub(visible - 1);
         f.render_widget(
-            Paragraph::new(input_text.clone()).wrap(Wrap { trim: false }),
+            Paragraph::new(layout.lines.into_iter().map(Line::from).collect::<Vec<_>>())
+                .scroll((input_scroll as u16, 0)),
             Rect {
                 x: 0,
                 y: input_a.y + 1,
@@ -1737,28 +2779,17 @@ impl App {
                 height: input_a.height.saturating_sub(1),
             },
         );
-        // cursor: walk to the cursor char's wrapped position
-        let w = area.width.max(1) as usize;
-        let upto: String = self.input[..self.cursor].iter().collect();
-        let cur_line = upto.rsplit('\n').next().unwrap_or("").to_string();
-        let logical = input_text.split('\n').collect::<Vec<_>>();
-        let cursor_logical = upto.matches('\n').count();
-        let mut rows = 0usize;
-        for l in &logical[..cursor_logical.min(logical.len())] {
-            rows += display_width(l).div_ceil(w).max(1);
-        }
-        let cw = display_width(&cur_line);
-        let row = rows + cw / w;
-        let col = cw % w;
         f.set_cursor_position(Position::new(
-            input_a.x + col as u16,
-            input_a.y + 1 + row as u16,
+            input_a.x + layout.cursor_col as u16,
+            input_a.y + 1 + (layout.cursor_row - input_scroll) as u16,
         ));
 
-        // model/session picker overlay
+        // model/session/command picker overlay
         if let Some(p) = &self.picker {
-            let pagination = usize::from(p.items.len() > 14);
-            let h = (p.items.len().min(14) + pagination + 2) as u16;
+            let filtered = p.filtered_items();
+            let pagination = usize::from(filtered.len() > 14);
+            let query_rows = usize::from(p.filterable());
+            let h = (filtered.len().min(14) + pagination + query_rows + 2) as u16;
             let w = (area.width.min(72)).max(44).min(area.width);
             let pop = Rect {
                 x: (area.width.saturating_sub(w)) / 2,
@@ -1769,21 +2800,27 @@ impl App {
             let title = match p.kind {
                 PickerKind::Model => "选择模型",
                 PickerKind::Session => "选择会话",
+                PickerKind::Command => "命令面板",
+                PickerKind::History => "搜索 prompt 历史",
+                PickerKind::Theme => "选择主题",
                 PickerKind::NvimBackend => "检测到 Neovim，如何查看？",
                 PickerKind::EditResolution => "内容已修改，如何处理？",
             };
-            let hint = match p.kind {
-                PickerKind::Model => "↑↓/滚轮 选择 · enter 切换 · esc 取消 · ⚠=缺 key · ✓=当前",
-                PickerKind::Session => "↑↓/滚轮 选择 · enter 恢复 · esc 取消 · ✓=当前",
-                PickerKind::NvimBackend => "↑↓/滚轮 选择 · enter 确认 · esc 使用内置查看器",
-                PickerKind::EditResolution => "↑↓ 选择 · enter 提交 · esc 取消",
+            let hint = if p.filterable() {
+                "输入 过滤 · ↑↓/滚轮 选择 · enter 确认 · esc 取消"
+            } else {
+                match p.kind {
+                    PickerKind::NvimBackend => "↑↓/滚轮 选择 · enter 确认 · esc 使用内置查看器",
+                    PickerKind::EditResolution => "↑↓ 选择 · enter 提交 · esc 取消",
+                    _ => "↑↓ 选择 · enter 确认 · esc 取消",
+                }
             };
             let inner = render_dialog(f, pop, title, hint, self.theme);
             let label_w = (inner.width as usize).saturating_sub(28);
             let start = if p.sel < 13 { 0 } else { p.sel - 12 };
             self.picker_area = pop;
             self.picker_start = start;
-            let win = &p.items[start..(start + 14).min(p.items.len())];
+            let win = &filtered[start..(start + 14).min(filtered.len())];
             let mut rows: Vec<Line> = win
                 .iter()
                 .enumerate()
@@ -1814,9 +2851,23 @@ impl App {
                     ))
                 })
                 .collect();
-            if p.items.len() > 14 {
+            if p.filterable() {
+                rows.insert(
+                    0,
+                    Line::from(Span::styled(
+                        format!(" 搜索: {}", p.query),
+                        self.theme.style(Tone::Muted),
+                    )),
+                );
+            }
+            if filtered.len() > 14 {
                 rows.push(Line::from(Span::styled(
-                    format!("   {}–{} / {}", start + 1, start + win.len(), p.items.len()),
+                    format!(
+                        "   {}–{} / {}",
+                        start + 1,
+                        start + win.len(),
+                        filtered.len()
+                    ),
                     self.theme.style(Tone::Muted),
                 )));
             }
@@ -1862,37 +2913,64 @@ impl App {
                 height: h,
             };
             let title = viewer.title.clone();
-            let inner = render_dialog(
-                f,
-                pop,
-                &title,
-                "esc 关闭 · ctrl+e 编辑(nvim) · ↑↓/滚轮滚动",
-                self.theme,
-            );
+            let hint = if viewer.transcript {
+                "/ 搜索 · n/N 匹配 · {/} prompt · c 复制 · q 关闭"
+            } else {
+                "c 复制 · esc 关闭 · ctrl+e 编辑(nvim) · ↑↓/滚轮滚动"
+            };
+            let inner = render_dialog(f, pop, &title, hint, self.theme);
             let inner_width = inner.width.max(1) as usize;
-            let inner_height = inner.height as usize;
-            let visual = viewer
+            let search_rows =
+                usize::from(viewer.transcript && (viewer.search_input || !viewer.query.is_empty()));
+            let inner_height = inner.height.saturating_sub(search_rows as u16) as usize;
+            let mut offset = 0;
+            viewer.line_offsets = viewer
                 .text
                 .lines()
-                .map(|line| display_width(line).div_ceil(inner_width).max(1))
-                .sum::<usize>();
-            viewer.max_scroll = visual.saturating_sub(inner_height);
+                .map(|line| {
+                    let current = offset;
+                    offset += display_width(line).div_ceil(inner_width).max(1);
+                    current
+                })
+                .collect();
+            viewer.max_scroll = offset.saturating_sub(inner_height);
             viewer.scroll = viewer.scroll.min(viewer.max_scroll);
             let body = Paragraph::new(viewer.text.clone())
                 .wrap(Wrap { trim: false })
                 .scroll((viewer.scroll.min(u16::MAX as usize) as u16, 0));
-            f.render_widget(body, inner);
+            f.render_widget(
+                body,
+                Rect {
+                    height: inner_height as u16,
+                    ..inner
+                },
+            );
+            if search_rows > 0 {
+                let status = if viewer.query.is_empty() {
+                    String::new()
+                } else if viewer.matches.is_empty() {
+                    " · 无匹配".into()
+                } else {
+                    format!(" · {}/{}", viewer.match_index + 1, viewer.matches.len())
+                };
+                let search_area = Rect {
+                    y: inner.y + inner_height as u16,
+                    height: 1,
+                    ..inner
+                };
+                f.render_widget(
+                    Paragraph::new(format!("/{}{status}", viewer.query))
+                        .style(self.theme.style(Tone::Selected)),
+                    search_area,
+                );
+                if viewer.search_input {
+                    f.set_cursor_position(Position::new(
+                        search_area.x + 1 + display_width(&viewer.query) as u16,
+                        search_area.y,
+                    ));
+                }
+            }
         }
-    }
-}
-
-/// Left/Right step over a display cluster boundary (CJK cells count double, but per-char
-/// stepping is fine — this mainly skips to the other edge of a CJK pair cleanly).
-fn cursor_step(input: &[char], cursor: usize, left: bool) -> usize {
-    if left {
-        cursor.saturating_sub(1)
-    } else {
-        min(cursor + 1, input.len())
     }
 }
 
@@ -1988,6 +3066,40 @@ mod tests {
     }
 
     #[test]
+    fn read_only_neovim_exit_returns_to_the_prompt() {
+        let mut app = App::new();
+        app.input = "draft".chars().collect();
+        app.cursor = app.input.len();
+        let viewer = Viewer::with_source("粘贴上下文", "old", 0, Some(PromptState::Completed));
+        app.finish_nvim(viewer, "old".into(), true);
+        assert!(app.viewer.is_none());
+        assert!(app.picker.is_none());
+        assert_eq!(app.input.iter().collect::<String>(), "draft");
+        assert_eq!(app.cursor, 5);
+    }
+
+    #[test]
+    fn unchanged_neovim_edit_returns_to_the_prompt() {
+        let mut app = App::new();
+        let viewer = Viewer::with_source("粘贴上下文", "old", 0, Some(PromptState::Completed));
+        app.finish_nvim(viewer, "old".into(), false);
+        assert!(app.viewer.is_none());
+        assert!(app.picker.is_none());
+    }
+
+    #[test]
+    fn multiline_paste_is_a_placeholder_followed_by_visible_typing() {
+        let mut app = App::new();
+        app.insert_paste("one\ntwo\nthree");
+        app.insert_char('x');
+        let rendered = app.rendered_input();
+        assert_eq!(rendered.text, "[Pasted text #1 +2 lines]\nx");
+        assert_eq!(rendered.cursor, rendered.text.chars().count());
+        assert_eq!(app.input.iter().collect::<String>(), "one\ntwo\nthree\nx");
+        assert!(app.input_height(80) >= 3);
+    }
+
+    #[test]
     fn click_row_maps_to_the_visible_expandable_card() {
         let mut app = App::new();
         app.push_tool("first", Tone::Muted, Some("one".into()));
@@ -2011,6 +3123,36 @@ mod tests {
         ));
         assert!(app.vim);
         assert_eq!(app.edit_mode, EditMode::Insert);
+        assert!(
+            app.lines
+                .iter()
+                .any(|line| line.text.contains("Vim 已开启"))
+        );
+    }
+
+    #[test]
+    fn vim_status_bar_names_the_active_mode() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let mut app = App::new();
+        app.vim = true;
+        for (edit_mode, command, expected) in [
+            (EditMode::Insert, None, "VIM INSERT"),
+            (EditMode::Normal, None, "VIM NORMAL"),
+            (EditMode::Normal, Some("wq"), "VIM COMMAND"),
+        ] {
+            app.edit_mode = edit_mode;
+            app.vim_command = command.map(str::to_string);
+            let mut terminal = Terminal::new(TestBackend::new(60, 10)).unwrap();
+            terminal.draw(|f| app.draw(f)).unwrap();
+            let buffer = terminal.backend().buffer();
+            let row = |y| (0..60).map(|x| buffer[(x, y)].symbol()).collect::<String>();
+            assert!(
+                row(9).contains(expected),
+                "missing {expected:?} in bottom row"
+            );
+            assert!(!row(0).contains("VIM"));
+        }
     }
 
     #[test]
@@ -2033,6 +3175,33 @@ mod tests {
     }
 
     #[test]
+    fn vim_j_k_move_the_input_cursor_without_scrolling_chat() {
+        let mut app = App::new();
+        app.vim = true;
+        app.edit_mode = EditMode::Normal;
+        app.input = "first\nsecond\nthird".chars().collect();
+        app.cursor = 9; // second line, display column 3
+        app.scroll_back = 4;
+
+        assert!(app.normal_edit(KeyCode::Char('k')));
+        assert_eq!(app.cursor, 3);
+        assert!(app.normal_edit(KeyCode::Char('j')));
+        assert_eq!(app.cursor, 9);
+        assert!(app.normal_edit(KeyCode::Char('j')));
+        assert_eq!(app.cursor, 16);
+        assert!(app.normal_edit(KeyCode::Char('j')));
+        assert_eq!(app.cursor, 16); // already on the last line
+        assert!(app.normal_edit(KeyCode::Char('k')));
+        assert_eq!(app.cursor, 9);
+        assert_eq!(app.scroll_back, 4);
+
+        app.input = "longline\nx\nend".chars().collect();
+        app.cursor = 6;
+        assert!(app.normal_edit(KeyCode::Char('j')));
+        assert_eq!(app.cursor, 10); // short target line clamps to its end
+    }
+
+    #[test]
     fn hello_restores_session_cost() {
         let mut app = App::new();
         app.frame(json!({
@@ -2044,5 +3213,757 @@ mod tests {
             "tools": []
         }));
         assert_eq!(app.cost, 1.25);
+    }
+
+    #[test]
+    fn multiline_input_cursor_matches_the_actual_wrapped_rows() {
+        use ratatui::{
+            Terminal,
+            backend::{Backend, TestBackend},
+        };
+
+        let mut app = App::new();
+        app.input = "one two three four five".chars().collect();
+        app.cursor = app.input.len();
+        let mut terminal = Terminal::new(TestBackend::new(12, 10)).unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+
+        assert_eq!(app.input_height(12), 3);
+        assert_eq!(
+            terminal.backend_mut().get_cursor_position().unwrap(),
+            Position::new(11, 8)
+        );
+        let buffer = terminal.backend().buffer();
+        let row = |y| (0..12).map(|x| buffer[(x, y)].symbol()).collect::<String>();
+        assert_eq!(row(7), "one two thre");
+        assert_eq!(row(8), "e four five ");
+    }
+
+    #[test]
+    fn input_layout_handles_wide_chars_full_rows_and_left_movement() {
+        let mut app = App::new();
+        app.input = "ab中cd".chars().collect();
+        app.cursor = app.input.len();
+        let layout = app.input_layout(5);
+        assert_eq!(layout.lines, vec!["ab中c", "d"]);
+        assert_eq!((layout.cursor_row, layout.cursor_col), (1, 1));
+        app.cursor = 2;
+        let layout = app.input_layout(5);
+        assert_eq!((layout.cursor_row, layout.cursor_col), (0, 2));
+
+        app.input = "1234".chars().collect();
+        app.cursor = 4;
+        let layout = app.input_layout(4);
+        assert_eq!(layout.lines, vec!["1234", ""]);
+        assert_eq!((layout.cursor_row, layout.cursor_col), (1, 0));
+    }
+
+    #[test]
+    fn long_input_scrolls_the_hardware_cursor_into_view() {
+        use ratatui::{
+            Terminal,
+            backend::{Backend, TestBackend},
+        };
+
+        let mut app = App::new();
+        app.input = (1..=10)
+            .map(|n| format!("line-{n}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+            .chars()
+            .collect();
+        app.cursor = app.input.len();
+        let mut terminal = Terminal::new(TestBackend::new(20, 14)).unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        assert_eq!(
+            terminal.backend_mut().get_cursor_position().unwrap(),
+            Position::new(7, 12)
+        );
+        let buffer = terminal.backend().buffer();
+        let row = |y| (0..20).map(|x| buffer[(x, y)].symbol()).collect::<String>();
+        assert!(row(5).starts_with("line-3"));
+        assert!(row(12).starts_with("line-10"));
+    }
+
+    #[test]
+    fn collapsed_paste_and_later_typing_share_the_same_layout() {
+        let mut app = App::new();
+        app.insert_paste("one\ntwo\nthree");
+        app.insert_char('x');
+        let layout = app.input_layout(20);
+        assert_eq!(layout.lines.len(), 3);
+        assert_eq!(layout.lines[2], "x");
+        assert_eq!((layout.cursor_row, layout.cursor_col), (2, 1));
+    }
+
+    #[test]
+    fn vim_insert_enter_adds_a_newline_without_submitting() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.vim = true;
+        app.edit_mode = EditMode::Insert;
+        app.input = "first".chars().collect();
+        app.cursor = app.input.len();
+        app.key(
+            crossterm::event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut serve,
+        );
+        assert!(serve.sent.is_empty());
+        assert_eq!(app.input.iter().collect::<String>(), "first\n");
+    }
+
+    #[test]
+    fn ctrl_s_submits_the_complete_draft_in_both_vim_modes() {
+        for edit_mode in [EditMode::Insert, EditMode::Normal] {
+            let mut app = App::new();
+            let mut serve = Serve::mock();
+            app.vim = true;
+            app.edit_mode = edit_mode;
+            app.input = "one\ntwo".chars().collect();
+            app.cursor = app.input.len();
+            app.key(
+                crossterm::event::KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
+                &mut serve,
+            );
+            assert_eq!(serve.sent.len(), 1);
+            let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+            assert_eq!(sent["cmd"], "prompt");
+            assert_eq!(sent["text"], "one\ntwo");
+        }
+    }
+
+    #[test]
+    fn vim_write_quit_commands_show_the_command_and_preserve_the_draft() {
+        for command in ["wq", "wqa"] {
+            let mut app = App::new();
+            let mut serve = Serve::mock();
+            app.vim = true;
+            app.edit_mode = EditMode::Normal;
+            app.input = "one\ntwo".chars().collect();
+            app.cursor = app.input.len();
+            let draft_height = app.input_height(80);
+            for c in format!(":{command}").chars() {
+                app.key(
+                    crossterm::event::KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE),
+                    &mut serve,
+                );
+            }
+            assert!(serve.sent.is_empty());
+            let layout = app.input_layout(80);
+            assert_eq!(layout.lines, vec!["one", "two", &format!(":{command}")]);
+            assert_eq!(
+                (layout.cursor_row, layout.cursor_col),
+                (2, command.len() + 1)
+            );
+            assert_eq!(app.input_height(80), draft_height + 1);
+            app.key(
+                crossterm::event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+                &mut serve,
+            );
+            assert_eq!(serve.sent.len(), 1);
+            let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+            assert_eq!(sent["text"], "one\ntwo");
+        }
+    }
+
+    #[test]
+    fn escaping_a_vim_command_does_not_clear_the_draft() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.vim = true;
+        app.edit_mode = EditMode::Normal;
+        app.input = "draft".chars().collect();
+        app.cursor = app.input.len();
+        for c in ":w".chars() {
+            app.key(
+                crossterm::event::KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE),
+                &mut serve,
+            );
+        }
+        app.key(
+            crossterm::event::KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            &mut serve,
+        );
+        assert_eq!(app.input.iter().collect::<String>(), "draft");
+        assert_eq!(app.input_layout(80).lines, vec!["draft"]);
+        assert!(serve.sent.is_empty());
+    }
+
+    #[test]
+    fn vim_slash_command_toggles_modal_editing() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.run_slash("/vim", &mut serve);
+        assert!(app.vim);
+        assert_eq!(app.edit_mode, EditMode::Insert);
+        assert!(app.lines.last().unwrap().text.contains("Vim 已开启"));
+        assert!(app.lines.last().unwrap().text.contains("Ctrl+S 发送"));
+        app.edit_mode = EditMode::Normal;
+        app.run_slash("/vim", &mut serve);
+        assert!(!app.vim);
+        assert_eq!(app.edit_mode, EditMode::Insert);
+        assert!(app.lines.last().unwrap().text.contains("Vim 已关闭"));
+        assert!(app.lines.last().unwrap().text.contains("Enter 发送"));
+        assert!(!app.lines.last().unwrap().text.contains("Enter 换行"));
+    }
+
+    #[test]
+    fn ctrl_e_opens_the_current_draft_in_neovim_without_submitting() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.nvim = Some(Some(Neovim {
+            executable: "nvim".into(),
+        }));
+        app.input = "one\ntwo".chars().collect();
+        app.cursor = app.input.len();
+
+        app.key(
+            crossterm::event::KeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL),
+            &mut serve,
+        );
+
+        let request = app.nvim_request.as_ref().unwrap();
+        assert_eq!(request.target, NvimTarget::Draft);
+        assert_eq!(request.viewer.text, "one\ntwo");
+        assert!(!request.read_only);
+        assert!(serve.sent.is_empty());
+    }
+
+    #[test]
+    fn external_draft_edit_returns_to_input_without_a_resolution_or_submission() {
+        let mut app = App::new();
+        let serve = Serve::mock();
+        app.input = "old".chars().collect();
+        app.cursor = app.input.len();
+
+        app.finish_draft_nvim("old", "new\ncomplete");
+
+        assert_eq!(app.input.iter().collect::<String>(), "new\ncomplete");
+        assert_eq!(app.cursor, app.input.len());
+        assert!(app.viewer.is_none());
+        assert!(app.picker.is_none());
+        assert!(app.edited.is_none());
+        assert!(serve.sent.is_empty());
+    }
+
+    #[test]
+    fn nvim_command_starts_an_empty_external_draft() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.nvim = Some(Some(Neovim {
+            executable: "nvim".into(),
+        }));
+
+        app.run_slash("/nvim", &mut serve);
+
+        let request = app.nvim_request.as_ref().unwrap();
+        assert_eq!(request.target, NvimTarget::Draft);
+        assert_eq!(request.viewer.text, "");
+        assert!(serve.sent.is_empty());
+    }
+
+    #[test]
+    fn missing_neovim_preserves_the_current_draft() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.nvim = Some(None);
+        app.input = "keep me".chars().collect();
+        app.cursor = app.input.len();
+
+        app.key(
+            crossterm::event::KeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL),
+            &mut serve,
+        );
+
+        assert!(app.nvim_request.is_none());
+        assert_eq!(app.input.iter().collect::<String>(), "keep me");
+        assert!(app.lines.last().unwrap().text.contains("未检测到 Neovim"));
+        assert!(serve.sent.is_empty());
+    }
+
+    #[test]
+    fn command_palette_filters_and_runs_the_selected_command() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.key(
+            crossterm::event::KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL),
+            &mut serve,
+        );
+        let picker = app.picker.as_ref().unwrap();
+        assert_eq!(picker.kind, PickerKind::Command);
+        assert!(picker.items.iter().any(|item| item.id == "/model"));
+        assert!(picker.items.iter().any(|item| item.id == "/resume"));
+
+        for c in "res".chars() {
+            app.key(
+                crossterm::event::KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE),
+                &mut serve,
+            );
+        }
+        let picker = app.picker.as_ref().unwrap();
+        let visible = picker.filtered_items();
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].id, "/resume");
+
+        app.key(
+            crossterm::event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut serve,
+        );
+        assert!(app.picker.is_none());
+        assert_eq!(serve.sent.len(), 1);
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        assert_eq!(sent["cmd"], "sessions");
+    }
+
+    #[test]
+    fn prompt_history_search_restores_without_submitting() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        for text in ["first", "second", "second"] {
+            app.busy = false;
+            app.input = text.chars().collect();
+            app.cursor = app.input.len();
+            app.send_prompt(&mut serve);
+        }
+        assert_eq!(app.prompt_history, vec!["first", "second"]);
+        let sent_before = serve.sent.len();
+
+        app.key(
+            crossterm::event::KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL),
+            &mut serve,
+        );
+        assert_eq!(
+            app.picker.as_ref().map(|picker| picker.kind),
+            Some(PickerKind::History)
+        );
+        app.key(
+            crossterm::event::KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE),
+            &mut serve,
+        );
+        app.key(
+            crossterm::event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut serve,
+        );
+
+        assert_eq!(app.input.iter().collect::<String>(), "first");
+        assert_eq!(app.cursor, 5);
+        assert!(app.picker.is_none());
+        assert_eq!(serve.sent.len(), sent_before);
+    }
+
+    #[test]
+    fn draft_stash_restores_collapsed_pastes_and_cursor() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.insert_paste("one\ntwo\nthree");
+        app.insert_char('x');
+        let original = app.input.clone();
+        let original_cursor = app.cursor;
+        let original_rendered = app.rendered_input().text;
+
+        app.key(
+            crossterm::event::KeyEvent::new(KeyCode::Char('s'), KeyModifiers::ALT),
+            &mut serve,
+        );
+        assert!(app.input.is_empty());
+        assert!(app.pastes.is_empty());
+        assert!(app.stashed_draft.is_some());
+
+        app.key(
+            crossterm::event::KeyEvent::new(KeyCode::Char('s'), KeyModifiers::ALT),
+            &mut serve,
+        );
+        assert_eq!(app.input, original);
+        assert_eq!(app.cursor, original_cursor);
+        assert_eq!(app.rendered_input().text, original_rendered);
+        assert!(app.stashed_draft.is_none());
+        assert!(serve.sent.is_empty());
+    }
+
+    #[test]
+    fn at_file_line_range_inlines_only_the_selected_lines() {
+        let path = crate::nvim::write_temp("one\ntwo\nthree\nfour").unwrap();
+        let path = path.to_string_lossy().to_string();
+        for (suffix, expected) in [
+            ("#2-3", "two\nthree"),
+            ("#L2-L3", "two\nthree"),
+            ("#4", "four"),
+        ] {
+            let token = format!("@{path}{suffix}");
+            let (expanded, warns) = App::expand_at(&format!("look {token}"));
+            assert_eq!(expanded, format!("look {path}{suffix}:\n{expected}"));
+            assert!(warns.is_empty());
+        }
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn invalid_or_out_of_bounds_file_ranges_are_not_silently_expanded() {
+        let path = crate::nvim::write_temp("one\ntwo").unwrap();
+        let path = path.to_string_lossy().to_string();
+        for suffix in ["#0", "#2-1", "#bad"] {
+            let text = format!("keep @{path}{suffix}");
+            let (expanded, warns) = App::expand_at(&text);
+            assert_eq!(expanded, text);
+            assert!(warns.is_empty());
+        }
+        let text = format!("keep @{path}#9");
+        let (expanded, warns) = App::expand_at(&text);
+        assert_eq!(expanded, text);
+        assert_eq!(warns.len(), 1);
+        let dir = format!("@{}#1-2", std::env::temp_dir().display());
+        assert_eq!(App::expand_at(&dir).0, dir);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn unread_jump_bottom_preserves_the_reading_position() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        for n in 0..20 {
+            app.push(format!("line-{n:02}"), Tone::Text);
+        }
+        let mut terminal = Terminal::new(TestBackend::new(40, 12)).unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        app.scroll_back = 5;
+        terminal.draw(|f| app.draw(f)).unwrap();
+        let row = |terminal: &Terminal<TestBackend>, y| {
+            let buffer = terminal.backend().buffer();
+            (0..40).map(|x| buffer[(x, y)].symbol()).collect::<String>()
+        };
+        assert!(
+            row(&terminal, 0).starts_with("line-06"),
+            "unexpected first row: {:?}",
+            row(&terminal, 0)
+        );
+
+        app.push("line-20", Tone::Text);
+        app.push("line-21", Tone::Text);
+        app.push("line-22", Tone::Text);
+        terminal.draw(|f| app.draw(f)).unwrap();
+        assert!(row(&terminal, 0).starts_with("line-06"));
+        let buffer = terminal.backend().buffer();
+        let screen = (0..12)
+            .map(|y| (0..40).map(|x| buffer[(x, y)].symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            screen.replace(' ', "").contains("3行新内容"),
+            "screen:\n{screen}"
+        );
+
+        app.key(
+            crossterm::event::KeyEvent::new(KeyCode::End, KeyModifiers::CONTROL),
+            &mut serve,
+        );
+        terminal.draw(|f| app.draw(f)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let screen = (0..12)
+            .map(|y| (0..40).map(|x| buffer[(x, y)].symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(screen.contains("line-22"));
+        assert!(!screen.replace(' ', "").contains("行新内容"));
+    }
+
+    #[test]
+    fn ctrl_t_opens_a_searchable_transcript_without_moving_chat() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.push_user("first prompt");
+        app.push("answer", Tone::Text);
+        app.push_user("second prompt");
+        app.scroll_back = 7;
+
+        app.key(
+            crossterm::event::KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL),
+            &mut serve,
+        );
+
+        let viewer = app.viewer.as_ref().unwrap();
+        assert!(viewer.transcript);
+        assert!(viewer.text.contains("first prompt"));
+        assert!(viewer.text.contains("second prompt"));
+        assert_eq!(viewer.prompt_rows, vec![0, 2]);
+        assert_eq!(app.scroll_back, 7);
+        assert!(serve.sent.is_empty());
+    }
+
+    #[test]
+    fn focus_and_tool_errors_keep_failures_auditable() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.frame(json!({
+            "type": "tool_result", "call": {"name": "bash", "input": {"command": "fail"}},
+            "isError": true, "ms": 3, "output": "first failure\nsecond failure"
+        }));
+        app.frame(json!({
+            "type": "tool_result", "call": {"name": "bash", "input": {"command": "ok"}},
+            "isError": false, "ms": 1, "output": "successful output"
+        }));
+        let rendered = app.chat_lines();
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line.text.contains("first failure"))
+        );
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line.text.contains("second failure"))
+        );
+        assert_eq!(
+            app.lines[0].output.as_deref(),
+            Some("first failure\nsecond failure")
+        );
+
+        app.thinking = "private reasoning".into();
+        app.commit_stream();
+        app.run_slash("/focus", &mut serve);
+        let focused = app.chat_lines();
+        assert!(!focused.iter().any(|line| line.text.contains("⚙ bash ok")));
+        assert!(
+            !focused
+                .iter()
+                .any(|line| line.text.contains("private reasoning"))
+        );
+        assert!(focused.iter().any(|line| line.text.contains("⚙ bash fail")));
+        assert!(
+            focused
+                .iter()
+                .any(|line| line.text.contains("first failure"))
+        );
+
+        app.run_slash("/focus", &mut serve);
+        assert!(
+            app.chat_lines()
+                .iter()
+                .any(|line| line.text.contains("⚙ bash ok"))
+        );
+    }
+
+    #[test]
+    fn context_usage_appears_in_the_status_with_thresholds() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let mut app = App::new();
+        app.frame(json!({
+            "type": "hello", "sessionId": "12345678", "model": "mock/mock", "mode": "ask",
+            "contextWindow": 200, "contextTokens": 40, "tools": []
+        }));
+        assert_eq!(app.context_tone(), Tone::Success);
+        app.frame(json!({
+            "type": "turn_end", "usage": {"input": 160, "output": 2},
+            "contextWindow": 200, "contextTokens": 160
+        }));
+        assert_eq!(app.context_tone(), Tone::Error);
+        let mut terminal = Terminal::new(TestBackend::new(100, 8)).unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let status = (0..100)
+            .map(|x| buffer[(x, 7)].symbol())
+            .collect::<String>();
+        assert!(status.contains("ctx 160/200 80%"));
+    }
+
+    #[test]
+    fn theme_picker_applies_the_saved_theme_immediately() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.run_slash("/theme", &mut serve);
+        assert_eq!(app.picker.as_ref().map(|p| p.kind), Some(PickerKind::Theme));
+        app.picker.as_mut().unwrap().sel = 1;
+        app.accept_picker(&mut serve);
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        assert_eq!(sent["cmd"], "set_theme");
+        assert_eq!(sent["theme"], "light");
+        app.frame(
+            json!({"type": "result", "id": sent["id"], "ok": true, "data": {"theme": "light"}}),
+        );
+        assert!(app.theme.light);
+    }
+
+    #[test]
+    fn mouse_command_emits_a_terminal_capture_request() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.run_slash("/mouse off", &mut serve);
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        assert_eq!(sent["cmd"], "set_mouse");
+        assert_eq!(sent["mouse"], false);
+        assert_eq!(app.mouse_capture, Some(false));
+        app.frame(
+            json!({"type": "result", "id": sent["id"], "ok": true, "data": {"mouse": false}}),
+        );
+        assert!(!app.mouse);
+    }
+
+    #[test]
+    fn diff_command_opens_a_read_only_patch_viewer() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.scroll_back = 4;
+        app.run_slash("/diff", &mut serve);
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        assert_eq!(sent["cmd"], "diff");
+        assert_eq!(sent["staged"], false);
+        app.frame(json!({
+            "type": "result", "id": sent["id"], "ok": true,
+            "data": {"diff": "@@ -1 +1,2 @@\n old\n+new", "staged": false}
+        }));
+        let viewer = app.viewer.as_ref().unwrap();
+        assert!(viewer.read_only);
+        assert!(viewer.text.contains("+new"));
+        assert_eq!(app.scroll_back, 4);
+    }
+
+    #[test]
+    fn btw_streams_only_into_a_separate_read_only_dialog() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.run_slash("/btw why did it fail?", &mut serve);
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        assert_eq!(sent["cmd"], "btw");
+        assert_eq!(sent["text"], "why did it fail?");
+        assert!(app.viewer.as_ref().unwrap().read_only);
+        assert!(app.lines.is_empty());
+
+        app.frame(json!({
+            "type": "btw_stream", "id": sent["id"],
+            "event": {"type": "text", "delta": "side answer"}
+        }));
+        assert_eq!(app.viewer.as_ref().unwrap().text, "side answer");
+        assert!(app.lines.is_empty());
+        app.frame(json!({
+            "type": "result", "id": sent["id"], "ok": true,
+            "data": {"text": "complete side answer"}
+        }));
+        assert_eq!(app.viewer.as_ref().unwrap().text, "complete side answer");
+        assert!(app.lines.is_empty());
+    }
+
+    #[test]
+    fn ctrl_c_interrupts_while_a_vim_command_line_is_active() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.vim = true;
+        app.edit_mode = EditMode::Normal;
+        app.busy = true;
+        app.key(
+            crossterm::event::KeyEvent::new(KeyCode::Char(':'), KeyModifiers::NONE),
+            &mut serve,
+        );
+        app.key(
+            crossterm::event::KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            &mut serve,
+        );
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        assert_eq!(sent["cmd"], "interrupt");
+    }
+
+    #[test]
+    fn btw_marks_busy_and_interrupts_like_a_prompt() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.run_slash("/btw why?", &mut serve);
+        assert!(app.busy);
+        app.key(
+            crossterm::event::KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            &mut serve,
+        );
+        let interrupt: Value = serde_json::from_str(&serve.sent[1]).unwrap();
+        assert_eq!(interrupt["cmd"], "interrupt");
+        let id: u64 = serve.sent[0].parse::<Value>().unwrap()["id"]
+            .as_u64()
+            .unwrap();
+        app.frame(json!({ "type": "result", "id": id, "ok": false, "error": "aborted" }));
+        assert!(!app.busy);
+    }
+
+    #[test]
+    fn btw_answer_reappears_when_the_viewer_was_closed() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.run_slash("/btw why?", &mut serve);
+        let id: u64 = serve.sent[0].parse::<Value>().unwrap()["id"]
+            .as_u64()
+            .unwrap();
+        app.viewer = None; // closed while the answer was still streaming
+        app.frame(json!({
+            "type": "result", "id": id, "ok": true,
+            "data": {"text": "the answer"}
+        }));
+        let viewer = app.viewer.expect("the answer must not be dropped");
+        assert!(viewer.read_only);
+        assert_eq!(viewer.text, "the answer");
+        assert_eq!(serve.sent.len(), 1); // nothing entered the session
+    }
+
+    #[test]
+    fn slash_search_stays_transcript_only() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.viewer = Some(Viewer::read_only("工作区 diff", "x"));
+        app.key(
+            crossterm::event::KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE),
+            &mut serve,
+        );
+        assert!(!app.viewer.as_ref().unwrap().search_input);
+        app.viewer = Some(Viewer::transcript("Transcript", "x", vec![]));
+        app.key(
+            crossterm::event::KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE),
+            &mut serve,
+        );
+        assert!(app.viewer.as_ref().unwrap().search_input);
+    }
+
+    #[test]
+    fn vertical_moves_never_rest_inside_a_collapsed_paste() {
+        let mut app = App::new();
+        app.input = "abc\npaste".chars().collect();
+        app.pastes.push(PastedSpan {
+            start: 4,
+            end: 9,
+            id: 1,
+            extra_lines: 2,
+        });
+        app.cursor = 3;
+        app.move_input_vertical(true);
+        assert!(
+            app.pastes
+                .iter()
+                .all(|p| app.cursor <= p.start || app.cursor >= p.end)
+        );
+        assert_eq!(app.cursor, 4);
+    }
+
+    #[test]
+    fn a_range_touching_part_of_a_paste_consumes_the_whole_block() {
+        let mut app = App::new();
+        app.input = "abPASTEDcd".chars().collect();
+        app.pastes.push(PastedSpan {
+            start: 2,
+            end: 8,
+            id: 1,
+            extra_lines: 0,
+        });
+        app.replace_input_range(3, 5, &['x']);
+        assert_eq!(app.input.iter().collect::<String>(), "abxcd");
+        assert!(app.pastes.is_empty());
+    }
+
+    #[test]
+    fn vim_toggle_survives_a_serve_respawn() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.run_slash("/vim on", &mut serve);
+        assert!(app.vim);
+        app.frame(json!({
+            "type": "hello", "sessionId": "12345678", "model": "mock/mock",
+            "mode": "ask", "editor": "default", "tools": []
+        }));
+        assert!(app.vim);
     }
 }

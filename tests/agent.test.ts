@@ -61,6 +61,7 @@ test('agent runs model → tool → model over an OpenAI-compatible SSE endpoint
     assert.match(toolMsg.content, /tango-ok/);
     // user, assistant(tool_call), user(tool_result), assistant(final)
     assert.equal(store.messages().length, 4);
+    assert.ok(agent.contextTokenEstimate() > 0);
     assert.ok(agent.totalCostUsd > 0);
   } finally {
     server.close();
@@ -176,5 +177,50 @@ test('HTTP errors and non-JSON stream events surface readable messages', async (
     await assert.rejects(drain(spec('bad')), /malformed stream event/);
   } finally {
     server.close();
+  }
+});
+
+test('agent ask uses context without tools or session writes', async () => {
+  const bodies: any[] = [];
+  const server = createServer((req, res) => {
+    let raw = '';
+    req.on('data', (d) => (raw += d));
+    req.on('end', () => {
+      bodies.push(JSON.parse(raw));
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write(chunk({ content: 'side answer' }, 'stop'));
+      res.write(`data: ${JSON.stringify({ choices: [], usage: { prompt_tokens: 12, completion_tokens: 3 } })}\n\n`);
+      res.end('data: [DONE]\n\n');
+    });
+  });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  const port = (server.address() as AddressInfo).port;
+  const dir = await mkdtemp(join(tmpdir(), 'tango-agent-ask-'));
+  try {
+    const store = await SessionStore.create(dir, dir);
+    await store.appendMessage({ role: 'user', content: [{ type: 'text', text: 'existing context' }] });
+    const agent = new Agent({
+      store,
+      tools: new ToolRegistry(),
+      cwd: dir,
+      model: { id: 'fake/m', provider: 'fake', model: 'm', api: 'openai-completions', baseUrl: `http://127.0.0.1:${port}/v1`, apiKey: 'test' }
+    });
+    const before = JSON.stringify(store.allMessages());
+    const streamed: string[] = [];
+    const answer = await agent.ask('side question', (ev) => {
+      if (ev.type === 'text') streamed.push(ev.delta);
+    });
+    assert.equal(answer.content[0].type, 'text');
+    assert.equal(streamed.join(''), 'side answer');
+    assert.deepEqual(bodies[0].messages.at(-1).content, [{ type: 'text', text: 'side question' }]);
+    assert.deepEqual(
+      bodies[0].messages.find((m: any) => m.role === 'user' && JSON.stringify(m.content).includes('existing context')).content,
+      [{ type: 'text', text: 'existing context' }]
+    );
+    assert.equal(bodies[0].tools, undefined);
+    assert.equal(JSON.stringify(store.allMessages()), before);
+  } finally {
+    server.close();
+    await rm(dir, { recursive: true, force: true });
   }
 });

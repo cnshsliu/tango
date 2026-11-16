@@ -1,5 +1,6 @@
 mod app;
 mod child;
+mod clipboard;
 mod dialog;
 mod keys;
 mod nvim;
@@ -120,6 +121,16 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<(), Box<dyn 
                 }
             }
         }
+        if let Some(enabled) = app.mouse_capture.take() {
+            if enabled {
+                execute!(terminal.backend_mut(), crossterm::event::EnableMouseCapture)?;
+            } else {
+                execute!(
+                    terminal.backend_mut(),
+                    crossterm::event::DisableMouseCapture
+                )?;
+            }
+        }
         if let Some(request) = app.nvim_request.take() {
             input_enabled.store(false, Ordering::Relaxed);
             // let the input thread finish its current poll before Neovim takes the tty
@@ -138,14 +149,26 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<(), Box<dyn 
                 terminal.backend_mut(),
                 EnterAlternateScreen,
                 crossterm::cursor::Hide,
-                crossterm::event::EnableMouseCapture,
                 crossterm::event::EnableBracketedPaste
             )?;
+            if app.mouse_enabled() {
+                execute!(terminal.backend_mut(), crossterm::event::EnableMouseCapture)?;
+            }
             terminal.clear()?;
             input_enabled.store(true, Ordering::Relaxed);
             match result {
-                Ok(text) => app.finish_nvim(request.viewer, text, request.read_only),
-                Err(error) => app.nvim_error(request.viewer, error.to_string()),
+                Ok(text) => match request.target {
+                    nvim::NvimTarget::Draft => app.finish_draft_nvim(&request.viewer.text, text),
+                    nvim::NvimTarget::Viewer => {
+                        app.finish_nvim(request.viewer, text, request.read_only)
+                    }
+                },
+                Err(error) => match request.target {
+                    nvim::NvimTarget::Draft => {
+                        app.nvim_draft_error(&request.viewer.text, error.to_string())
+                    }
+                    nvim::NvimTarget::Viewer => app.nvim_error(request.viewer, error.to_string()),
+                },
             }
         }
         // the app asked for another session (/resume) or a fresh one (/new): respawn serve

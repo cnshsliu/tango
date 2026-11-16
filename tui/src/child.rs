@@ -24,6 +24,8 @@ pub struct Serve {
     stdin: std::process::ChildStdin,
     next_id: u64,
     pub epoch: u64,
+    #[cfg(test)]
+    pub sent: Vec<String>,
 }
 
 impl Serve {
@@ -101,7 +103,26 @@ impl Serve {
             stdin,
             next_id: epoch * 1_000_000,
             epoch,
+            #[cfg(test)]
+            sent: Vec::new(),
         })
+    }
+
+    #[cfg(test)]
+    pub fn mock() -> Self {
+        let mut child = Command::new("cat")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        Self {
+            stdin: child.stdin.take().unwrap(),
+            child,
+            next_id: 0,
+            epoch: 0,
+            sent: Vec::new(),
+        }
     }
 
     /// Send a command that expects a `result` frame; returns its id.
@@ -124,6 +145,8 @@ impl Serve {
     }
 
     fn write_line(&mut self, line: &str) {
+        #[cfg(test)]
+        self.sent.push(line.to_string());
         let _ = writeln!(self.stdin, "{line}");
         let _ = self.stdin.flush();
     }

@@ -10,10 +10,17 @@ pub struct Neovim {
     pub executable: String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum NvimTarget {
+    Viewer,
+    Draft,
+}
+
 pub struct NvimRequest {
     pub editor: Neovim,
     pub viewer: Viewer,
     pub read_only: bool,
+    pub target: NvimTarget,
 }
 
 pub fn detect() -> Option<Neovim> {
@@ -81,7 +88,18 @@ pub fn run(editor: &Neovim, text: &str, read_only: bool) -> io::Result<String> {
         result.map(|_| String::new())
     };
     let _ = remove_file(path);
-    edited
+    edited.map(|edited| normalize_editor_output(text, &edited))
+}
+
+/// The editor runs with `set binary noendofline`, but some builds still append a final
+/// newline on write; strip it only when the original text did not end with one, so an
+/// unchanged round-trip of text that legitimately ends in '\n' stays unchanged.
+fn normalize_editor_output(original: &str, text: &str) -> String {
+    if original.ends_with('\n') {
+        text.to_string()
+    } else {
+        text.strip_suffix('\n').unwrap_or(text).to_string()
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -108,8 +126,8 @@ pub fn edit_submission(resolution: EditResolution, original: &str, edited: &str)
 }
 
 fn unified_diff(original: &str, edited: &str) -> String {
-    let old = original.split('\n').collect::<Vec<_>>();
-    let new = edited.split('\n').collect::<Vec<_>>();
+    let old = original.split_terminator('\n').collect::<Vec<_>>();
+    let new = edited.split_terminator('\n').collect::<Vec<_>>();
     let mut prefix = 0;
     while prefix < old.len() && prefix < new.len() && old[prefix] == new[prefix] {
         prefix += 1;
@@ -160,6 +178,13 @@ mod tests {
     }
 
     #[test]
+    fn editor_output_keeps_an_original_trailing_newline() {
+        assert_eq!(normalize_editor_output("a\n", "a\n"), "a\n");
+        assert_eq!(normalize_editor_output("a", "a\n"), "a");
+        assert_eq!(normalize_editor_output("a", "a"), "a");
+    }
+
+    #[test]
     fn unchanged_edit_has_no_submission() {
         assert_eq!(edit_submission(EditResolution::New, "same", "same"), None);
     }
@@ -191,5 +216,34 @@ mod tests {
             edit_submission(EditResolution::Reprocess, "old", "new\ncomplete").unwrap();
         assert!(submission.contains("重新处理"));
         assert!(submission.contains("new\ncomplete"));
+    }
+
+    #[test]
+    fn appending_one_line_does_not_mark_the_pasted_text_as_changed() {
+        let original = (1..=30)
+            .map(|n| format!("original-{n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let edited = format!("{original}\nAPPENDED\n");
+        let submission = edit_submission(EditResolution::Correct, &original, &edited).unwrap();
+        assert!(submission.contains("+APPENDED"));
+        assert!(!submission.lines().any(|line| line == "+"));
+        assert!(!submission.contains("-original-01"));
+        assert!(!submission.contains("+original-01"));
+        assert!(!submission.contains("-original-30"));
+    }
+
+    #[test]
+    fn editor_output_removes_only_its_final_line_terminator() {
+        assert_eq!(
+            normalize_editor_output("one\ntwo", "one\ntwo\n"),
+            "one\ntwo"
+        );
+        assert_eq!(
+            normalize_editor_output("one\ntwo", "one\ntwo\n\n"),
+            "one\ntwo\n"
+        );
+        assert_eq!(normalize_editor_output("one\ntwo", "one\ntwo"), "one\ntwo");
+        assert_eq!(normalize_editor_output("", "\n"), "");
     }
 }

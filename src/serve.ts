@@ -5,8 +5,9 @@
  * stdin: one JSON command per line.
  * stdout: one JSON frame per line, protocol only — human logs never touch stdout.
  *
- * commands:  prompt | interrupt | permission | models | set_model | set_mode | set_nvim_viewer | compact | sessions | history | save_skill | status
- * frames:    hello | stream | message | tool_result | permission_request | turn_end | error | result
+ * commands:  prompt | btw | interrupt | permission | models | set_model | set_mode | set_nvim_viewer
+ *            set_theme | set_mouse | diff | compact | sessions | history | save_skill | status
+ * frames:    hello | stream | btw_stream | message | tool_result | permission_request | turn_end | error | result
  */
 import { createInterface } from 'node:readline';
 import { hasKey, keyProblem, loadConfig, loadModels, pickModel, saveConfig, sessionsDir } from './core/config.js';
@@ -17,6 +18,7 @@ import { costUsd } from './core/models/registry.js';
 import type { AskFn, PermissionMode } from './core/permissions.js';
 import type { ToolResult } from './core/types.js';
 import { buildTools, openAgent, VERSION, type HostArgs, type PermState } from './host.js';
+import { diffTool } from './core/tools/diff.js';
 
 export const PROTOCOL = 1;
 
@@ -73,7 +75,13 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
   agent.events.on('message', ({ message }) => out({ type: 'message', message }));
   agent.events.on('turn_end', (e) => {
     sessionCostUsd += e.costUsd;
-    out({ type: 'turn_end', ...e, totalCostUsd: sessionCostUsd });
+    out({
+      type: 'turn_end',
+      ...e,
+      totalCostUsd: sessionCostUsd,
+      contextTokens: e.usage.input,
+      contextWindow: agent.model.contextWindow ?? 128_000
+    });
   });
   agent.events.on('after_tool', ({ call, result, ms }) =>
     out({
@@ -101,7 +109,10 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
     cwd,
     mode: perm.mode,
     totalCostUsd: sessionCostUsd,
+    contextTokens: store.allMessages().filter((m) => m.role === 'assistant').at(-1)?.usage?.input ?? 0,
+    contextWindow: agent.model.contextWindow ?? 128_000,
     theme: config.theme,
+    mouse: config.mouse ?? true,
     editor: config.editor,
     keys: config.keys,
     nvimViewer: config.nvimViewer,
@@ -123,6 +134,25 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
             if (ev.type !== 'done') out({ type: 'stream', event: ev });
           });
           reply(cmd, true, { stopReason: msg.stopReason ?? 'stop' });
+        } catch (e: any) {
+          reply(cmd, false, undefined, String(e?.message ?? e));
+        }
+        return;
+      }
+      case 'btw': {
+        const text = String(cmd.text ?? '');
+        if (!text.trim()) return reply(cmd, false, undefined, 'btw: empty text');
+        try {
+          const msg = await agent.ask(text, (ev) => {
+            if (ev.type !== 'done') out({ type: 'btw_stream', id: cmd.id, event: ev });
+          });
+          reply(cmd, true, {
+            text: msg.content
+              .filter((b) => b.type === 'text')
+              .map((b) => b.text)
+              .join(''),
+            stopReason: msg.stopReason ?? 'stop'
+          });
         } catch (e: any) {
           reply(cmd, false, undefined, String(e?.message ?? e));
         }
@@ -179,10 +209,29 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
           agent.setModel(model);
           // same as the REPL: an explicit switch becomes the default for new sessions
           await saveConfig({ ...(await loadConfig()), model: model.id });
-          reply(cmd, true, { model: model.id, warning: keyProblem(model) });
+          reply(cmd, true, {
+            model: model.id,
+            warning: keyProblem(model),
+            contextWindow: model.contextWindow ?? 128_000
+          });
         } catch (e: any) {
           reply(cmd, false, undefined, e.message);
         }
+        return;
+      }
+      case 'set_theme': {
+        const theme = String(cmd.theme ?? '');
+        if (theme !== 'dark' && theme !== 'light' && theme !== 'auto')
+          return reply(cmd, false, undefined, `bad theme "${cmd.theme}" (dark|light|auto)`);
+        await saveConfig({ ...(await loadConfig()), theme });
+        reply(cmd, true, { theme });
+        return;
+      }
+      case 'set_mouse': {
+        if (typeof cmd.mouse !== 'boolean')
+          return reply(cmd, false, undefined, `bad mouse value "${cmd.mouse}" (true|false)`);
+        await saveConfig({ ...(await loadConfig()), mouse: cmd.mouse });
+        reply(cmd, true, { mouse: cmd.mouse });
         return;
       }
       case 'set_nvim_viewer': {
@@ -203,7 +252,12 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
       }
       case 'compact': {
         const compacted = await agent.compact();
-        reply(cmd, true, { compacted, contextMessages: store.messageCount() });
+        reply(cmd, true, {
+          compacted,
+          contextMessages: store.messageCount(),
+          contextTokens: agent.contextTokenEstimate(),
+          contextWindow: agent.model.contextWindow ?? 128_000
+        });
         return;
       }
       case 'save_skill': {
@@ -231,6 +285,21 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
         }
         return;
       }
+      case 'diff': {
+        const paths = Array.isArray(cmd.paths) ? cmd.paths.map(String) : ['.'];
+        const staged = cmd.staged === true;
+        const result = await diffTool.execute(
+          { paths, staged },
+          { cwd, signal: new AbortController().signal }
+        );
+        const output = resultText(result);
+        reply(cmd, true, {
+          diff: output === '(no diff for those paths)' ? 'clean — nothing changed' : output,
+          isError: !!result.isError,
+          staged
+        });
+        return;
+      }
       case 'status':
         reply(cmd, true, {
           sessionId: store.id,
@@ -238,7 +307,9 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
           mode: perm.mode,
           cwd,
           contextMessages: store.messageCount(),
-          totalCostUsd: sessionCostUsd
+          totalCostUsd: sessionCostUsd,
+          contextTokens: agent.contextTokenEstimate(),
+          contextWindow: agent.model.contextWindow ?? 128_000
         });
         return;
       default:

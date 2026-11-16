@@ -20,6 +20,8 @@ export interface Config {
   feishuWebhook?: string;
   /** TUI palette: fixed dark/light or terminal COLORFGBG detection */
   theme?: 'dark' | 'light' | 'auto';
+  /** Mouse capture; false keeps native terminal selection. Missing means true. */
+  mouse?: boolean;
   /** Input editing mode; missing/unknown values use the default Emacs-like editing */
   editor?: 'default' | 'vim';
   /** TUI action → key binding, e.g. { "expandTools": "ctrl+u" } */
