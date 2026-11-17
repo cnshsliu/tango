@@ -72,14 +72,37 @@ tango --models         list models   tango --sessions   list sessions   --cwd <d
 tango repl             line-mode REPL — dev fallback, not the product
 ```
 
-TUI commands: `/model`, `/resume`, `/new`, `/rename`, `/mode`, `/plan`, `/goal`, `/loop`,
-`/effort`, `/review`, `/security-review`, `/vim`, `/nvim`, `/editor`, `/multiline`, `/btw`,
-`/diff`, `/focus`, `/density`, `/mouse`, `/theme`, `/compact`, `/autocompact`, `/skill`,
-`/skills`, `/memory`, `/remember`, `/cost`, `/usage`, `/stats`, `/insights`, `/context`,
-`/queue`, `/timestamps`, `/statusline`, `/preset`, `/permissions`, `/import`, `/cd`, `/pwd`,
-`/add_dir`, `/config`, `/keymap`, `/init`, `/doctor`, `/debug-zip`, `/status`, `/clear`,
-`/rewind`, `/undo`, `/redo`, `/fork`, `/branch`, `/tree`, `/find`, `/export`, `/transcript`,
-`/copy`, `/recap`, `/help`, `/exit`. `/model <id>` also saves the choice as the default for new sessions.
+TUI commands: `/model`, `/agents`, `/resume`, `/new`, `/rename`, `/mode`, `/plan`, `/goal`,
+`/loop`, `/effort`, `/review`, `/security-review`, `/bg`, `/tasks`, `/stop`, `/subtask`,
+`/worktree`, `/mcp`, `/plugins`, `/vim`, `/nvim`, `/editor`, `/multiline`, `/btw`, `/diff`,
+`/focus`, `/density`, `/mouse`, `/theme`, `/compact`, `/autocompact`, `/skill`, `/skills`,
+`/memory`, `/remember`, `/cost`, `/usage`, `/stats`, `/insights`, `/context`, `/queue`,
+`/timestamps`, `/statusline`, `/preset`, `/permissions`, `/import`, `/cd`, `/pwd`, `/add_dir`,
+`/config`, `/keymap`, `/init`, `/doctor`, `/debug-zip`, `/status`, `/clear`, `/rewind`, `/undo`,
+`/redo`, `/fork`, `/branch`, `/tree`, `/find`, `/export`, `/transcript`, `/copy`, `/recap`,
+`/help`, `/exit`. `/model <id>` also saves the choice as the default for new sessions.
+
+## Worktrees, background, subagents, MCP, plugins
+
+- **/worktree** — managed git worktrees (`~/.tango/worktrees/<name>`, branch `tango/<name>`):
+  the isolation unit for anything that writes in parallel. Dirty worktrees refuse removal;
+  `/worktree merge <name>` merges back into the main workspace (which must be clean).
+- **/bg <prompt>** — a background prompt: fresh worktree + independent serve child; the task
+  runs to completion (detached), its session lands in the shared sessions dir (`/tasks` shows
+  status + session, `/stop` kills the process group). `/bg --long` uses the longContext role.
+- **/subtask <task>** — a subagent: a background task on the subagent role model whose final
+  summary is written back into THIS session (`⑂ subtask …`); main turns are never disturbed.
+- **/agents [role model]** — role-based routing: `driver` (live), `subagent` (/subtask, /bg),
+  `longContext` (/bg --long). Defaults to the current model.
+- **/mcp** — MCP servers from config `mcpServers: {name: {command, args}}` (stdio JSON-RPC);
+  tools bridge as `mcp_<server>_<tool>`, treated as write-effect (permission rules apply),
+  dead/hung servers degrade to disconnected without touching serve.
+- **/plugins** — local plugins: `~/.tango/plugins/<name>/plugin.json` with
+  `{name, description, enabled?, hooks?: {beforeTool?, afterTool?}}`; hooks receive the call
+  JSON on stdin like config hooks; `enabled: false` skips.
+
+Not doing (by design): concurrent writers in the main workspace (worktrees are the only
+isolation), MCP server→client capabilities (sampling/roots), plugin marketplaces.
 
 ## Workflow modes
 
