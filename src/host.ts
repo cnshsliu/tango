@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 /**
  * Shared host wiring: every frontend (terminal REPL, serve protocol, task daemon)
  * assembles its agent here so tools, permissions and diagnostics stay identical.
@@ -42,7 +43,17 @@ export interface PermState {
   plan?: { on: boolean };
 }
 
-export function makeAgent(model: ModelSpec, store: SessionStore, cwd: string, perm: PermState, cfg: { checkpoint?: string; permissions?: { allow: string[] }; extraDirs?: string[] } = {}): Agent {
+/** Run a configured hook: `sh -c <cmd>` with the payload JSON on stdin; failures warn, never block. */
+function runHook(script: string, payload: unknown): void {
+  try {
+    const r = spawnSync('sh', ['-c', script], { input: JSON.stringify(payload), encoding: 'utf8', timeout: 5000 });
+    if (r.status !== 0 && r.stderr) process.stderr.write(`[hook] ${r.stderr}`.slice(0, 500) + '\n');
+  } catch (e: any) {
+    process.stderr.write(`[hook] ${e?.message ?? e}\n`);
+  }
+}
+
+export function makeAgent(model: ModelSpec, store: SessionStore, cwd: string, perm: PermState, cfg: { checkpoint?: string; permissions?: { allow: string[] }; extraDirs?: string[]; hooks?: { beforeTool?: string; afterTool?: string } } = {}): Agent {
   const events = new EventBus();
   // gate first: a vetoed call is never announced as running
   const rules = perm.rules ?? { allow: cfg.permissions?.allow ? [...cfg.permissions.allow] : [] };
@@ -66,6 +77,14 @@ export function makeAgent(model: ModelSpec, store: SessionStore, cwd: string, pe
     plan: () => plan.on
   });
   installDiagnostics(events, cwd);
+  if (cfg.hooks?.beforeTool) {
+    const script = cfg.hooks.beforeTool;
+    events.on('before_tool', ({ call, tool }) => runHook(script, { phase: 'before', name: call.name, tool: tool.name, input: call.input }));
+  }
+  if (cfg.hooks?.afterTool) {
+    const script = cfg.hooks.afterTool;
+    events.on('after_tool', ({ call, result, ms }) => runHook(script, { phase: 'after', name: call.name, isError: !!result.isError, ms }));
+  }
   if (checkpointEnabled(cfg)) installCheckpoints(events, { cwd: () => agent.cwd, store });
   return agent;
 }

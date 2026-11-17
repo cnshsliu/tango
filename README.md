@@ -72,13 +72,32 @@ tango --models         list models   tango --sessions   list sessions   --cwd <d
 tango repl             line-mode REPL — dev fallback, not the product
 ```
 
-TUI commands: `/model`, `/resume`, `/new`, `/rename`, `/mode`, `/vim`, `/nvim`, `/editor`,
-`/multiline`, `/btw`, `/diff`, `/focus`, `/density`, `/mouse`, `/theme`, `/compact`,
-`/autocompact`, `/skill`, `/cost`, `/usage`, `/stats`, `/insights`, `/context`, `/queue`,
-`/timestamps`, `/statusline`, `/preset`, `/permissions`, `/import`, `/cd`, `/pwd`, `/add_dir`,
-`/config`, `/keymap`, `/init`, `/doctor`, `/debug-zip`, `/status`, `/clear`, `/rewind`, `/undo`,
-`/redo`, `/fork`, `/branch`, `/tree`, `/find`, `/export`, `/transcript`, `/copy`, `/recap`,
-`/help`, `/exit`. `/model <id>` also saves the choice as the default for new sessions.
+TUI commands: `/model`, `/resume`, `/new`, `/rename`, `/mode`, `/plan`, `/goal`, `/loop`,
+`/effort`, `/review`, `/security-review`, `/vim`, `/nvim`, `/editor`, `/multiline`, `/btw`,
+`/diff`, `/focus`, `/density`, `/mouse`, `/theme`, `/compact`, `/autocompact`, `/skill`,
+`/skills`, `/memory`, `/remember`, `/cost`, `/usage`, `/stats`, `/insights`, `/context`,
+`/queue`, `/timestamps`, `/statusline`, `/preset`, `/permissions`, `/import`, `/cd`, `/pwd`,
+`/add_dir`, `/config`, `/keymap`, `/init`, `/doctor`, `/debug-zip`, `/status`, `/clear`,
+`/rewind`, `/undo`, `/redo`, `/fork`, `/branch`, `/tree`, `/find`, `/export`, `/transcript`,
+`/copy`, `/recap`, `/help`, `/exit`. `/model <id>` also saves the choice as the default for new sessions.
+
+## Workflow modes
+
+- `/plan` — research-only mode: every write-effect tool call is vetoed (even allow rules
+  can't widen it) and the model is instructed to produce an execution plan; `/plan` again to
+  execute. PLAN badge in the status bar.
+- `/goal <text>` — keep working toward a goal: after each turn tango asks (tool-free) whether
+  the goal is done; NO → one auto-continuation, YES → cleared with a notice. Hard cap
+  (`/goal max N`, default 5), interrupt stops it, ●goal badge while active.
+- `/loop 10m <prompt>` — interval-repeated prompt (floor 10s), `/loop off` or ctrl+c stops.
+- `/effort low|medium|high|off` — reasoning effort (openai `reasoning_effort`, anthropic
+  thinking budget), session-scoped.
+- `/review [paths]` / `/security-review` — the working diff inlined into a instructed
+  correctness/security audit prompt.
+- `/remember <text>` appends one line to `~/.tango/AGENTS.md` (the global memory every
+  session's context assembles); `/memory` views/edits it.
+- `hooks` in config.json: `beforeTool` / `afterTool` shell commands receive the call JSON on
+  **stdin**; hook failures warn on stderr and never block the tool.
 
 ## Lean by design (token plans)
 

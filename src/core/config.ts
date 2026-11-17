@@ -38,6 +38,8 @@ export interface Config {
   permissions?: { allow: string[] };
   /** Extra write roots outside cwd (/add_dir) */
   extraDirs?: string[];
+  /** Tool-call hooks: sh -c <cmd>, the call JSON arrives on stdin; failures never block */
+  hooks?: { beforeTool?: string; afterTool?: string };
 }
 
 async function readJson<T>(path: string): Promise<T | undefined> {

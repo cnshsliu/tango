@@ -1610,3 +1610,36 @@ test('loop: repeats a prompt on an interval, off and interrupt stop it', async (
     await rm(work, { recursive: true, force: true });
   }
 });
+
+test('hooks: beforeTool runs with the call JSON on stdin; failures never block', async () => {
+  const mock = await startMock();
+  const home = await mkdtemp(join(tmpdir(), 'tango-serve-home-'));
+  const work = await mkdtemp(join(tmpdir(), 'tango-serve-work-'));
+  await writeFile(join(home, 'models.json'), JSON.stringify([
+    { id: 'mock/mock', provider: 'mock', model: 'm', api: 'openai-completions', baseUrl: `http://127.0.0.1:${(mock.server.address() as AddressInfo).port}/v1`, apiKey: 'MOCK_SERVE_KEY', contextWindow: 200 }
+  ]));
+  await writeFile(join(home, 'config.json'), JSON.stringify({
+    hooks: { beforeTool: `cat > ${join(work, 'hook-input.json')}` }
+  }));
+  let n = 0;
+  mock.setScript(() => {
+    n++;
+    if (n % 2 === 1) return SSE({ choices: [{ delta: { tool_calls: [{ index: 0, id: 'h1', function: { name: 'bash', arguments: JSON.stringify({ command: 'echo hooked > hook-ran.txt' }) } }] }, finish_reason: 'tool_calls' }] }) + 'data: [DONE]\n\n';
+    return SSE({ choices: [{ delta: { content: 'done' } }] }) + SSE({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1 } }) + 'data: [DONE]\n\n';
+  });
+  const s = await startServe(home, work, 0);
+  try {
+    await s.next();
+    s.send({ id: 100, cmd: 'prompt', text: 'run it' });
+    await s.until((f: any) => f.type === 'result' && f.id === 100 && f.ok, 'turn');
+    assert.ok(existsSync(join(work, 'hook-ran.txt')), 'the tool ran despite the hook');
+    const hooked = JSON.parse(await readFile(join(work, 'hook-input.json'), 'utf8'));
+    assert.equal(hooked.name, 'bash');
+    assert.ok(String(hooked.input.command).includes('hooked'));
+  } finally {
+    s.child.kill();
+    mock.server.close();
+    await rm(home, { recursive: true, force: true });
+    await rm(work, { recursive: true, force: true });
+  }
+});
