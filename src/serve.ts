@@ -9,6 +9,7 @@
  *            set_theme | set_mouse | diff | compact | sessions | history | save_skill | status
  * frames:    hello | stream | btw_stream | message | tool_result | permission_request | turn_end | error | result
  */
+import { spawnSync } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { randomUUID } from 'node:crypto';
 import { buildContext } from './core/context.js';
@@ -459,6 +460,39 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
         add('node', true, nodeV);
         reply(cmd, true, { checks });
         return;
+      }
+      case 'debug_zip': {
+        // offline diagnostics bundle: doctor + sanitized config + session inventory (names only)
+        const { mkdtemp: mk2, writeFile: wf4, readdir: rd4, rm: rm2 } = await import('node:fs/promises');
+        const { tmpdir } = await import('node:os');
+          const tmp = await mk2(join(tmpdir(), 'tango-debug-'));
+        try {
+          const doctor = {
+            version: VERSION,
+            protocol: PROTOCOL,
+            node: process.version,
+            platform: process.platform,
+            cwd,
+            sessionId: store.id,
+            config: await loadConfig(),
+            sessions: (await SessionStore.list(sessionsDir())).map((x) => ({ id: x.id, createdAt: x.createdAt, messages: x.messages, cwd: x.cwd, name: x.name }))
+          };
+          await wf4(join(tmp, 'doctor.json'), JSON.stringify(doctor, null, 2), 'utf8');
+          const stamp = new Date().toISOString().slice(0, 10);
+          const zipPath = join(cwd, `tango-debug-${stamp}.zip`);
+          const z = spawnSync('zip', ['-j', '-q', zipPath, join(tmp, 'doctor.json')], { encoding: 'utf8' });
+          if (z.status !== 0) {
+            // no zip: fall back to copying the report next to the project
+            const fallback = join(cwd, `tango-debug-${stamp}.json`);
+            await wf4(fallback, JSON.stringify(doctor, null, 2), 'utf8');
+            reply(cmd, true, { path: fallback, format: 'json' });
+            return;
+          }
+          reply(cmd, true, { path: zipPath, format: 'zip' });
+          return;
+        } finally {
+          await rm2(tmp, { recursive: true, force: true });
+        }
       }
       case 'cd': {
         const dir = String(cmd.dir ?? '').trim();
@@ -1016,7 +1050,7 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
     // (e.g. "always allow" from a permission dialog), so they skip the prompt queue too
     const guarded = (p: Promise<unknown>) =>
       void p.catch((e) => out({ type: 'error', message: String(e?.message ?? e) }));
-    if (['set_mode', 'status', 'timeline', 'context', 'queue', 'usage', 'stats', 'insights', 'preset_save', 'preset_list', 'preset_get', 'permissions_list', 'permissions_add', 'permissions_remove', 'import', 'cd', 'pwd', 'add_dir', 'config_show', 'init', 'doctor'].includes(cmd.cmd)) {
+    if (['set_mode', 'status', 'timeline', 'context', 'queue', 'usage', 'stats', 'insights', 'preset_save', 'preset_list', 'preset_get', 'permissions_list', 'permissions_add', 'permissions_remove', 'import', 'cd', 'pwd', 'add_dir', 'config_show', 'init', 'doctor', 'debug_zip'].includes(cmd.cmd)) {
       guarded(handle(cmd));
       return;
     }

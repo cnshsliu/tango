@@ -100,6 +100,7 @@ enum Pending {
     AddDir,
     Init,
     Doctor,
+    DebugZip,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1204,6 +1205,10 @@ impl App {
             "/doctor" => {
                 let id = serve.command("doctor", vec![]);
                 self.pending.push((id, Pending::Doctor));
+            }
+            "/debug-zip" | "/feedback" => {
+                let id = serve.command("debug_zip", vec![]);
+                self.pending.push((id, Pending::DebugZip));
             }
             "/config" => {
                 let id = serve.command("config_show", vec![]);
@@ -3336,6 +3341,10 @@ impl App {
                                 }
                             }
                             self.viewer = Some(Viewer::read_only("doctor", text));
+                        }
+                        (Pending::DebugZip, true) => {
+                            let path = d["path"].as_str().unwrap_or("?");
+                            self.push(format!("诊断包 → {path}（不含密钥）"), Tone::Success);
                         }
                         (Pending::History, true) => self.load_history(d),
                         (Pending::Theme, true) => {
@@ -5514,5 +5523,16 @@ mod tests {
         assert!(v.text.contains("✓"));
         assert!(v.text.contains("✗"));
         assert!(v.text.contains("no key"));
+    }
+
+    #[test]
+    fn debug_zip_reports_path() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.run_slash("/debug-zip", &mut serve);
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        assert_eq!(sent["cmd"], "debug_zip");
+        app.frame(json!({"type": "result", "id": sent["id"], "ok": true, "data": {"path": "/w/d.zip", "format": "zip"}}));
+        assert!(app.lines.iter().any(|l| l.text.contains("/w/d.zip")));
     }
 }
