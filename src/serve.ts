@@ -165,7 +165,9 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
     try {
       const check = await agent.ask(`目标是否已达成？目标：${goal.text}\n只回答 YES 或 NO。`);
       const ans = check.content.filter((b: any) => b.type === 'text').map((b: any) => b.text).join('');
-      if (/\bYES\b/.test(ans.toUpperCase())) {
+      // the ask may have been aborted or the goal cleared/paused while it was in flight — re-check
+      if (!goal.text || goal.paused || check.stopReason === 'aborted' || !ans.trim()) return;
+      if (/\bYES\b|是|完成|达成|DONE/.test(ans.toUpperCase())) {
         out({ type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: `✓ 目标完成：${goal.text}` }] } as never });
         goal.text = null;
         goal.rounds = 0;
@@ -176,7 +178,7 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
     }
     goal.rounds++;
     out({ type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: `● goal 自动继续（第 ${goal.rounds}/${goal.maxRounds} 轮）：${goal.text}` }] } as never });
-    await handle({ id: undefined, cmd: 'prompt', text: `继续推进目标：${goal.text}。完成后明确说明。` });
+    enqueue({ id: undefined, cmd: 'prompt', text: `继续推进目标：${goal.text}。完成后明确说明。` });
   }
 
   const reply = (cmd: Command, ok: boolean, data?: unknown, error?: string) => {
@@ -340,7 +342,10 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
       case 'prompt': {
         let text = String(cmd.text ?? '');
         if (!text.trim()) return reply(cmd, false, undefined, 'prompt: empty text');
-        if (perm.plan?.on) text = `[plan mode] 先只做研究和计划，不要尝试写入或执行修改。产出一份清晰的执行计划，等用户批准后 /plan off 再执行。\n\n${text}`;
+        // plan instruction rides the system prompt, not the stored user text
+        agent.systemSuffix = perm.plan?.on
+          ? '\n# Plan mode\n当前处于 plan 模式：只做研究和计划，不要尝试写入或执行修改；产出清晰执行计划，等用户批准后 /plan off 再执行。'
+          : undefined;
         try {
           const msg = await agent.prompt(text, (ev) => {
             if (ev.type !== 'done') out({ type: 'stream', event: ev });
@@ -557,7 +562,7 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
         }
         const everySec = Number(cmd.everySec ?? 0);
         const prompt = String(cmd.prompt ?? '');
-        const min = Number(cmd.minInterval ?? 10);
+        const min = process.env.TANGO_TEST_LOOP_FLOOR ? Number(process.env.TANGO_TEST_LOOP_FLOOR) : 10;
         if (!prompt.trim()) return reply(cmd, false, undefined, 'loop: empty prompt');
         if (!Number.isFinite(everySec) || everySec < min) {
           return reply(cmd, false, undefined, `loop: interval must be ≥ ${min}s`);
@@ -565,11 +570,18 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
         stopLoop();
         loop.everySec = everySec;
         loop.prompt = prompt;
+        // one tick at a time: the next timer arms only after this prompt settles,
+        // so slow turns never overlap (C2) and interrupts stay effective
         const tick = () => {
           if (!loop.prompt) return;
-          void handle({ id: undefined, cmd: 'prompt', text: loop.prompt }).catch(() => {});
-          loop.timer = setTimeout(tick, loop.everySec * 1000);
-          loop.timer.unref?.();
+          enqueue({ id: undefined, cmd: 'prompt', text: loop.prompt });
+          // arm after the queue drains this tick (best-effort: watch the queue tail)
+          const arm = () => {
+            if (!loop.prompt) return;
+            loop.timer = setTimeout(tick, loop.everySec * 1000);
+            loop.timer.unref?.();
+          };
+          queue = queue.then(arm, arm);
         };
         loop.timer = setTimeout(tick, 10); // first run promptly
         loop.timer.unref?.();
@@ -585,7 +597,7 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
           reply(cmd, true, { goal: goal.text, paused: goal.paused, maxRounds: goal.maxRounds });
           return;
         }
-        if (sub.startsWith('max ')) {
+        if (/^max \d+$/.test(sub)) {
           const n = parseInt(sub.slice(4), 10);
           if (!Number.isFinite(n) || n < 1 || n > 50) return reply(cmd, false, undefined, 'goal max: 1-50');
           goal.maxRounds = n;
@@ -645,8 +657,12 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
       case 'review':
       case 'security_review': {
         const paths = Array.isArray(cmd.paths) ? cmd.paths.map(String) : ['.'];
-        const diffResult = await diffTool.execute({ paths, staged: false }, { cwd, signal: new AbortController().signal });
-        const diffText = resultText(diffResult);
+        const ctx0 = { cwd, signal: new AbortController().signal };
+        const unstaged = resultText(await diffTool.execute({ paths, staged: false }, ctx0));
+        const staged = resultText(await diffTool.execute({ paths, staged: true }, ctx0));
+        const diffText = unstaged === '(no diff for those paths)' && staged === '(no diff for those paths)'
+          ? unstaged
+          : [staged === '(no diff for those paths)' ? '' : staged, unstaged === '(no diff for those paths)' ? '' : unstaged].filter(Boolean).join('\n');
         if (diffText === '(no diff for those paths)') {
           reply(cmd, true, { text: '工作区干净 — 没有可审查的改动', done: true, reviewed: false });
           return;
@@ -1203,6 +1219,12 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
 
   // prompts run one at a time; interrupt and permission answers jump the queue
   let queue: Promise<void> = Promise.resolve();
+  /** run a synthetic prompt through the same serial queue as user prompts (goal/loop) */
+  const enqueue = (cmd: Command): void => {
+    queue = queue
+      .then(() => handle(cmd))
+      .catch((e) => out({ type: 'error', message: String(e?.message ?? e) }));
+  };
   // bumped on interrupt: queued prompts captured under an older generation never run
   let interruptGen = 0;
   const rl = createInterface({ input: process.stdin });

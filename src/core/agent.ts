@@ -46,6 +46,8 @@ export class Agent {
   cwd: string;
   /** reasoning effort for adapters that support it (/effort) */
   effort?: 'low' | 'medium' | 'high';
+  /** transient system-prompt suffix (plan mode) — never persisted into history */
+  systemSuffix?: string;
   private readonly maxTurns: number;
   /** auto-compact threshold as a share of the context window; 0 disables (/autocompact) */
   compactAt: number;
@@ -209,7 +211,7 @@ export class Agent {
   private async request(): Promise<CompletionRequest> {
     const { systemPrompt } = await buildContext(this.cwd);
     return {
-      system: systemPrompt,
+      system: this.systemSuffix ? systemPrompt + this.systemSuffix : systemPrompt,
       messages: this.store.messages(),
       tools: this.tools.schemas(),
       maxTokens: this.model.maxTokens,

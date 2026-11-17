@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 /**
  * Shared host wiring: every frontend (terminal REPL, serve protocol, task daemon)
  * assembles its agent here so tools, permissions and diagnostics stay identical.
@@ -45,12 +45,21 @@ export interface PermState {
 
 /** Run a configured hook: `sh -c <cmd>` with the payload JSON on stdin; failures warn, never block. */
 function runHook(script: string, payload: unknown): void {
-  try {
-    const r = spawnSync('sh', ['-c', script], { input: JSON.stringify(payload), encoding: 'utf8', timeout: 5000 });
-    if (r.status !== 0 && r.stderr) process.stderr.write(`[hook] ${r.stderr}`.slice(0, 500) + '\n');
-  } catch (e: any) {
-    process.stderr.write(`[hook] ${e?.message ?? e}\n`);
-  }
+  // async spawn keeps the event loop (and interrupts) alive during hooks
+  const child = spawn('sh', ['-c', script], { stdio: ['pipe', 'ignore', 'pipe'] });
+  const kill = setTimeout(() => child.kill('SIGKILL'), 5000);
+  child.on('error', (e) => {
+    clearTimeout(kill);
+    process.stderr.write(`[hook] ${e.message}\n`);
+  });
+  let err = '';
+  child.stderr?.on('data', (d) => (err += d));
+  child.on('close', (code) => {
+    clearTimeout(kill);
+    if (code !== 0) process.stderr.write(`[hook] exit ${code}: ${err}`.slice(0, 500) + '\n');
+  });
+  child.stdin.write(JSON.stringify(payload));
+  child.stdin.end();
 }
 
 export function makeAgent(model: ModelSpec, store: SessionStore, cwd: string, perm: PermState, cfg: { checkpoint?: string; permissions?: { allow: string[] }; extraDirs?: string[]; hooks?: { beforeTool?: string; afterTool?: string } } = {}): Agent {

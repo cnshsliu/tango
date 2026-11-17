@@ -55,7 +55,11 @@ export const anthropicAdapter: ModelAdapter = {
       stream: true
     };
     if (req.effort) {
-      const budget = req.effort === 'high' ? 16_000 : req.effort === 'medium' ? 8_000 : 4_000;
+      let budget = req.effort === 'high' ? 16_000 : req.effort === 'medium' ? 8_000 : 4_000;
+      const maxT = (body.max_tokens as number) ?? 8192;
+      // thinking budget must leave room for the answer and never exceed max_tokens
+      budget = Math.min(budget, Math.max(1024, maxT - 1024));
+      body.max_tokens = Math.max(maxT, budget + 1024);
       body.thinking = { type: 'enabled', budget_tokens: budget };
     }
     if (req.tools.length) {

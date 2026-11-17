@@ -97,7 +97,8 @@ export const openaiAdapter: ModelAdapter = {
     // OpenAI's reasoning models reject max_tokens; other compatible APIs don't all accept the new name.
     const maxKey = /api\.openai\.com/.test(spec.baseUrl) ? 'max_completion_tokens' : 'max_tokens';
     body[maxKey] = req.maxTokens ?? spec.maxTokens ?? 8192;
-    if (req.effort) body.reasoning_effort = req.effort;
+    // only reasoning-capable endpoints take the param; others may 400 on it
+    if (req.effort && spec.reasoning !== false) body.reasoning_effort = req.effort;
     if (req.tools.length) {
       body.tools = req.tools.map((t) => ({
         type: 'function',

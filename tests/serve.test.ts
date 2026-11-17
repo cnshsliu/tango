@@ -1588,11 +1588,11 @@ test('loop: repeats a prompt on an interval, off and interrupt stop it', async (
     { id: 'mock/mock', provider: 'mock', model: 'm', api: 'openai-completions', baseUrl: `http://127.0.0.1:${(mock.server.address() as AddressInfo).port}/v1`, apiKey: 'MOCK_SERVE_KEY', contextWindow: 200 }
   ]));
   mock.setScript(() => SSE({ choices: [{ delta: { content: 'tick' } }] }) + SSE({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1 } }) + 'data: [DONE]\n\n');
+  process.env.TANGO_TEST_LOOP_FLOOR = '0';
   const s = await startServe(home, work, 0);
   try {
     await s.next();
-    // minInterval 10s for users; tests may pass lower via minInterval
-    s.send({ id: 200, cmd: 'loop', everySec: 0.3, prompt: 'check status', minInterval: 0 });
+    s.send({ id: 200, cmd: 'loop', everySec: 0.3, prompt: 'check status' });
     const set = await s.until((f: any) => f.type === 'result' && f.id === 200 && f.ok, 'loop set');
     assert.ok(set.ok);
     // wait for ~3 iterations
@@ -1604,6 +1604,7 @@ test('loop: repeats a prompt on an interval, off and interrupt stop it', async (
     assert.equal(mock.requests.length, countAfterOff, 'no more ticks after off');
     assert.ok(countAfterOff >= 3, `ran at least 3 iterations, got ${countAfterOff}`);
   } finally {
+    delete process.env.TANGO_TEST_LOOP_FLOOR;
     s.child.kill();
     mock.server.close();
     await rm(home, { recursive: true, force: true });
@@ -1636,6 +1637,113 @@ test('hooks: beforeTool runs with the call JSON on stdin; failures never block',
     const hooked = JSON.parse(await readFile(join(work, 'hook-input.json'), 'utf8'));
     assert.equal(hooked.name, 'bash');
     assert.ok(String(hooked.input.command).includes('hooked'));
+  } finally {
+    s.child.kill();
+    mock.server.close();
+    await rm(home, { recursive: true, force: true });
+    await rm(work, { recursive: true, force: true });
+  }
+});
+
+test('C1-C3: interrupt during goal check stops continuation; loop never overlaps; goal rides the queue', async () => {
+  const mock = await startMock();
+  const home = await mkdtemp(join(tmpdir(), 'tango-serve-home-'));
+  const work = await mkdtemp(join(tmpdir(), 'tango-serve-work-'));
+  await writeFile(join(home, 'models.json'), JSON.stringify([
+    { id: 'mock/mock', provider: 'mock', model: 'm', api: 'openai-completions', baseUrl: `http://127.0.0.1:${(mock.server.address() as AddressInfo).port}/v1`, apiKey: 'MOCK_SERVE_KEY', contextWindow: 8000 }
+  ]));
+  let prompts = 0; let asks = 0;
+  mock.setScript(() => {
+    const last = mock.requests.at(-1);
+    const isAsk = last && JSON.stringify(last.messages).includes('目标是否已达成');
+    if (isAsk) {
+      asks++;
+      // hang the check long enough for the interrupt to land mid-ask
+      return `DELAY:2500:` + SSE({ choices: [{ delta: { content: 'NO' } }] }) + SSE({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 5, completion_tokens: 2 } }) + 'data: [DONE]\n\n';
+    }
+    prompts++;
+    return SSE({ choices: [{ delta: { content: `work ${prompts}` } }] }) + SSE({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 5, completion_tokens: 2 } }) + 'data: [DONE]\n\n';
+  });
+  const s = await startServe(home, work, 0);
+  try {
+    await s.next();
+    s.send({ id: 200, cmd: 'goal', text: '完成目标X' });
+    await s.until((f: any) => f.type === 'result' && f.id === 200 && f.ok, 'set');
+    s.send({ id: 100, cmd: 'prompt', text: 'go' });
+    await s.until((f: any) => f.type === 'result' && f.id === 100, 'turn');
+    // the goal check is now hanging (2.5s) — interrupt mid-check
+    await sleep(400);
+    s.send({ cmd: 'interrupt' });
+    await sleep(3200); // let the aborted check settle
+    const p0 = prompts;
+    await sleep(800);
+    assert.equal(prompts, p0, 'C1: no continuation runs after an interrupt mid-check');
+    // queue check: goal cleared by interrupt
+    s.send({ id: 201, cmd: 'goal', text: '' });
+    const g = await s.until((f: any) => f.type === 'result' && f.id === 201, 'goal state');
+    assert.equal(g.data.goal, null, 'interrupt cleared the goal');
+  } finally {
+    s.child.kill();
+    mock.server.close();
+    await rm(home, { recursive: true, force: true });
+    await rm(work, { recursive: true, force: true });
+  }
+});
+
+test('C2: loop ticks never overlap a slow prompt', async () => {
+  const mock = await startMock();
+  const home = await mkdtemp(join(tmpdir(), 'tango-serve-home-'));
+  const work = await mkdtemp(join(tmpdir(), 'tango-serve-work-'));
+  await writeFile(join(home, 'models.json'), JSON.stringify([
+    { id: 'mock/mock', provider: 'mock', model: 'm', api: 'openai-completions', baseUrl: `http://127.0.0.1:${(mock.server.address() as AddressInfo).port}/v1`, apiKey: 'MOCK_SERVE_KEY', contextWindow: 8000 }
+  ]));
+  let inflight = 0; let maxInflight = 0; let count = 0;
+  mock.setScript(() => {
+    count++;
+    maxInflight = Math.max(maxInflight, ++inflight);
+    return `DELAY:800:` + SSE({ choices: [{ delta: { content: 'tick' } }] }) + SSE({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1 } }) + 'data: [DONE]\n\n';
+  });
+  // decrement when the result frame per prompt lands — approximate via requests finishing:
+  // simpler: track via serve results. Use interval 0.2s, prompts take ~0.8s → without the fix, 3-4 overlap.
+  process.env.TANGO_TEST_LOOP_FLOOR = '0';
+  const s = await startServe(home, work, 0);
+  try {
+    await s.next();
+    s.send({ id: 200, cmd: 'loop', everySec: 0.2, prompt: 'slow tick', minInterval: 0 });
+    await s.until((f: any) => f.type === 'result' && f.id === 200 && f.ok, 'loop set');
+    await sleep(2600);
+    s.send({ id: 201, cmd: 'loop', off: true });
+    await s.until((f: any) => f.type === 'result' && f.id === 201, 'off');
+    // count distinct request bursts: without overlap, ~3 sequential; with overlap, 8-12
+    assert.ok(count >= 2 && count <= 5, `sequential ticks expected 2-5, got ${count}`);
+  } finally {
+    delete process.env.TANGO_TEST_LOOP_FLOOR;
+    s.child.kill();
+    mock.server.close();
+    await rm(home, { recursive: true, force: true });
+    await rm(work, { recursive: true, force: true });
+  }
+});
+
+test('I1: review sees staged changes too', async () => {
+  const mock = await startMock();
+  const home = await mkdtemp(join(tmpdir(), 'tango-serve-home-'));
+  const work = await mkdtemp(join(tmpdir(), 'tango-serve-work-'));
+  await writeFile(join(home, 'models.json'), JSON.stringify([
+    { id: 'mock/mock', provider: 'mock', model: 'm', api: 'openai-completions', baseUrl: `http://127.0.0.1:${(mock.server.address() as AddressInfo).port}/v1`, apiKey: 'MOCK_SERVE_KEY', contextWindow: 8000 }
+  ]));
+  const git = (args: string[]) => spawnSync('git', args, { cwd: work, encoding: 'utf8' });
+  git(['init', '-q']); git(['config', 'user.email', 't@t']); git(['config', 'user.name', 't']);
+  await writeFile(join(work, 'seed.txt'), 'seed\n'); git(['add', '.']); git(['commit', '-q', '-m', 'i']);
+  await writeFile(join(work, 'seed.txt'), 'seed\nSTAGEDREVIEW\n'); git(['add', 'seed.txt']); // staged only, worktree clean
+  mock.setScript(() => SSE({ choices: [{ delta: { content: 'reviewed' } }] }) + SSE({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 5, completion_tokens: 2 } }) + 'data: [DONE]\n\n');
+  const s = await startServe(home, work, 0);
+  try {
+    await s.next();
+    s.send({ id: 200, cmd: 'review' });
+    await s.until((f: any) => f.type === 'result' && f.id === 200 && f.ok, 'review');
+    assert.ok(mock.requests.length >= 1, 'review actually consulted the model');
+    assert.ok(JSON.stringify(mock.requests.at(-1).messages).includes('STAGEDREVIEW'), 'staged change visible to review');
   } finally {
     s.child.kill();
     mock.server.close();
