@@ -425,7 +425,7 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
         await walk(cwd, 0);
         const body = `# AGENTS.md${pkgName ? ` — ${pkgName}` : ''}\n\n> 由 /init 生成 — 请按项目实际情况补全。tango 每次请求自动读取本文件。\n\n## 项目结构\n\n${tree.join('\n') || '（空目录）'}\n\n## 工具链\n\n${found.map((f) => `- ${f}`).join('\n') || '- 未识别（手工补充）'}\n\n## 约定\n\n- （构建/测试命令，例如 npm test）\n- （代码风格、目录约定）\n- （禁区：不要改的文件/目录）\n`;
         if (cmd.force === true) {
-          const prev = await rf3(agentsPath, 'utf8');
+          const prev = await rf3(agentsPath, 'utf8').catch(() => '');
           await wf3(agentsPath, prev + '\n' + body, 'utf8');
         } else {
           await wf3(agentsPath, body, 'utf8');
@@ -467,6 +467,7 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
         const { tmpdir } = await import('node:os');
           const tmp = await mk2(join(tmpdir(), 'tango-debug-'));
         try {
+          const cfg = await loadConfig();
           const doctor = {
             version: VERSION,
             protocol: PROTOCOL,
@@ -474,7 +475,11 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
             platform: process.platform,
             cwd,
             sessionId: store.id,
-            config: await loadConfig(),
+            config: (() => {
+              const c = { ...(cfg as Record<string, unknown>) };
+              if (c.feishuWebhook) c.feishuWebhook = '[REDACTED]';
+              return c;
+            })(),
             sessions: (await SessionStore.list(sessionsDir())).map((x) => ({ id: x.id, createdAt: x.createdAt, messages: x.messages, cwd: x.cwd, name: x.name }))
           };
           await wf4(join(tmp, 'doctor.json'), JSON.stringify(doctor, null, 2), 'utf8');
@@ -505,7 +510,7 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
         if (!isDir) return reply(cmd, false, undefined, `cd: not a directory: ${target}`);
         cwd = target;
         agent.setCwd(target);
-        await store.append({ kind: 'meta', id: store.id, createdAt: new Date().toISOString(), cwd: target, name: store.meta()?.name });
+        await store.append({ kind: 'meta', id: store.id, createdAt: store.meta()?.createdAt ?? new Date().toISOString(), cwd: target, name: store.meta()?.name });
         reply(cmd, true, { cwd: target });
         return;
       }
@@ -544,7 +549,7 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
         try {
           if (source === 'claude-code') rawJson = await rf2(join(cwd, '.claude', 'settings.json'), 'utf8');
           else if (source === 'grok') rawJson = await rf2(join(homedir(), '.grok', 'settings.json'), 'utf8');
-          else return reply(cmd, false, undefined, `import: unknown source "${source}" (claude-code | grok | codex)`);
+          else return reply(cmd, false, undefined, `import: unknown source "${source}" (claude-code | grok)`);
           const parsed = JSON.parse(rawJson);
           for (const e of parsed?.permissions?.allow ?? []) rawEntries.push({ raw: String(e) });
         } catch (e: any) {
@@ -563,7 +568,8 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
             if (cmdPrefix) imported.push(`bash:${cmdPrefix}`);
             else skipped.push({ raw, reason: 'no command prefix' });
           } else if (m && ['Write', 'Edit', 'write', 'edit'].includes(tool)) {
-            const p = arg.replace(/[*]+$/, '').split('**')[0].replace(/[/]+$/, '');
+            const raw0 = arg.replace(/[*]+$/, '').split('**')[0].replace(/[/]+$/, '');
+            const p = raw0.startsWith('~/') ? join(homedir(), raw0.slice(2)) : raw0;
             if (p && !p.includes('*')) imported.push(`path:${p}`);
             else skipped.push({ raw, reason: 'wildcard path not representable' });
           } else if (!m || !arg) {
@@ -930,7 +936,7 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
       case 'rename': {
         const name = String(cmd.name ?? '').trim();
         if (!name) return reply(cmd, false, undefined, 'rename: empty name');
-        await store.append({ kind: 'meta', id: store.id, createdAt: new Date().toISOString(), cwd, name });
+        await store.append({ kind: 'meta', id: store.id, createdAt: store.meta()?.createdAt ?? new Date().toISOString(), cwd, name });
         reply(cmd, true, { name });
         return;
       }

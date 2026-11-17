@@ -36,6 +36,9 @@ impl std::fmt::Display for Binding {
         if self.modifiers.contains(KeyModifiers::ALT) {
             write!(f, "alt+")?;
         }
+        if self.modifiers.contains(KeyModifiers::SHIFT) {
+            write!(f, "shift+")?;
+        }
         match self.code {
             KeyCode::Char(c) => write!(f, "{c}"),
             KeyCode::Enter => write!(f, "enter"),

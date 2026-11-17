@@ -1360,6 +1360,7 @@ test('debug-zip packages diagnostics without secrets', async () => {
   await writeFile(join(home, 'models.json'), JSON.stringify([
     { id: 'mock/mock', provider: 'mock', model: 'm', api: 'openai-completions', baseUrl: `http://127.0.0.1:${(mock.server.address() as AddressInfo).port}/v1`, apiKey: 'MOCK_SERVE_KEY', contextWindow: 200 }
   ]));
+  await writeFile(join(home, 'config.json'), JSON.stringify({ feishuWebhook: 'https://open.feishu.cn/hook/SECRETWEBHOOK1234567890' }));
   mock.setScript(() => SSE({ choices: [{ delta: { content: 'SECRET-FREE' } }] }) + SSE({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1 } }) + 'data: [DONE]\n\n');
   const s = await startServe(home, work, 0);
   try {
@@ -1377,6 +1378,7 @@ test('debug-zip packages diagnostics without secrets', async () => {
       // extract and scan for API-key-shaped secrets
       const out = spawnSync('bash', ['-c', `tmp=$(mktemp -d) && unzip -q '${path}' -d "$tmp" && cat "$tmp"/* 2>/dev/null; rm -rf "$tmp"`], { encoding: 'utf8' }).stdout;
       assert.ok(!/sk-[A-Za-z0-9]{16,}/.test(out), 'no api-key-shaped secrets');
+      assert.ok(!out.includes('SECRETWEBHOOK'), 'I3: feishu webhook redacted');
     }
   } finally {
     s.child.kill();

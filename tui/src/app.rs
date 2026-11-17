@@ -362,6 +362,8 @@ pub struct App {
     statusline: Option<String>,
     /// Enter inserts a newline instead of sending (/multiline)
     multiline_enter: bool,
+    /// serve-side working directory (/cd moves it); @file resolves against it
+    serve_cwd: Option<std::path::PathBuf>,
     /// tool detail level: 0 compact / 1 default / 2 full (/density)
     density: u8,
     pending: Vec<(u64, Pending)>,
@@ -424,6 +426,7 @@ impl App {
             density: 1,
             statusline: None,
             multiline_enter: false,
+            serve_cwd: None,
             pending: Vec::new(),
             permission: None,
             model: "…".into(),
@@ -949,7 +952,7 @@ impl App {
         // @file palette: cursor sits inside an @token
         let (tok, _, _) = self.token_at_cursor();
         if tok.starts_with('@') && tok.len() > 1 {
-            let items = Self::file_candidates(&tok);
+            let items = Self::file_candidates(&tok, self.serve_cwd.as_deref());
             if items.is_empty() {
                 self.popup = None;
             } else {
@@ -965,16 +968,24 @@ impl App {
         self.popup = None;
     }
 
-    fn file_candidates(token: &str) -> Vec<String> {
+    fn file_candidates(token: &str, base: Option<&Path>) -> Vec<String> {
         let body = &token[1..];
         let (dir, frag) = match body.rfind('/') {
             Some(i) => (&body[..=i], &body[i + 1..]),
             None => ("", body),
         };
-        let base = if dir.is_empty() {
-            Path::new(".").to_path_buf()
-        } else {
-            Path::new(dir).to_path_buf()
+        let base = match (base, dir.is_empty()) {
+            (Some(b), true) => b.to_path_buf(),
+            (Some(b), false) => {
+                let d = Path::new(dir);
+                if d.is_absolute() {
+                    d.to_path_buf()
+                } else {
+                    b.join(d)
+                }
+            }
+            (None, true) => Path::new(".").to_path_buf(),
+            (None, false) => Path::new(dir).to_path_buf(),
         };
         let mut out: Vec<String> = Vec::new();
         if let Ok(rd) = fs::read_dir(base) {
@@ -1566,7 +1577,7 @@ impl App {
         (start > 0 && end >= start).then(|| (path.to_string(), (start, end)))
     }
 
-    fn expand_at(text: &str) -> (String, Vec<String>) {
+    fn expand_at(text: &str, base: Option<&Path>) -> (String, Vec<String>) {
         let chars: Vec<char> = text.chars().collect();
         let mut hits = Vec::new();
         let mut i = 0;
@@ -1579,12 +1590,20 @@ impl App {
                 }
                 let raw: String = chars[i + 1..j].iter().collect();
                 let token = raw.trim_end_matches(|c: char| ")]}.,;:!?\"'".contains(c));
+                let resolve = |p: &str| -> String {
+                    let pp = Path::new(p);
+                    if pp.is_absolute() || base.is_none() {
+                        p.to_string()
+                    } else {
+                        base.unwrap().join(pp).to_string_lossy().into_owned()
+                    }
+                };
                 let (path, range) = if Path::new(token).is_file() || Path::new(token).is_dir() {
-                    (token.to_string(), None)
+                    (resolve(token), None)
                 } else if let Some((path, range)) = Self::at_line_range(token) {
-                    (path, Some(range))
+                    (resolve(&path), Some(range))
                 } else {
-                    (token.to_string(), None)
+                    (resolve(token), None)
                 };
                 let p = Path::new(&path);
                 if !path.is_empty() && (p.is_file() || (p.is_dir() && range.is_none())) {
@@ -2581,7 +2600,7 @@ impl App {
         if self.prompt_history.last() != Some(&text) {
             self.prompt_history.push(text.clone());
         }
-        let (expanded, warns) = Self::expand_at(&text);
+        let (expanded, warns) = Self::expand_at(&text, self.serve_cwd.as_deref());
         for w in warns {
             self.push(format!("! {w}"), Tone::Muted);
         }
@@ -2613,6 +2632,7 @@ impl App {
                 self.mouse_capture = Some(self.mouse);
                 self.model = v["model"].as_str().unwrap_or("?").into();
                 self.mode = v["mode"].as_str().unwrap_or("?").into();
+                self.serve_cwd = v["cwd"].as_str().map(Into::into);
                 self.session = v["sessionId"]
                     .as_str()
                     .unwrap_or("?")
@@ -3319,6 +3339,7 @@ impl App {
                         }
                         (Pending::Cd, true) => {
                             let cwd = d["cwd"].as_str().unwrap_or("?").to_string();
+                            self.serve_cwd = Some(std::path::PathBuf::from(&cwd));
                             self.push(format!("cwd → {cwd}"), Tone::Success);
                         }
                         (Pending::AddDir, true) => {
@@ -4586,7 +4607,7 @@ mod tests {
             ("#4", "four"),
         ] {
             let token = format!("@{path}{suffix}");
-            let (expanded, warns) = App::expand_at(&format!("look {token}"));
+            let (expanded, warns) = App::expand_at(&format!("look {token}"), None);
             assert_eq!(expanded, format!("look {path}{suffix}:\n{expected}"));
             assert!(warns.is_empty());
         }
@@ -4599,16 +4620,16 @@ mod tests {
         let path = path.to_string_lossy().to_string();
         for suffix in ["#0", "#2-1", "#bad"] {
             let text = format!("keep @{path}{suffix}");
-            let (expanded, warns) = App::expand_at(&text);
+            let (expanded, warns) = App::expand_at(&text, None);
             assert_eq!(expanded, text);
             assert!(warns.is_empty());
         }
         let text = format!("keep @{path}#9");
-        let (expanded, warns) = App::expand_at(&text);
+        let (expanded, warns) = App::expand_at(&text, None);
         assert_eq!(expanded, text);
         assert_eq!(warns.len(), 1);
         let dir = format!("@{}#1-2", std::env::temp_dir().display());
-        assert_eq!(App::expand_at(&dir).0, dir);
+        assert_eq!(App::expand_at(&dir, None).0, dir);
         let _ = fs::remove_file(path);
     }
 
@@ -5534,5 +5555,29 @@ mod tests {
         assert_eq!(sent["cmd"], "debug_zip");
         app.frame(json!({"type": "result", "id": sent["id"], "ok": true, "data": {"path": "/w/d.zip", "format": "zip"}}));
         assert!(app.lines.iter().any(|l| l.text.contains("/w/d.zip")));
+    }
+    #[test]
+    fn at_file_expansion_follows_the_serve_cwd_after_cd() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        // serve moved to /tmp-at/sub via hello; the file lives there, not in the TUI process cwd
+        let base = std::env::temp_dir().join("tango-at-cd");
+        let sub = base.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join("target.txt"), "content-from-sub\n").unwrap();
+        app.frame(
+            json!({"type": "hello", "sessionId": "1", "model": "m", "mode": "ask",
+            "cwd": sub.to_str().unwrap(), "tools": []}),
+        );
+        app.input = "review @target.txt".chars().collect();
+        app.cursor = app.input.len();
+        app.send_prompt(&mut serve);
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        assert!(
+            sent["text"].to_string().contains("content-from-sub"),
+            "@target.txt must resolve against the serve cwd, got: {}",
+            sent["text"]
+        );
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

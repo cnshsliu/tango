@@ -86,10 +86,16 @@ pub fn run_plain(program: &str, text: &str) -> io::Result<String> {
         command.arg(a);
     }
     let result = command.arg("--").arg(&path).status();
-    let edited = if result.is_ok() {
-        read_to_string(&path)
-    } else {
-        result.map(|_| String::new())
+    let edited = match result {
+        Err(e) => return Err(e),
+        // a failed editor run must never come back as an empty draft that wipes the input
+        Ok(status) if !status.success() => {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("editor exited with {status}"),
+            ));
+        }
+        Ok(_) => read_to_string(&path),
     };
     let _ = remove_file(path);
     edited.map(|edited| normalize_editor_output(text, &edited))
@@ -103,10 +109,16 @@ pub fn run(editor: &Neovim, text: &str, read_only: bool) -> io::Result<String> {
         command.arg("-R");
     }
     let result = command.arg("--").arg(&path).status();
-    let edited = if result.is_ok() {
-        read_to_string(&path)
-    } else {
-        result.map(|_| String::new())
+    let edited = match result {
+        Err(e) => return Err(e),
+        // a failed editor run must never come back as an empty draft that wipes the input
+        Ok(status) if !status.success() => {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("editor exited with {status}"),
+            ));
+        }
+        Ok(_) => read_to_string(&path),
     };
     let _ = remove_file(path);
     edited.map(|edited| normalize_editor_output(text, &edited))
@@ -280,5 +292,16 @@ mod tests {
         // an editor that ADDS a final newline gets it stripped when the draft had none
         let stripped = run_plain("cat", "no-newline");
         assert_eq!(stripped.unwrap(), "no-newline");
+    }
+    #[test]
+    fn run_plain_errors_when_the_editor_cannot_spawn() {
+        let r = run_plain("definitely-not-a-real-editor-xyz --wait", "draft");
+        assert!(
+            r.is_err(),
+            "spawn failure must be an Err, never an empty draft"
+        );
+        // `false` spawns fine but exits non-zero: still an Err, never an empty draft
+        let r2 = run_plain("false", "draft text");
+        assert!(r2.is_err(), "non-zero editor exit must be an Err");
     }
 }
