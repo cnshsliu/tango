@@ -388,3 +388,35 @@ test('T1: custom reasoningField streams thinking; T2: prompt_tokens_details cach
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test('effort: reasoning_effort rides openai requests; off omits it', async () => {
+  const bodies: any[] = [];
+  const server = createServer((req, res) => {
+    let raw = '';
+    req.on('data', (d) => (raw += d));
+    req.on('end', () => {
+      bodies.push(JSON.parse(raw));
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.end(chunk({ content: 'ok' }, 'stop') + `data: ${JSON.stringify({ choices: [], usage: { prompt_tokens: 5, completion_tokens: 2 } })}\n\n` + 'data: [DONE]\n\n');
+    });
+  });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  const port = (server.address() as AddressInfo).port;
+  const dir = await mkdtemp(join(tmpdir(), 'tango-effort-'));
+  try {
+    const store = await SessionStore.create(dir, dir);
+    const agent = new Agent({
+      store, tools: new ToolRegistry(), cwd: dir,
+      model: { id: 'm/m', provider: 'm', model: 'm', api: 'openai-completions', baseUrl: `http://127.0.0.1:${port}/v1`, apiKey: 'k', contextWindow: 1000 }
+    });
+    agent.effort = 'high';
+    await agent.prompt('a');
+    assert.equal(bodies[0].reasoning_effort, 'high', 'effort rides the request body');
+    agent.effort = undefined;
+    await agent.prompt('b');
+    assert.ok(!('reasoning_effort' in bodies[1]), 'off omits the field');
+  } finally {
+    server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});

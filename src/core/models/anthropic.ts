@@ -54,6 +54,10 @@ export const anthropicAdapter: ModelAdapter = {
       messages: toAnthropicMessages(req.messages),
       stream: true
     };
+    if (req.effort) {
+      const budget = req.effort === 'high' ? 16_000 : req.effort === 'medium' ? 8_000 : 4_000;
+      body.thinking = { type: 'enabled', budget_tokens: budget };
+    }
     if (req.tools.length) {
       body.tools = req.tools.map((t) => ({
         name: t.name,

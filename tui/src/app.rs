@@ -102,6 +102,7 @@ enum Pending {
     Doctor,
     DebugZip,
     Plan,
+    Effort,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -246,6 +247,7 @@ const SLASH: &[(&str, &str)] = &[
         "/editor",
         "用 $VISUAL/$EDITOR 编辑当前草稿（nvim 专用 /nvim）",
     ),
+    ("/effort [low|medium|high|off]", "查看/设置推理力度"),
     ("/exit", "退出"),
     (
         "/export [md|html]",
@@ -1255,6 +1257,17 @@ impl App {
                     let id =
                         serve.command("add_dir", vec![("dir", Value::String(rest.trim().into()))]);
                     self.pending.push((id, Pending::AddDir));
+                }
+            }
+            "/effort" => {
+                let arg = rest.trim();
+                if arg.is_empty() {
+                    let id = serve.command("status", vec![]);
+                    self.pending.push((id, Pending::Effort));
+                } else {
+                    let id =
+                        serve.command("set_effort", vec![("level", Value::String(arg.into()))]);
+                    self.pending.push((id, Pending::Effort));
                 }
             }
             "/plan" => {
@@ -3406,6 +3419,10 @@ impl App {
                                     Tone::Muted
                                 },
                             );
+                        }
+                        (Pending::Effort, true) => {
+                            let e = d["effort"].as_str().unwrap_or("off");
+                            self.push(format!("推理力度 → {e}"), Tone::Muted);
                         }
                         (Pending::History, true) => self.load_history(d),
                         (Pending::Theme, true) => {
@@ -5640,5 +5657,19 @@ mod tests {
         app.run_slash("/plan", &mut serve);
         let sent2: Value = serde_json::from_str(&serve.sent[1]).unwrap();
         assert_eq!(sent2["on"], false);
+    }
+
+    #[test]
+    fn effort_command_sets_level() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.run_slash("/effort high", &mut serve);
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        assert_eq!(sent["cmd"], "set_effort");
+        assert_eq!(sent["level"], "high");
+        app.frame(
+            json!({"type": "result", "id": sent["id"], "ok": true, "data": {"effort": "high"}}),
+        );
+        assert!(app.lines.iter().any(|l| l.text.contains("high")));
     }
 }

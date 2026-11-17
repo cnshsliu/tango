@@ -511,6 +511,14 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
           await rm2(tmp, { recursive: true, force: true });
         }
       }
+      case 'set_effort': {
+        const raw = String(cmd.level ?? 'off');
+        const level = raw === 'low' || raw === 'medium' || raw === 'high' ? raw : undefined;
+        if (raw !== 'off' && !level) return reply(cmd, false, undefined, 'effort: low | medium | high | off');
+        agent.effort = level;
+        reply(cmd, true, { effort: level ?? 'off' });
+        return;
+      }
       case 'set_plan': {
         perm.plan = perm.plan ?? { on: false };
         perm.plan.on = cmd.on === true;
@@ -1031,6 +1039,7 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
           contextTokens: agent.contextTokenEstimate(),
           contextWindow: agent.model.contextWindow ?? 128_000,
           autocompact: agent.compactAt,
+          effort: agent.effort ?? 'off',
           sessionTokens
         });
         return;
@@ -1075,7 +1084,7 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
     // (e.g. "always allow" from a permission dialog), so they skip the prompt queue too
     const guarded = (p: Promise<unknown>) =>
       void p.catch((e) => out({ type: 'error', message: String(e?.message ?? e) }));
-    if (['set_mode', 'status', 'timeline', 'context', 'queue', 'usage', 'stats', 'insights', 'preset_save', 'preset_list', 'preset_get', 'permissions_list', 'permissions_add', 'permissions_remove', 'import', 'cd', 'pwd', 'add_dir', 'config_show', 'init', 'doctor', 'debug_zip', 'set_plan'].includes(cmd.cmd)) {
+    if (['set_mode', 'status', 'timeline', 'context', 'queue', 'usage', 'stats', 'insights', 'preset_save', 'preset_list', 'preset_get', 'permissions_list', 'permissions_add', 'permissions_remove', 'import', 'cd', 'pwd', 'add_dir', 'config_show', 'init', 'doctor', 'debug_zip', 'set_plan', 'set_effort'].includes(cmd.cmd)) {
       guarded(handle(cmd));
       return;
     }

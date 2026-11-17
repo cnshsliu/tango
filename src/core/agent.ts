@@ -44,6 +44,8 @@ export class Agent {
   private readonly tools: ToolRegistry;
   /** live working directory (/cd); tools and context read it per call */
   cwd: string;
+  /** reasoning effort for adapters that support it (/effort) */
+  effort?: 'low' | 'medium' | 'high';
   private readonly maxTurns: number;
   /** auto-compact threshold as a share of the context window; 0 disables (/autocompact) */
   compactAt: number;
@@ -211,7 +213,8 @@ export class Agent {
       messages: this.store.messages(),
       tools: this.tools.schemas(),
       maxTokens: this.model.maxTokens,
-      signal: this.controller?.signal
+      signal: this.controller?.signal,
+      effort: this.effort
     };
   }
 

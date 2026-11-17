@@ -96,6 +96,8 @@ export interface CompletionRequest {
   tools: ToolSchema[];
   maxTokens?: number;
   signal?: AbortSignal;
+  /** reasoning effort for supporting adapters (/effort) */
+  effort?: 'low' | 'medium' | 'high';
 }
 
 /** Streaming events from a model adapter */
