@@ -117,7 +117,8 @@ test('allow rules: tool/path/bash matching with boundary safety, readonly wins',
   assert.equal(decide('ask', call('bash', { command: 'chmod +x x' }), cwd, rules3).action, 'ask', 'other risky commands still ask');
 
   // readonly always wins over rules
-  assert.equal(decide('readonly', call('diff', {}), cwd, rules).action, 'deny');
+  assert.equal(decide('readonly', call('write', { path: 'src/a.ts' }), cwd, rules).action, 'deny', 'readonly wins over path rules');
+  assert.equal(decide('readonly', call('bash', { command: 'rm -rf build/' }), cwd, rules3).action, 'deny', 'readonly wins over bash rules');
 
   // invalid rules are rejected with a reason
   assert.ok(parseRule('nonsense').error);
