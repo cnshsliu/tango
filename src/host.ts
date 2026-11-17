@@ -36,22 +36,33 @@ export interface PermState {
   ask?: AskFn;
   /** live allow rules (parsed from config; /permissions mutates the array in place) */
   rules?: { allow: string[] };
+  /** live extra write roots (/add_dir; inside() also accepts these) */
+  extraDirs?: { dirs: string[] };
 }
 
-export function makeAgent(model: ModelSpec, store: SessionStore, cwd: string, perm: PermState, cfg: { checkpoint?: string; permissions?: { allow: string[] } } = {}): Agent {
+export function makeAgent(model: ModelSpec, store: SessionStore, cwd: string, perm: PermState, cfg: { checkpoint?: string; permissions?: { allow: string[] }; extraDirs?: string[] } = {}): Agent {
   const events = new EventBus();
   // gate first: a vetoed call is never announced as running
   const rules = perm.rules ?? { allow: cfg.permissions?.allow ? [...cfg.permissions.allow] : [] };
   perm.rules = rules;
+  const extraDirs = perm.extraDirs ?? { dirs: cfg.extraDirs ? [...cfg.extraDirs] : [] };
+  perm.extraDirs = extraDirs;
   const parsedRules = () =>
     rules.allow
       .map((r) => parseRule(r))
       .filter((r): r is { ok: true; rule: AllowRule } => r.ok)
       .map((r) => r.rule);
-  installPermissionGate(events, { mode: () => perm.mode, cwd, ask: (c, r) => (perm.ask ? perm.ask(c, r) : Promise.resolve(false)), rules: parsedRules });
+  const agent = new Agent({ store, tools: buildTools(), model, cwd, events });
+  installPermissionGate(events, {
+    mode: () => perm.mode,
+    cwd: () => agent.cwd,
+    ask: (c, r) => (perm.ask ? perm.ask(c, r) : Promise.resolve(false)),
+    rules: parsedRules,
+    extraDirs: () => extraDirs.dirs
+  });
   installDiagnostics(events, cwd);
-  if (checkpointEnabled(cfg)) installCheckpoints(events, { cwd, store });
-  return new Agent({ store, tools: buildTools(), model, cwd, events });
+  if (checkpointEnabled(cfg)) installCheckpoints(events, { cwd: () => agent.cwd, store });
+  return agent;
 }
 
 export async function resolveSessionId(prefix: string): Promise<string> {

@@ -42,7 +42,8 @@ export class Agent {
 
   private readonly store: SessionStore;
   private readonly tools: ToolRegistry;
-  private readonly cwd: string;
+  /** live working directory (/cd); tools and context read it per call */
+  cwd: string;
   private readonly maxTurns: number;
   /** auto-compact threshold as a share of the context window; 0 disables (/autocompact) */
   compactAt: number;
@@ -65,6 +66,11 @@ export class Agent {
   setModel(model: ModelSpec): void {
     this.model = model;
     void this.store.setModel(model.id);
+  }
+
+  /** move the working directory (/cd); everything downstream reads this live */
+  setCwd(dir: string): void {
+    this.cwd = dir;
   }
 
   contextTokenEstimate(): number {

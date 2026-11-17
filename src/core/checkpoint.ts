@@ -8,7 +8,8 @@ import type { EventBus } from './events.js';
 import type { SessionStore } from './session.js';
 
 export interface CheckpointOpts {
-  cwd: string;
+  /** live: /cd moves the working directory mid-session */
+  cwd: string | (() => string);
   store: SessionStore;
   /** injectable for tests */
   snapshot?: (cwd: string, sessionId: string) => Promise<string | null>;
@@ -21,6 +22,7 @@ export function checkpointEnabled(cfg: { checkpoint?: string }): boolean {
 
 export function installCheckpoints(events: EventBus, opts: CheckpointOpts): void {
   const snap = opts.snapshot ?? ((cwd: string, sessionId: string) => takeSnapshot(cwd, sessionId));
+  const cwdNow = () => (typeof opts.cwd === 'function' ? opts.cwd() : opts.cwd);
   let armed = false;
   let dirty = false; // a write happened this turn: close it with a post-turn snapshot
   events.on('prompt_start', () => {
@@ -31,7 +33,7 @@ export function installCheckpoints(events: EventBus, opts: CheckpointOpts): void
     armed = false;
     dirty = true;
     try {
-      const hash = await snap(opts.cwd, opts.store.id);
+      const hash = await snap(cwdNow(), opts.store.id);
       if (hash) await opts.store.append({ kind: 'checkpoint', ts: new Date().toISOString(), hash });
     } catch {
       // a failed snapshot must never veto the tool or break the turn (spec RF#1)
@@ -44,7 +46,7 @@ export function installCheckpoints(events: EventBus, opts: CheckpointOpts): void
     try {
       // the post-turn state: rewinding ACROSS this turn needs it to tell agent
       // leftovers (in this snapshot) from the user's own between-turn files
-      const hash = await snap(opts.cwd, opts.store.id);
+      const hash = await snap(cwdNow(), opts.store.id);
       if (hash) await opts.store.append({ kind: 'checkpoint', ts: new Date().toISOString(), hash, note: 'post' });
     } catch {
       // best effort only

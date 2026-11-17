@@ -77,12 +77,12 @@ export function ruleMatches(rule: AllowRule, call: ToolCallBlock, cwd: string): 
   return first === prefix || first.startsWith(prefix + ' ');
 }
 
-export function decide(mode: PermissionMode, call: ToolCallBlock, cwd: string, rules?: AllowRule[]): Decision {
+export function decide(mode: PermissionMode, call: ToolCallBlock, cwd: string, rules?: AllowRule[], extraDirs?: string[]): Decision {
   if (mode === 'readonly') return readonlyDecision(call);
   if (mode === 'auto' || READ_TOOLS.has(call.name)) return { action: 'allow' };
   // persistent allow rules never override readonly (checked above), but beat ask
   if (rules?.some((r) => ruleMatches(r, call, cwd))) return { action: 'allow' };
-  return decideBase(mode, call, cwd);
+  return decideBase(mode, call, cwd, extraDirs);
 }
 
 function readonlyDecision(call: ToolCallBlock): Decision {
@@ -90,13 +90,14 @@ function readonlyDecision(call: ToolCallBlock): Decision {
   return { action: 'deny', reason: 'read-only mode' };
 }
 
-function decideBase(mode: PermissionMode, call: ToolCallBlock, cwd: string): Decision {
+function decideBase(mode: PermissionMode, call: ToolCallBlock, cwd: string, extraDirs?: string[]): Decision {
   const input = (call.input ?? {}) as Record<string, unknown>;
 
   if (WRITE_TOOLS.has(call.name)) {
     if (mode === 'readonly') return { action: 'deny', reason: 'read-only mode' };
     const path = String(input.path ?? '');
     if (inside(cwd, path)) return { action: 'allow' };
+    if (extraDirs?.some((d) => inside(d, path))) return { action: 'allow' };
     return { action: 'ask', reason: `writes outside the working directory: ${resolve(cwd, path)}` };
   }
 
@@ -116,10 +117,11 @@ export type AskFn = (call: ToolCallBlock, reason: string) => Promise<boolean>;
 
 export function installPermissionGate(
   events: EventBus,
-  opts: { mode: () => PermissionMode; cwd: string; ask?: AskFn; rules?: () => AllowRule[] }
+  opts: { mode: () => PermissionMode; cwd: string | (() => string); ask?: AskFn; rules?: () => AllowRule[]; extraDirs?: () => string[] }
 ): () => void {
+  const cwdNow = () => (typeof opts.cwd === 'function' ? opts.cwd() : opts.cwd);
   return events.on('before_tool', async ({ call }) => {
-    const d = decide(opts.mode(), call, opts.cwd, opts.rules?.());
+    const d = decide(opts.mode(), call, cwdNow(), opts.rules?.(), opts.extraDirs?.());
     if (d.action === 'allow') return;
     if (d.action === 'deny') return { block: true, reason: d.reason };
     if (!opts.ask) return { block: true, reason: `${d.reason}; needs confirmation (rerun with --yes to allow)` };

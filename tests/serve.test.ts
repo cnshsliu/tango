@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createServer } from 'node:http';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { existsSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -1247,5 +1247,71 @@ test('import: maps Claude Code allowed-tools into rules, skips unmappable entrie
     mock.server.close();
     await rm(home, { recursive: true, force: true });
     await rm(work, { recursive: true, force: true });
+  }
+});
+
+test('cd/pwd/add_dir/config_show: cwd moves live and extra dirs allow writes', async () => {
+  const mock = await startMock();
+  const home = await mkdtemp(join(tmpdir(), 'tango-serve-home-'));
+  const work = await mkdtemp(join(tmpdir(), 'tango-serve-work-'));
+  const extra = await mkdtemp(join(tmpdir(), 'tango-serve-extra-'));
+  const sub = join(work, 'sub');
+  await mkdir(sub);
+  await writeFile(join(home, 'models.json'), JSON.stringify([
+    { id: 'mock/mock', provider: 'mock', model: 'm', api: 'openai-completions', baseUrl: `http://127.0.0.1:${(mock.server.address() as AddressInfo).port}/v1`, apiKey: 'MOCK_SERVE_KEY', contextWindow: 200 }
+  ]));
+  // odd requests write (path relative to the CURRENT cwd), even requests finish
+  let target = 'a.txt';
+  let req = 0;
+  mock.setScript(() => {
+    req++;
+    if (req % 2 === 1)
+      return SSE({ choices: [{ delta: { tool_calls: [{ index: 0, id: 'w' + req, function: { name: 'write', arguments: JSON.stringify({ path: target, content: 'x' }) } }] }, finish_reason: 'tool_calls' }] }) + 'data: [DONE]\n\n';
+    return SSE({ choices: [{ delta: { content: 'done' } }] }) + SSE({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 5, completion_tokens: 2 } }) + 'data: [DONE]\n\n';
+  });
+
+  const s = await startServe(home, work, 0);
+  try {
+    await s.next();
+    // pwd reflects the start dir
+    s.send({ id: 200, cmd: 'pwd' });
+    const pwd = await s.until((f: any) => f.type === 'result' && f.id === 200, 'pwd');
+    assert.equal(pwd.data.cwd, work);
+
+    // cd into sub: writes inside sub now pass without asking
+    s.send({ id: 201, cmd: 'cd', dir: sub });
+    const cd = await s.until((f: any) => f.type === 'result' && f.id === 201, 'cd');
+    assert.ok(cd.ok);
+    assert.equal(cd.data.cwd, sub);
+    s.send({ id: 100, cmd: 'prompt', text: 'write in new cwd' });
+    const r1 = await s.until((f: any) => f.type === 'result' && f.id === 100, 'turn1');
+    assert.ok(r1.ok, 'write inside new cwd needs no permission');
+    assert.ok(existsSync(join(sub, 'a.txt')));
+
+    // cd back; a write into the extra dir asks unless add_dir registered it
+    s.send({ id: 202, cmd: 'cd', dir: work });
+    await s.until((f: any) => f.type === 'result' && f.id === 202 && f.ok, 'cd back');
+    s.send({ id: 203, cmd: 'add_dir', dir: extra });
+    const ad = await s.until((f: any) => f.type === 'result' && f.id === 203, 'add_dir');
+    assert.ok(ad.ok);
+    assert.deepEqual(JSON.parse(await readFile(join(home, 'config.json'), 'utf8')).extraDirs, [extra]);
+    target = join(extra, 'b.txt');
+    s.send({ id: 101, cmd: 'prompt', text: 'write into extra dir' });
+    const r2 = await s.until((f: any) => f.type === 'result' && f.id === 101, 'turn2');
+    assert.ok(r2.ok, 'extra dir write allowed');
+    assert.ok(existsSync(join(extra, 'b.txt')));
+
+    // config_show: sanitized view with the keys we manage
+    s.send({ id: 204, cmd: 'config_show' });
+    const cfg = await s.until((f: any) => f.type === 'result' && f.id === 204, 'config');
+    assert.ok(cfg.ok);
+    assert.ok(cfg.data.path.includes('config.json'));
+    assert.ok(Array.isArray(cfg.data.config.extraDirs));
+  } finally {
+    s.child.kill();
+    mock.server.close();
+    await rm(home, { recursive: true, force: true });
+    await rm(work, { recursive: true, force: true });
+    await rm(extra, { recursive: true, force: true });
   }
 });

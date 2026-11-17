@@ -16,7 +16,7 @@ import { parseRule } from './core/permissions.js';
 import { restoreSnapshot } from './core/git-snapshot.js';
 import { hasKey, keyProblem, loadConfig, loadModels, pickModel, saveConfig, sessionsDir } from './core/config.js';
 import { listDrafts, promoteDraft, saveDraft } from './core/skills.js';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { SessionStore } from './core/session.js';
 import { costUsd } from './core/models/registry.js';
 import type { AskFn, PermissionMode } from './core/permissions.js';
@@ -64,7 +64,8 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
     process.exitCode = 1;
     return;
   }
-  const { agent, store, cwd } = opened;
+  const { agent, store } = opened;
+  let cwd = opened.cwd; // /cd moves it (agent.cwd is the same truth)
   const config = await loadConfig();
   // the persisted threshold (or 'off') must survive restarts
   if (config.autocompact === 'off') agent.compactAt = 0;
@@ -376,6 +377,46 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
         agent.compactAt = value;
         await saveConfig({ ...(await loadConfig()), autocompact: value === 0 ? 'off' : value });
         reply(cmd, true, { autocompact: value });
+        return;
+      }
+      case 'cd': {
+        const dir = String(cmd.dir ?? '').trim();
+        const target = resolve(cwd, dir);
+        const { statSync } = await import('node:fs');
+        let isDir = false;
+        try {
+          isDir = statSync(target).isDirectory();
+        } catch {}
+        if (!isDir) return reply(cmd, false, undefined, `cd: not a directory: ${target}`);
+        cwd = target;
+        agent.setCwd(target);
+        await store.append({ kind: 'meta', id: store.id, createdAt: new Date().toISOString(), cwd: target, name: store.meta()?.name });
+        reply(cmd, true, { cwd: target });
+        return;
+      }
+      case 'pwd': {
+        reply(cmd, true, { cwd });
+        return;
+      }
+      case 'add_dir': {
+        const dir = String(cmd.dir ?? '').trim();
+        const target = resolve(cwd, dir);
+        const { statSync } = await import('node:fs');
+        let isDir = false;
+        try {
+          isDir = statSync(target).isDirectory();
+        } catch {}
+        if (!isDir) return reply(cmd, false, undefined, `add_dir: not a directory: ${target}`);
+        const cfg0 = await loadConfig();
+        const dirs = [...new Set([...(cfg0.extraDirs ?? []), target])];
+        await saveConfig({ ...cfg0, extraDirs: dirs });
+        if (perm.extraDirs) perm.extraDirs.dirs = dirs;
+        reply(cmd, true, { extraDirs: dirs });
+        return;
+      }
+      case 'config_show': {
+        const cfg0 = await loadConfig();
+        reply(cmd, true, { config: cfg0, path: join(sessionsDir(), '..', 'config.json') });
         return;
       }
       case 'import': {
@@ -894,7 +935,7 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
     // (e.g. "always allow" from a permission dialog), so they skip the prompt queue too
     const guarded = (p: Promise<unknown>) =>
       void p.catch((e) => out({ type: 'error', message: String(e?.message ?? e) }));
-    if (['set_mode', 'status', 'timeline', 'context', 'queue', 'usage', 'stats', 'insights', 'preset_save', 'preset_list', 'preset_get', 'permissions_list', 'permissions_add', 'permissions_remove', 'import'].includes(cmd.cmd)) {
+    if (['set_mode', 'status', 'timeline', 'context', 'queue', 'usage', 'stats', 'insights', 'preset_save', 'preset_list', 'preset_get', 'permissions_list', 'permissions_add', 'permissions_remove', 'import', 'cd', 'pwd', 'add_dir', 'config_show'].includes(cmd.cmd)) {
       guarded(handle(cmd));
       return;
     }

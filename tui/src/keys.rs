@@ -13,7 +13,42 @@ pub enum Action {
     PageDown,
 }
 
-#[derive(Clone, Copy)]
+impl Action {
+    pub fn name(self) -> &'static str {
+        match self {
+            Action::ExpandTools => "expandTools",
+            Action::Newline => "newline",
+            Action::Interrupt => "interrupt",
+            Action::ClearInput => "clearInput",
+            Action::ScrollUp => "scrollUp",
+            Action::ScrollDown => "scrollDown",
+            Action::PageUp => "pageUp",
+            Action::PageDown => "pageDown",
+        }
+    }
+}
+
+impl std::fmt::Display for Binding {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.modifiers.contains(KeyModifiers::CONTROL) {
+            write!(f, "ctrl+")?;
+        }
+        if self.modifiers.contains(KeyModifiers::ALT) {
+            write!(f, "alt+")?;
+        }
+        match self.code {
+            KeyCode::Char(c) => write!(f, "{c}"),
+            KeyCode::Enter => write!(f, "enter"),
+            KeyCode::Up => write!(f, "up"),
+            KeyCode::Down => write!(f, "down"),
+            KeyCode::PageUp => write!(f, "pageup"),
+            KeyCode::PageDown => write!(f, "pagedown"),
+            KeyCode::Esc => write!(f, "esc"),
+            other => write!(f, "{other:?}"),
+        }
+    }
+}
+
 struct Binding {
     code: KeyCode,
     modifiers: KeyModifiers,
@@ -54,7 +89,7 @@ impl Binding {
         Some(Self { code, modifiers })
     }
 
-    fn matches(self, key: KeyEvent) -> bool {
+    fn matches(&self, key: KeyEvent) -> bool {
         self.code == key.code && self.modifiers == key.modifiers
     }
 }
@@ -64,6 +99,14 @@ pub struct Keymap {
 }
 
 impl Keymap {
+    /// human-readable (action, key) pairs for /keymap
+    pub fn summary(&self) -> Vec<(&'static str, String)> {
+        self.bindings
+            .iter()
+            .map(|(action, binding)| (action.name(), binding.to_string()))
+            .collect()
+    }
+
     pub fn from_json(config: Option<&Value>) -> Self {
         let ctrl = |c| Binding {
             code: KeyCode::Char(c),

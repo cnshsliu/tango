@@ -36,6 +36,8 @@ export interface Config {
   statusline?: string;
   /** Persistent allow rules: tool:<name> | path:<prefix> | bash:<prefix> */
   permissions?: { allow: string[] };
+  /** Extra write roots outside cwd (/add_dir) */
+  extraDirs?: string[];
 }
 
 async function readJson<T>(path: string): Promise<T | undefined> {

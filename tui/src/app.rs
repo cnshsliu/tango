@@ -94,6 +94,10 @@ enum Pending {
     PermissionsList,
     PermissionsAdd,
     PermissionsRemove,
+    ConfigShow,
+    Pwd,
+    Cd,
+    AddDir,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -248,8 +252,13 @@ const SLASH: &[(&str, &str)] = &[
     ("/usage /stats", "跨会话聚合：按模型/会话的请求与花费"),
     ("/fork <name>", "从当前（或 /rewind 选中）位置复制出新会话"),
     ("/rewind", "打开时间轴：代码+对话+上下文整体回滚"),
+    ("/add_dir <dir>", "添加 cwd 之外的额外可写目录（持久化）"),
     ("/help", "命令列表"),
     ("/insights", "生成 HTML 使用报告（离线可读）"),
+    (
+        "/keymap",
+        "显示当前按键映射（在 config.json 的 keys 里自定义）",
+    ),
     ("/interrupt", "停止当前回合"),
     ("/model <id>", "切换模型（存为默认），裸 /model 打开列表"),
     ("/mode <m>", "ask | auto | readonly"),
@@ -1178,6 +1187,38 @@ impl App {
             "/insights" => {
                 let id = serve.command("insights", vec![]);
                 self.pending.push((id, Pending::Insights));
+            }
+            "/config" => {
+                let id = serve.command("config_show", vec![]);
+                self.pending.push((id, Pending::ConfigShow));
+            }
+            "/keymap" => {
+                let mut text = String::from("当前按键映射（config.json 的 keys 可自定义）：\n\n");
+                for (name, key) in self.keys.summary() {
+                    text.push_str(&format!("  {name:<14} {key}\n"));
+                }
+                self.viewer = Some(Viewer::read_only("按键映射", text));
+            }
+            "/pwd" => {
+                let id = serve.command("pwd", vec![]);
+                self.pending.push((id, Pending::Pwd));
+            }
+            "/cd" => {
+                if rest.is_empty() {
+                    self.push("usage: /cd <dir>", Tone::Muted);
+                } else {
+                    let id = serve.command("cd", vec![("dir", Value::String(rest.trim().into()))]);
+                    self.pending.push((id, Pending::Cd));
+                }
+            }
+            "/add_dir" => {
+                if rest.is_empty() {
+                    self.push("usage: /add_dir <dir>", Tone::Muted);
+                } else {
+                    let id =
+                        serve.command("add_dir", vec![("dir", Value::String(rest.trim().into()))]);
+                    self.pending.push((id, Pending::AddDir));
+                }
             }
             "/permissions" => {
                 let arg = rest.trim();
@@ -3238,6 +3279,29 @@ impl App {
                         }
                         (Pending::PermissionsRemove, true) => {
                             self.push("规则已移除", Tone::Muted);
+                        }
+                        (Pending::ConfigShow, true) => {
+                            let path = d["path"].as_str().unwrap_or("?").to_string();
+                            let cfg =
+                                serde_json::to_string_pretty(&d["config"]).unwrap_or_default();
+                            self.viewer = Some(Viewer::read_only(
+                                "配置",
+                                format!(
+                                    "{path}\n\n{cfg}\n\n（直接编辑此文件；多数配置 /theme /mouse /statusline 等命令可代改）"
+                                ),
+                            ));
+                        }
+                        (Pending::Pwd, true) => {
+                            let cwd = d["cwd"].as_str().unwrap_or("?");
+                            self.push(format!("cwd {cwd}"), Tone::Muted);
+                        }
+                        (Pending::Cd, true) => {
+                            let cwd = d["cwd"].as_str().unwrap_or("?").to_string();
+                            self.push(format!("cwd → {cwd}"), Tone::Success);
+                        }
+                        (Pending::AddDir, true) => {
+                            let n = d["extraDirs"].as_array().map(|a| a.len()).unwrap_or(0);
+                            self.push(format!("额外可写目录已保存（共 {n} 个）"), Tone::Success);
                         }
                         (Pending::History, true) => self.load_history(d),
                         (Pending::Theme, true) => {
@@ -5364,5 +5428,33 @@ mod tests {
         );
         assert_eq!(serve.sent.len(), 1, "toggled: Enter does not send");
         assert_eq!(app2.input.iter().collect::<String>(), "hi\n");
+    }
+
+    #[test]
+    fn config_keymap_cd_pwd_add_dir_wire_up() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.run_slash("/config", &mut serve);
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        assert_eq!(sent["cmd"], "config_show");
+        app.frame(json!({"type": "result", "id": sent["id"], "ok": true,
+            "data": {"config": {"theme": "dark", "extraDirs": ["/x"]}, "path": "/home/config.json"}}));
+        assert!(
+            app.viewer
+                .as_ref()
+                .unwrap()
+                .text
+                .contains("/home/config.json")
+        );
+        app.run_slash("/keymap", &mut serve);
+        assert!(app.lines.iter().any(|l| l.text.contains("keys")));
+        app.run_slash("/pwd", &mut serve);
+        let sent3: Value = serde_json::from_str(&serve.sent[1]).unwrap();
+        assert_eq!(sent3["cmd"], "pwd");
+        app.frame(json!({"type": "result", "id": sent3["id"], "ok": true, "data": {"cwd": "/w"}}));
+        app.run_slash("/cd sub", &mut serve);
+        let sent4: Value = serde_json::from_str(&serve.sent[2]).unwrap();
+        assert_eq!(sent4["cmd"], "cd");
+        assert_eq!(sent4["dir"], "sub");
     }
 }
