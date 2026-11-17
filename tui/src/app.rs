@@ -67,6 +67,13 @@ enum Pending {
     Mouse,
     Diff,
     Btw,
+    Timeline,
+    Rewind,
+    Undo,
+    Redo,
+    Fork,
+    Branch,
+    Tree,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -78,6 +85,7 @@ enum PickerKind {
     Theme,
     NvimBackend,
     EditResolution,
+    Timeline,
 }
 
 #[derive(Clone)]
@@ -190,6 +198,10 @@ struct InputLayout {
 }
 
 const SLASH: &[(&str, &str)] = &[
+    (
+        "/branch",
+        "就地分叉：保留到该回合、丢弃其后（原未来可用 /redo 找回）",
+    ),
     ("/btw <q>", "临时提问当前上下文，不写入会话"),
     ("/clear", "清空屏幕（上下文保留）"),
     ("/compact", "压缩较早的上下文"),
@@ -197,6 +209,8 @@ const SLASH: &[(&str, &str)] = &[
     ("/diff", "只读查看工作区 diff · /diff --staged [paths]"),
     ("/exit", "退出"),
     ("/focus", "安静模式：隐藏成功工具与思考，保留错误"),
+    ("/fork <name>", "从当前（或 /rewind 选中）位置复制出新会话"),
+    ("/rewind", "打开时间轴：代码+对话+上下文整体回滚"),
     ("/help", "命令列表"),
     ("/interrupt", "停止当前回合"),
     ("/model <id>", "切换模型（存为默认），裸 /model 打开列表"),
@@ -212,6 +226,8 @@ const SLASH: &[(&str, &str)] = &[
     ),
     ("/status", "会话信息"),
     ("/theme", "选择并实时应用 dark/light/auto 主题"),
+    ("/tree", "查看会话分叉树"),
+    ("/undo", "回退一个回合（/redo 前进一步）"),
     ("/vim", "切换 Vim 编辑 · ctrl+s 发送 · :wq/:wqa 发送"),
 ];
 
@@ -997,6 +1013,38 @@ impl App {
                 self.switch_session(None);
             }
             "/sessions" => self.run_slash("/resume", serve),
+            "/rewind" => {
+                let id = serve.command("timeline", vec![]);
+                self.pending.push((id, Pending::Timeline));
+            }
+            "/undo" | "/redo" => {
+                let id = serve.command(&head, vec![]);
+                self.pending.push((
+                    id,
+                    if head == "/undo" {
+                        Pending::Undo
+                    } else {
+                        Pending::Redo
+                    },
+                ));
+            }
+            "/fork" => {
+                let name = rest.trim().to_string();
+                let mut extra = vec![];
+                if !name.is_empty() {
+                    extra.push(("name", Value::String(name)));
+                }
+                let id = serve.command("fork", extra);
+                self.pending.push((id, Pending::Fork));
+            }
+            "/branch" => {
+                let id = serve.command("branch", vec![]);
+                self.pending.push((id, Pending::Branch));
+            }
+            "/tree" => {
+                let id = serve.command("tree", vec![]);
+                self.pending.push((id, Pending::Tree));
+            }
             "/cost" => {
                 let id = serve.command("status", vec![]);
                 self.pending.push((id, Pending::Status));
@@ -1628,6 +1676,13 @@ impl App {
                 PickerKind::Session => {
                     self.push(format!("↻ resuming session {} …", item.id), Tone::Muted);
                     self.switch_session(Some(item.id));
+                }
+                PickerKind::Timeline => {
+                    if let Ok(entry) = item.id.parse::<u64>() {
+                        let id = serve.command("rewind", vec![("entryIndex", Value::from(entry))]);
+                        self.pending.push((id, Pending::Rewind));
+                        self.push("⟲ 回滚中 …", Tone::Muted);
+                    }
                 }
                 PickerKind::Command => self.run_slash(&item.id, serve),
                 PickerKind::Theme => self.run_slash(&format!("/theme {}", item.id), serve),
@@ -2418,6 +2473,125 @@ impl App {
                                 }
                             }
                         }
+                        (Pending::Timeline, true) => {
+                            let items: Vec<PickItem> = d["nodes"]
+                                .as_array()
+                                .map(|a| {
+                                    a.iter()
+                                        .enumerate()
+                                        .filter_map(|(i, n)| {
+                                            let entry = n["entryIndex"].as_u64()?;
+                                            let snap = n["hasSnapshot"].as_bool().unwrap_or(false);
+                                            let first: String = n["firstLine"]
+                                                .as_str()
+                                                .unwrap_or("")
+                                                .chars()
+                                                .take(48)
+                                                .collect();
+                                            let ts =
+                                                n["ts"].as_str().unwrap_or("").replace('T', " ");
+                                            let ts: String = ts.chars().take(16).collect();
+                                            Some(PickItem {
+                                                label: format!("#{i} · {ts} · {first}"),
+                                                note: if snap {
+                                                    "✓ 代码快照".into()
+                                                } else {
+                                                    "无代码快照（仅对话）".into()
+                                                },
+                                                warn: false,
+                                                current: false,
+                                                id: entry.to_string(),
+                                            })
+                                        })
+                                        .collect()
+                                })
+                                .unwrap_or_default();
+                            self.picker = Some(Picker::new(PickerKind::Timeline, items));
+                        }
+                        (Pending::Rewind, true) | (Pending::Undo, true) | (Pending::Redo, true) => {
+                            let restored = d["codeRestored"].as_bool().unwrap_or(false);
+                            let what = match kind {
+                                Pending::Undo => "undo",
+                                Pending::Redo => "redo",
+                                _ => "rewind",
+                            };
+                            let deleted_names: Vec<String> = d["deleted"]
+                                .as_array()
+                                .map(|a| {
+                                    a.iter()
+                                        .filter_map(|x| x.as_str().map(|f| f.to_string()))
+                                        .take(3)
+                                        .collect()
+                                })
+                                .unwrap_or_default();
+                            let deleted = d["deleted"].as_array().map(|a| a.len()).unwrap_or(0);
+                            let kept = d["kept"].as_array().map(|a| a.len()).unwrap_or(0);
+                            let kept_names: Vec<String> = d["kept"]
+                                .as_array()
+                                .map(|a| {
+                                    a.iter()
+                                        .filter_map(|x| x.as_str().map(|f| f.to_string()))
+                                        .take(3)
+                                        .collect()
+                                })
+                                .unwrap_or_default();
+                            let kept_note = if kept_names.is_empty() {
+                                String::new()
+                            } else {
+                                format!("（{}）", kept_names.join(", "))
+                            };
+                            let names = if deleted_names.is_empty() {
+                                String::new()
+                            } else {
+                                format!("（{}）", deleted_names.join(", "))
+                            };
+                            self.push(
+                                format!(
+                                    "⟲ {what} 完成 · 代码{} · 删除遗留 {deleted} 个文件{names} · 保留用户文件 {kept} 个{kept_note}",
+                                    if restored { "已恢复" } else { "未变（无快照）" }
+                                ),
+                                Tone::Muted,
+                            );
+                        }
+                        (Pending::Fork, true) => {
+                            if let Some(id) = d["sessionId"].as_str() {
+                                self.push(format!("⑂ fork → {id} …"), Tone::Success);
+                                self.switch_session(Some(id.to_string()));
+                            }
+                        }
+                        (Pending::Branch, true) => {
+                            self.push(
+                                "⑂ 已就地分叉 · 被放弃的未来保留在日志里，/redo 可找回",
+                                Tone::Success,
+                            );
+                        }
+                        (Pending::Tree, true) => {
+                            let mut text = String::new();
+                            if let Some(nodes) = d["nodes"].as_array() {
+                                let ids: Vec<&str> = nodes
+                                    .iter()
+                                    .filter_map(|n| n["sessionId"].as_str())
+                                    .collect();
+                                for n in nodes {
+                                    let id = n["sessionId"].as_str().unwrap_or("?");
+                                    let name = n["name"].as_str().unwrap_or("");
+                                    let fork_of = n["forkOf"]["sessionId"].as_str();
+                                    let depth = fork_of
+                                        .and_then(|p| ids.iter().position(|x| *x == p))
+                                        .map(|p| p + 1)
+                                        .unwrap_or(0);
+                                    let indent: String = "  ".repeat(depth);
+                                    let title = if name.is_empty() {
+                                        id.to_string()
+                                    } else {
+                                        format!("{name} · {id}")
+                                    };
+                                    let current = if depth == 0 { "（根）" } else { "" };
+                                    text.push_str(&format!("{indent}{title}{current}\n"));
+                                }
+                            }
+                            self.viewer = Some(Viewer::read_only("会话分叉树", text));
+                        }
                         (Pending::History, true) => self.load_history(d),
                         (Pending::Theme, true) => {
                             self.theme = Theme::resolve(
@@ -2800,6 +2974,7 @@ impl App {
             let title = match p.kind {
                 PickerKind::Model => "选择模型",
                 PickerKind::Session => "选择会话",
+                PickerKind::Timeline => "时间轴 · 选中即回滚到该回合之前",
                 PickerKind::Command => "命令面板",
                 PickerKind::History => "搜索 prompt 历史",
                 PickerKind::Theme => "选择主题",
@@ -3965,5 +4140,104 @@ mod tests {
             "mode": "ask", "editor": "default", "tools": []
         }));
         assert!(app.vim);
+    }
+
+    #[test]
+    fn rewind_opens_a_filterable_timeline_and_sends_rewind_on_enter() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.run_slash("/rewind", &mut serve);
+        assert_eq!(serve.sent.len(), 1);
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        assert_eq!(sent["cmd"], "timeline");
+
+        app.frame(json!({
+            "type": "result", "id": sent["id"], "ok": true,
+            "data": {"nodes": [
+                {"entryIndex": 1, "ts": "2026-11-16T10:00:00Z", "firstLine": "fix the bug", "hasSnapshot": true},
+                {"entryIndex": 9, "ts": "2026-11-16T11:00:00Z", "firstLine": "refactor it", "hasSnapshot": false}
+            ]}
+        }));
+        assert!(app.picker.as_ref().unwrap().kind == PickerKind::Timeline);
+        let picker = app.picker.as_ref().unwrap();
+        assert_eq!(picker.items.len(), 2);
+        assert!(picker.items[0].label.contains("fix the bug"));
+        assert!(picker.items[1].note.contains("无代码快照"));
+
+        app.key(
+            crossterm::event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut serve,
+        );
+        assert!(app.picker.is_none());
+        assert_eq!(serve.sent.len(), 2);
+        let rew: Value = serde_json::from_str(&serve.sent[1]).unwrap();
+        assert_eq!(rew["cmd"], "rewind");
+        assert_eq!(rew["entryIndex"], 1);
+    }
+
+    #[test]
+    fn undo_redo_branch_report_restore_results_in_chat() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.run_slash("/undo", &mut serve);
+        let id: u64 = serve.sent[0].parse::<Value>().unwrap()["id"]
+            .as_u64()
+            .unwrap();
+        app.frame(json!({
+            "type": "result", "id": id, "ok": true,
+            "data": {"codeRestored": true, "restored": 12, "deleted": ["x.ts"], "kept": ["handmade.txt"]}
+        }));
+        assert!(
+            app.lines
+                .iter()
+                .any(|l| l.text.contains("undo") && l.text.contains("x.ts"))
+        );
+        assert!(app.lines.iter().any(|l| l.text.contains("handmade")));
+
+        app.run_slash("/redo", &mut serve);
+        let sent2: Value = serde_json::from_str(&serve.sent[1]).unwrap();
+        assert_eq!(sent2["cmd"], "redo");
+        app.run_slash("/branch", &mut serve);
+        let sent3: Value = serde_json::from_str(&serve.sent[2]).unwrap();
+        assert_eq!(sent3["cmd"], "branch");
+    }
+
+    #[test]
+    fn fork_result_triggers_a_session_respawn() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.run_slash("/fork alt", &mut serve);
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        assert_eq!(sent["cmd"], "fork");
+        assert_eq!(sent["name"], "alt");
+        let id = sent["id"].as_u64().unwrap();
+        app.frame(json!({
+            "type": "result", "id": id, "ok": true,
+            "data": {"sessionId": "forked-123", "name": "alt"}
+        }));
+        // a respawn is requested with the fork's session id, like /resume switching
+        assert_eq!(app.respawn, Some(Some("forked-123".into())));
+    }
+
+    #[test]
+    fn tree_result_opens_a_read_only_viewer_with_indented_ancestry() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.run_slash("/tree", &mut serve);
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        assert_eq!(sent["cmd"], "tree");
+        app.frame(json!({
+            "type": "result", "id": sent["id"], "ok": true,
+            "data": {"nodes": [
+                {"sessionId": "root-1", "name": "", "createdAt": "2026-11-16T09:00:00Z", "forkOf": null},
+                {"sessionId": "fork-9", "name": "alt", "createdAt": "2026-11-16T10:00:00Z",
+                 "forkOf": {"sessionId": "root-1", "entryIndex": 4}}
+            ]}
+        }));
+        let viewer = app.viewer.as_ref().unwrap();
+        assert!(viewer.read_only);
+        assert!(viewer.title.contains("分叉"));
+        assert!(viewer.text.contains("root-1"));
+        assert!(viewer.text.contains("fork-9"));
     }
 }
