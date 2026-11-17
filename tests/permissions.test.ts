@@ -103,10 +103,12 @@ test('allow rules: tool/path/bash matching with boundary safety, readonly wins',
   assert.equal(decide('ask', call('diff', {}), cwd, rules).action, 'allow');
   assert.notEqual(decide('ask', call('write', { path: '/elsewhere/x' }), cwd, rules).action, 'allow');
 
-  // path rule: segment boundary — src matches src/a.ts, not src-evil/x
-  assert.equal(decide('ask', call('write', { path: 'src/a.ts' }), cwd, rules).action, 'allow');
-  assert.equal(decide('ask', call('write', { path: 'src-evil/x' }), cwd, rules).action, 'ask');
-  assert.equal(decide('ask', call('write', { path: 'outside/x' }), cwd, rules).action, 'ask');
+  // path rule: segment boundary, and rules CAN allow outside-cwd subtrees
+  const rules2 = ['tool:diff', 'path:src', 'path:../sib'].map(parseRule);
+  assert.equal(decide('ask', call('write', { path: 'src/a.ts' }), cwd, rules2).action, 'allow');
+  assert.equal(decide('ask', call('write', { path: '../sib/x' }), cwd, rules2).action, 'allow', 'outside-cwd rule target allowed');
+  assert.equal(decide('ask', call('write', { path: '../sib-evil/x' }), cwd, rules2).action, 'ask', 'segment boundary: sib does not match sib-evil');
+  assert.equal(decide('ask', call('write', { path: '../outside/x' }), cwd, rules2).action, 'ask');
 
   // bash rule: token boundary — 'git status' matches 'git status -s', not 'git_status'
   assert.equal(decide('ask', call('bash', { command: 'git status -s' }), cwd, rules).action, 'allow');

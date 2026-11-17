@@ -54,7 +54,7 @@ export function parseRule(str: string): ParseResult {
   if (!value) return { ok: false, error: `empty prefix in "${s}"` };
   if (m[1] === 'tool') return { ok: true, rule: { kind: 'tool', value } };
   if (m[1] === 'bash') return { ok: true, rule: { kind: 'bash', value } };
-  if (value.includes('..')) return { ok: false, error: `path rule must not traverse upwards: "${s}"` };
+  // '..' allowed: a path rule is an explicit user grant, including outside-cwd subtrees
   return { ok: true, rule: { kind: 'path', value: value.replace(/\/$/, '') } };
 }
 
@@ -64,10 +64,11 @@ export function ruleMatches(rule: AllowRule, call: ToolCallBlock, cwd: string): 
   if (rule.kind === 'tool') return call.name === rule.value;
   if (rule.kind === 'path') {
     if (!WRITE_TOOLS.has(call.name)) return false;
-    const rel = relative(resolve(cwd), resolve(cwd, String(input.path ?? ''))).replaceAll('\\', '/');
-    if (rel.startsWith('..') || isAbsolute(rel)) return false;
-    if (rule.value === '') return true;
-    return rel === rule.value || rel.startsWith(rule.value + '/');
+    // the rule prefix resolves against cwd (so ../sibling or absolute paths work too);
+    // segment boundary: src matches src/a.ts, never src-evil/
+    const target = resolve(cwd, String(input.path ?? ''));
+    const prefix = resolve(cwd, rule.value);
+    return target === prefix || target.startsWith(prefix + '/');
   }
   // bash: match the leading command tokens before ; && || |
   if (call.name !== 'bash') return false;
