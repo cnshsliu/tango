@@ -73,9 +73,27 @@ tango repl             line-mode REPL — dev fallback, not the product
 ```
 
 TUI commands: `/model`, `/resume`, `/new`, `/rename`, `/mode`, `/vim`, `/nvim`, `/btw`, `/diff`,
-`/focus`, `/mouse`, `/theme`, `/compact`, `/skill`, `/cost`, `/status`, `/clear`, `/rewind`, `/undo`,
-`/redo`, `/fork`, `/branch`, `/tree`, `/find`, `/export`, `/transcript`, `/copy`, `/recap`, `/help`,
-`/exit`. `/model <id>` also saves the choice as the default for new sessions.
+`/focus`, `/density`, `/mouse`, `/theme`, `/compact`, `/autocompact`, `/skill`, `/cost`, `/usage`,
+`/stats`, `/insights`, `/context`, `/queue`, `/timestamps`, `/statusline`, `/preset`, `/status`,
+`/clear`, `/rewind`, `/undo`, `/redo`, `/fork`, `/branch`, `/tree`, `/find`, `/export`,
+`/transcript`, `/copy`, `/recap`, `/help`, `/exit`. `/model <id>` also saves the choice as the
+default for new sessions.
+
+## Observability
+
+- `/context` — what the next request carries: system prompt / skills / tool schemas / history as
+  estimated tokens, with a share bar and 60/80% warnings.
+- `/queue` — the running prompt and the ones queued behind it (ctrl+c drains the queue).
+- `/usage` / `/stats` — cost and token aggregates across ALL sessions, by model and by session;
+  `/insights` writes the same data as an offline single-file HTML report.
+- `/timestamps` toggles `[HH:MM]` prefixes; `/density 0|1|2` sets tool-detail level (compact /
+  default-errors-only / full) and applies to restored history too.
+- `/autocompact [N%|0.N|off]` shows or sets the auto-compaction threshold (default 75% of the
+  window); persisted in config.
+- `/statusline '<tpl>'` customizes the bottom bar with `{model} {mode} {cost} {ctx} {pct} {session}
+  {tokens} {work}`; unknown placeholders pass through; `off` restores the default.
+- `/preset save <name>` stores the current draft as a reusable template (`~/.tango/presets.json`);
+  bare `/preset` opens a filtered picker and fills the input without sending.
 
 ## Time travel
 
