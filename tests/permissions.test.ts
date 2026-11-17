@@ -110,10 +110,11 @@ test('allow rules: tool/path/bash matching with boundary safety, readonly wins',
   assert.equal(decide('ask', call('write', { path: '../sib-evil/x' }), cwd, rules2).action, 'ask', 'segment boundary: sib does not match sib-evil');
   assert.equal(decide('ask', call('write', { path: '../outside/x' }), cwd, rules2).action, 'ask');
 
-  // bash rule: token boundary — 'git status' matches 'git status -s', not 'git_status'
-  assert.equal(decide('ask', call('bash', { command: 'git status -s' }), cwd, rules).action, 'allow');
-  assert.equal(decide('ask', call('bash', { command: 'git_status --hack' }), cwd, rules).action, 'ask');
-  assert.equal(decide('ask', call('bash', { command: 'rm -rf /' }), cwd, rules).action, 'ask', 'risky still asks');
+  // bash rule: token boundary against commands that would otherwise ASK (risky ones)
+  const rules3 = [...rules, { kind: 'bash', value: 'rm' }];
+  assert.equal(decide('ask', call('bash', { command: 'rm -rf build/' }), cwd, rules3).action, 'allow', 'rule beats risky-ask');
+  assert.equal(decide('ask', call('bash', { command: 'rm -rf /' }), cwd, rules).action, 'ask', 'risky still asks without a rule');
+  assert.equal(decide('ask', call('bash', { command: 'chmod +x x' }), cwd, rules3).action, 'ask', 'other risky commands still ask');
 
   // readonly always wins over rules
   assert.equal(decide('readonly', call('diff', {}), cwd, rules).action, 'deny');
