@@ -69,6 +69,9 @@ test('snapshot taken from a subdirectory still covers the whole repository', asy
 });
 
 test('non-git directories fall back to a tar snapshot', async () => {
+  const tangoHome = await mkdtemp(join(tmpdir(), 'tango-tar-home-'));
+  const prevHome = process.env.TANGO_HOME;
+  process.env.TANGO_HOME = tangoHome;
   const dir = await mkdtemp(join(tmpdir(), 'tango-tar-'));
   try {
     await writeFile(join(dir, 'plain.txt'), 'hello\n');
@@ -77,7 +80,9 @@ test('non-git directories fall back to a tar snapshot', async () => {
     const files = await snapshotFileList(dir, snap!);
     assert.ok(files.has('plain.txt'));
   } finally {
+    process.env.TANGO_HOME = prevHome;
     await rm(dir, { recursive: true, force: true });
+    await rm(tangoHome, { recursive: true, force: true });
   }
 });
 
@@ -116,6 +121,9 @@ test('restoreSnapshot: smart delete — agent leftovers removed, user files kept
 });
 
 test('restoreSnapshot: tar snapshots get the same smart-delete semantics', async () => {
+  const tangoHome = await mkdtemp(join(tmpdir(), 'tango-tar2-home-'));
+  const prevHome = process.env.TANGO_HOME;
+  process.env.TANGO_HOME = tangoHome;
   const dir = await mkdtemp(join(tmpdir(), 'tango-tar2-'));
   try {
     await writeFile(join(dir, 'a.txt'), 'one\n');
@@ -131,7 +139,9 @@ test('restoreSnapshot: tar snapshots get the same smart-delete semantics', async
     assert.ok(report.kept.includes('mine.txt'));
     assert.equal(await readFile(join(dir, 'mine.txt'), 'utf8'), 'user\n');
   } finally {
+    process.env.TANGO_HOME = prevHome;
     await rm(dir, { recursive: true, force: true });
+    await rm(tangoHome, { recursive: true, force: true });
   }
 });
 
@@ -162,6 +172,9 @@ test('restoreSnapshot throws on a missing snapshot hash instead of silent no-op'
 });
 
 test('M4: tar fallback honors .gitignore, keeps exec bits, prunes old snapshots', async () => {
+  const tangoHome = await mkdtemp(join(tmpdir(), 'tango-tar3-home-'));
+  const prevHome = process.env.TANGO_HOME;
+  process.env.TANGO_HOME = tangoHome;
   const dir = await mkdtemp(join(tmpdir(), 'tango-tar3-'));
   try {
     await writeFile(join(dir, 'keep.txt'), 'a\n');
@@ -179,8 +192,7 @@ test('M4: tar fallback honors .gitignore, keeps exec bits, prunes old snapshots'
 
     // cleanup policy: only the newest snapshots survive (keep-last-N)
     for (let i = 0; i < 60; i++) await takeSnapshot(dir, 'sess-tar');
-    const snapDir = join(process.env.TANGO_HOME ?? '', 'snapshots', 'sess-tar');
-    if (!snapDir.includes('snapshots')) throw new Error('setup: set TANGO_HOME');
+    const snapDir = join(tangoHome, 'snapshots', 'sess-tar');
     const { readdirSync, statSync } = await import('node:fs');
     const remaining = readdirSync(snapDir).filter((f) => f.endsWith('.tar.gz'));
     assert.ok(remaining.length <= 50, `M4: snapshot cleanup keeps ≤50, got ${remaining.length}`);
@@ -193,7 +205,9 @@ test('M4: tar fallback honors .gitignore, keeps exec bits, prunes old snapshots'
     const mode = (statSync(join(dir, 'run.sh')).mode & 0o111) !== 0;
     assert.ok(mode, 'M4: restored script keeps its exec bit');
   } finally {
+    process.env.TANGO_HOME = prevHome;
     await rm(dir, { recursive: true, force: true });
+    await rm(tangoHome, { recursive: true, force: true });
   }
 });
 
