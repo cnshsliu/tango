@@ -11,6 +11,7 @@
  */
 import { createInterface } from 'node:readline';
 import { randomUUID } from 'node:crypto';
+import { buildContext } from './core/context.js';
 import { restoreSnapshot } from './core/git-snapshot.js';
 import { hasKey, keyProblem, loadConfig, loadModels, pickModel, saveConfig, sessionsDir } from './core/config.js';
 import { listDrafts, promoteDraft, saveDraft } from './core/skills.js';
@@ -454,6 +455,26 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
         });
         return;
       }
+      case 'context': {
+        // token breakdown of the next request's assembly (chars/3.5, same as Agent.estimateTokens)
+        const { systemPrompt, skills } = await buildContext(cwd);
+        const skillLines = skills.length
+          ? '# Skills\n\nAvailable skills. When one matches the task, read its SKILL.md and follow it:\n\n' +
+            skills.map((sk: { name: string; description: string; path: string }) => `- ${sk.name}: ${sk.description} (at ${sk.path}; read it before following it)`).join('\n')
+          : '';
+        const est = (t: string) => Math.round(t.length / 3.5);
+        const system = est(systemPrompt);
+        const skillTokens = est(skillLines);
+        const tools = est(JSON.stringify(buildTools().schemas()));
+        const history = agent.contextTokenEstimate();
+        const total = system + tools + history;
+        const window = agent.model.contextWindow ?? 128_000;
+        reply(cmd, true, {
+          system, skills: skillTokens, tools, history, total,
+          window, pct: Math.round((total / window) * 100)
+        });
+        return;
+      }
       case 'timeline':
       case 'rewind':
       case 'undo':
@@ -657,7 +678,7 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
     // (e.g. "always allow" from a permission dialog), so they skip the prompt queue too
     const guarded = (p: Promise<unknown>) =>
       void p.catch((e) => out({ type: 'error', message: String(e?.message ?? e) }));
-    if (cmd.cmd === 'set_mode' || cmd.cmd === 'status' || cmd.cmd === 'timeline') {
+    if (cmd.cmd === 'set_mode' || cmd.cmd === 'status' || cmd.cmd === 'timeline' || cmd.cmd === 'context') {
       guarded(handle(cmd));
       return;
     }

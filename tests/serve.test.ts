@@ -851,3 +851,33 @@ test('M2+M3: timeline hasSnapshot is per-turn and abandoned turns are marked', a
     await rm(work, { recursive: true, force: true });
   }
 });
+
+test('context command reports a token breakdown of the prompt assembly', async () => {
+  const mock = await startMock();
+  const home = await mkdtemp(join(tmpdir(), 'tango-serve-home-'));
+  const work = await mkdtemp(join(tmpdir(), 'tango-serve-work-'));
+  await writeFile(join(home, 'models.json'), JSON.stringify([
+    { id: 'mock/mock', provider: 'mock', model: 'm', api: 'openai-completions', baseUrl: `http://127.0.0.1:${(mock.server.address() as AddressInfo).port}/v1`, apiKey: 'MOCK_SERVE_KEY', contextWindow: 200 }
+  ]));
+  mock.setScript(() => SSE({ choices: [{ delta: { content: 'ok' } }] }) + SSE({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 5, completion_tokens: 2 } }) + 'data: [DONE]\n\n');
+  const s = await startServe(home, work, 0);
+  try {
+    await s.next();
+    s.send({ id: 100, cmd: 'prompt', text: 'hello context' });
+    await s.until((f: any) => f.type === 'result' && f.ok, 'turn');
+    s.send({ id: 101, cmd: 'context' });
+    const c = await s.until((f: any) => f.type === 'result' && f.id === 101, 'context');
+    assert.ok(c.ok);
+    for (const k of ['system', 'tools', 'history', 'total', 'window', 'pct']) assert.ok(typeof c.data[k] === 'number' && c.data[k] >= 0, k);
+    assert.ok(c.data.system > 0, 'system prompt is non-trivial');
+    assert.ok(c.data.tools > 0, 'tool schemas take space');
+    assert.ok(c.data.history > 0, 'history after one turn');
+    assert.ok(c.data.total >= c.data.system + c.data.tools + c.data.history - 2, 'total sums the parts');
+    assert.ok(c.data.pct >= 0 && c.data.pct < 100_000);
+  } finally {
+    s.child.kill();
+    mock.server.close();
+    await rm(home, { recursive: true, force: true });
+    await rm(work, { recursive: true, force: true });
+  }
+});

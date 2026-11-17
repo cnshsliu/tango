@@ -79,6 +79,7 @@ enum Pending {
     Transcript,
     Rename,
     Recap,
+    Context,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -242,6 +243,10 @@ const SLASH: &[(&str, &str)] = &[
     (
         "/transcript",
         "查看完整原始 transcript（含 ⟲ 被放弃的未来）",
+    ),
+    (
+        "/context",
+        "上下文构成：system/skills/工具/历史各占多少 token",
     ),
     ("/copy [N]", "复制最近（或倒数第 N 个）助手回复"),
     ("/tree", "查看会话分叉树"),
@@ -1069,6 +1074,10 @@ impl App {
             "/tree" => {
                 let id = serve.command("tree", vec![]);
                 self.pending.push((id, Pending::Tree));
+            }
+            "/context" => {
+                let id = serve.command("context", vec![]);
+                self.pending.push((id, Pending::Context));
             }
             "/find" => {
                 if rest.is_empty() {
@@ -2766,6 +2775,44 @@ impl App {
                                     self.viewer = Some(Viewer::read_only(title, text));
                                 }
                             }
+                        }
+                        (Pending::Context, true) => {
+                            let g = |k: &str| d[k].as_u64().unwrap_or(0);
+                            let total = g("total").max(1);
+                            let window = g("window").max(1);
+                            let bar = |tok: u64| {
+                                let width = ((tok as f64 / total as f64) * 24.0).round() as usize;
+                                format!("{}{}", "█".repeat(width), "·".repeat(24 - width.min(24)))
+                            };
+                            let pct = d["pct"].as_u64().unwrap_or(0);
+                            let text = format!(
+                                "上下文构成（估算 token · chars/3.5）\n\n\
+                                system   {:>7}  {}\n\
+                                skills   {:>7}  {}\n\
+                                tools    {:>7}  {}\n\
+                                history  {:>7}  {}\n\
+                                ─────────────────────\n\
+                                合计     {:>7}  / 窗口 {}  ({pct}%)\n\
+                                {}",
+                                g("system"),
+                                bar(g("system")),
+                                g("skills"),
+                                bar(g("skills")),
+                                g("tools"),
+                                bar(g("tools")),
+                                g("history"),
+                                bar(g("history")),
+                                total,
+                                window,
+                                if pct >= 80 {
+                                    "⚠ 已超 80%，建议 /compact"
+                                } else if pct >= 60 {
+                                    "⚠ 已超 60%"
+                                } else {
+                                    ""
+                                }
+                            );
+                            self.viewer = Some(Viewer::read_only("上下文构成", text));
                         }
                         (Pending::History, true) => self.load_history(d),
                         (Pending::Theme, true) => {
@@ -4503,5 +4550,24 @@ mod tests {
         // copy with no assistant replies yet: no panic, nothing sent
         app.run_slash("/copy", &mut serve);
         assert_eq!(serve.sent.len(), 4);
+    }
+
+    #[test]
+    fn context_command_opens_a_breakdown_viewer() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.run_slash("/context", &mut serve);
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        assert_eq!(sent["cmd"], "context");
+        app.frame(json!({
+            "type": "result", "id": sent["id"], "ok": true,
+            "data": {"system": 900, "skills": 120, "tools": 1500, "history": 3000, "total": 5520, "window": 20000, "pct": 27}
+        }));
+        let viewer = app.viewer.as_ref().unwrap();
+        assert!(viewer.read_only);
+        assert!(viewer.text.contains("system"));
+        assert!(viewer.text.contains("history"));
+        assert!(viewer.text.contains("27%"));
+        assert!(viewer.text.contains("5520"));
     }
 }
