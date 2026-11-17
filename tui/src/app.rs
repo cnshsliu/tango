@@ -105,6 +105,7 @@ enum Pending {
     Effort,
     Memory,
     Remember,
+    Skills,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -120,6 +121,7 @@ enum PickerKind {
     Find,
     Preset,
     Permissions,
+    Skills,
 }
 
 #[derive(Clone)]
@@ -294,6 +296,7 @@ const SLASH: &[(&str, &str)] = &[
         "/skill [title]",
         "把本会话存成技能草稿 · /skill finish <file> 定稿",
     ),
+    ("/skills", "列出全局/项目技能"),
     ("/status", "会话信息"),
     (
         "/statusline [tpl|off]",
@@ -1278,6 +1281,10 @@ impl App {
                     self.pending.push((id, Pending::Effort));
                 }
             }
+            "/skills" => {
+                let id = serve.command("skills", vec![]);
+                self.pending.push((id, Pending::Skills));
+            }
             "/memory" => {
                 let id = serve.command("memory", vec![]);
                 self.pending.push((id, Pending::Memory));
@@ -2124,6 +2131,12 @@ impl App {
                 PickerKind::Preset => {
                     let id = serve.command("preset_get", vec![("name", Value::String(item.id))]);
                     self.pending.push((id, Pending::PresetGet));
+                }
+                PickerKind::Skills => {
+                    self.push(
+                        format!("技能位于 {} · 打开即可阅读/编辑", item.id),
+                        Tone::Muted,
+                    );
                 }
                 PickerKind::Permissions => {
                     // selecting a rule shows how to remove it; no accidental action
@@ -3474,6 +3487,36 @@ impl App {
                             let line = d["remembered"].as_str().unwrap_or("");
                             self.push(format!("已记住：{line}（全部会话生效）"), Tone::Success);
                         }
+                        (Pending::Skills, true) => {
+                            let items: Vec<PickItem> = d["skills"]
+                                .as_array()
+                                .map(|a| {
+                                    a.iter()
+                                        .filter_map(|sk| {
+                                            Some(PickItem {
+                                                label: format!(
+                                                    "{} [{}]",
+                                                    sk["name"].as_str()?,
+                                                    sk["scope"].as_str().unwrap_or("?")
+                                                ),
+                                                note: sk["description"]
+                                                    .as_str()
+                                                    .unwrap_or("")
+                                                    .to_string(),
+                                                warn: false,
+                                                current: false,
+                                                id: sk["path"].as_str()?.to_string(),
+                                            })
+                                        })
+                                        .collect()
+                                })
+                                .unwrap_or_default();
+                            if items.is_empty() {
+                                self.push("暂无技能 · /save-as-skill 从会话蒸馏", Tone::Muted);
+                            } else {
+                                self.picker = Some(Picker::new(PickerKind::Skills, items));
+                            }
+                        }
                         (Pending::History, true) => self.load_history(d),
                         (Pending::Theme, true) => {
                             self.theme = Theme::resolve(
@@ -3831,6 +3874,7 @@ impl App {
                 PickerKind::Find => "搜索命中 · 本会话=回滚到该处 · 他会话=切换过去",
                 PickerKind::Preset => "提示模板 · 选中填入输入框（不发送）",
                 PickerKind::Permissions => "允许规则 · /permissions rm <rule> 移除",
+                PickerKind::Skills => "技能列表 · global=全局 project=项目",
                 PickerKind::Command => "命令面板",
                 PickerKind::History => "搜索 prompt 历史",
                 PickerKind::Theme => "选择主题",
@@ -5754,5 +5798,21 @@ mod tests {
             "data": {"text": "- 用户偏好中文\n", "path": "/h/AGENTS.md"}}));
         let v = app.viewer.as_ref().unwrap();
         assert!(v.text.contains("用户偏好中文"));
+    }
+
+    #[test]
+    fn skills_command_opens_picker() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.run_slash("/skills", &mut serve);
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        assert_eq!(sent["cmd"], "skills");
+        app.frame(json!({"type": "result", "id": sent["id"], "ok": true,
+            "data": {"skills": [
+                {"name": "global-demo", "description": "全局演示", "path": "/h/skills/global-demo/SKILL.md", "scope": "global"},
+                {"name": "proj-demo", "description": "项目", "path": "/w/.tango/skills/proj-demo/SKILL.md", "scope": "project"}
+            ]}}));
+        assert!(app.picker.as_ref().unwrap().kind == PickerKind::Skills);
+        assert!(app.picker.as_ref().unwrap().items.len() == 2);
     }
 }
