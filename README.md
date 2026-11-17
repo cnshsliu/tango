@@ -80,6 +80,16 @@ TUI commands: `/model`, `/resume`, `/new`, `/rename`, `/mode`, `/vim`, `/nvim`, 
 `/redo`, `/fork`, `/branch`, `/tree`, `/find`, `/export`, `/transcript`, `/copy`, `/recap`,
 `/help`, `/exit`. `/model <id>` also saves the choice as the default for new sessions.
 
+## Lean by design (token plans)
+
+On metered/token plans the harness's own overhead is quota: tango keeps the per-request
+prompt assembly small — system prompt ≈ 240 tokens, tool schemas ≈ 1.7k, so a bare project
+starts under 2k tokens before any conversation (audit with `/context`). Vendor specifics are
+first-class: per-model `reasoningField` (qwen/dashscope `reasoning_content` by default),
+`prompt_tokens_details.cached_tokens` cache accounting in `/status` (缓存命中 %) and
+`/usage` token totals, Anthropic system-prompt cache breakpoints. qwen4-tokenplan presets
+(qwen4-max 1M window, deepseek-v4-pro, glm-5.3, flash) work with just `QWEN4_API_KEY`.
+
 ## Permissions rules
 
 Three rule kinds, persisted in config.json (`permissions.allow`) and live via `/permissions`:
