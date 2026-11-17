@@ -76,14 +76,18 @@ export function loadPluginHooks(): { plugins: { name: string; description: strin
     return { plugins, hooks };
   }
   for (const name of names) {
+    let meta: any;
     try {
-      const meta = JSON.parse(readFileSync(join(dir, name, 'plugin.json'), 'utf8'));
-      const enabled = meta.enabled !== false;
-      plugins.push({ name: meta.name ?? name, description: meta.description ?? '', enabled });
-      if (!enabled) continue;
-      if (meta.hooks?.beforeTool && !hooks.beforeTool) hooks.beforeTool = meta.hooks.beforeTool;
-      if (meta.hooks?.afterTool && !hooks.afterTool) hooks.afterTool = meta.hooks.afterTool;
-    } catch {}
+      meta = JSON.parse(readFileSync(join(dir, name, 'plugin.json'), 'utf8'));
+    } catch {
+      plugins.push({ name, description: 'plugin.json 解析失败', enabled: false }); // visible, not silent
+      continue;
+    }
+    const enabled = meta.enabled !== false;
+    plugins.push({ name: meta.name ?? name, description: meta.description ?? '', enabled });
+    if (!enabled) continue;
+    if (meta.hooks?.beforeTool && !hooks.beforeTool) hooks.beforeTool = meta.hooks.beforeTool;
+    if (meta.hooks?.afterTool && !hooks.afterTool) hooks.afterTool = meta.hooks.afterTool;
   }
   return { plugins, hooks };
 }

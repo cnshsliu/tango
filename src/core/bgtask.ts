@@ -59,6 +59,7 @@ export async function updateTask(id: string, patch: Partial<BgTask>): Promise<vo
 }
 
 function alive(pid: number): boolean {
+  if (!(pid > 1)) return false; // -1/0 sentinel or a pid the kernel could recycle onto init
   try {
     process.kill(pid, 0);
     return true;
@@ -94,7 +95,8 @@ export async function reconcileTasks(): Promise<BgTask[]> {
     if (t.status !== 'running') continue;
     if (!alive(t.pid)) {
       const { sessionId, ok } = parseLog(t.logFile);
-      t.status = ok === true ? 'done' : ok === false ? 'failed' : 'stopped';
+      // no result frame at all: the child crashed or was killed — 'failed', not 'stopped'
+      t.status = ok === true ? 'done' : ok === false ? 'failed' : 'failed';
       if (sessionId) t.sessionId = sessionId;
       t.endedAt = new Date().toISOString();
       changed = true;
@@ -130,12 +132,21 @@ export async function startBgTask(args: {
   } catch {
     /* built bin: plain node runs the compiled output */
   }
+  const env = { ...process.env };
+  // never leak the parent's session identity into the child: TANGO_RESUME would make the
+  // bg serve append to the MAIN session (two writers), TANGO_MODE/TANGO_MODEL override it (C2)
+  for (const k of ['TANGO_RESUME', 'TANGO_MODE', 'TANGO_MODEL']) delete env[k];
+  // the child runs alone in its own disposable worktree: auto mode is safe there and keeps
+  // permission asks from hanging a task forever (I1)
+  env.TANGO_MODE = 'auto';
   const child = spawn(process.execPath, [...interp, cliEntry, 'serve', '-m', model, '--cwd', entry.path], {
     cwd: args.mainCwd,
     detached: true, // survives the parent serve; reaped via pid checks
     stdio: ['pipe', 'pipe', 'pipe'],
-    env: { ...process.env }
+    env
   });
+  child.on('error', () => {}); // spawn failure: the log stays empty, reconcile marks failed
+  child.stdin.on('error', () => {}); // child died before our write flushed (C3)
   const out = createWriteStream(logFile);
   child.stdout.pipe(out);
   child.stderr.pipe(out); // diagnostics land in the same log (parseLog skips non-JSON)

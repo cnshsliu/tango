@@ -39,6 +39,17 @@ export class McpServer {
       stdio: ['pipe', 'pipe', 'pipe'],
       env: { ...process.env, ...(this.spec.env ?? {}) }
     });
+    // spawn errors (bad command) arrive async — never let them kill serve (C1)
+    this.child.on('error', (e) => {
+      this.connected = false;
+      for (const { reject, timer } of this.pending.values()) {
+        clearTimeout(timer);
+        reject(new Error(`mcp server "${this.name}" failed to start: ${e.message}`));
+      }
+      this.pending.clear();
+    });
+    // EPIPE on stdin after the server died is expected, not fatal
+    this.child.stdin.on('error', () => {});
     let buf = '';
     this.child.stdout.setEncoding('utf8');
     this.child.stdout.on('data', (d: string) => {
@@ -117,11 +128,16 @@ export class McpServer {
     return new Promise((resolve, reject) => {
       if (!this.child || this.child.killed) return reject(new Error(`mcp server "${this.name}" is not running`));
       const timer = setTimeout(() => {
+        // a slow call fails, but does NOT permanently kill a live server (I2)
         this.pending.delete(id);
-        this.connected = false;
         reject(new Error(`mcp ${this.name}: ${method} timed out`));
       }, 10_000);
       this.pending.set(id, { resolve, reject, timer });
+      if (this.child.exitCode !== null || this.child.killed) {
+        clearTimeout(timer);
+        this.pending.delete(id);
+        return reject(new Error(`mcp server "${this.name}" is not running`));
+      }
       this.child!.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n');
     });
   }

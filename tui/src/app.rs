@@ -1321,7 +1321,17 @@ impl App {
                 if rest.is_empty() {
                     self.push("usage: /bg <任务描述>", Tone::Muted);
                 } else {
-                    let id = serve.command("bg", vec![("prompt", Value::String(rest.into()))]);
+                    let long = rest.starts_with("--long");
+                    let prompt = if long {
+                        rest.trim_start_matches("--long").trim()
+                    } else {
+                        rest.trim()
+                    };
+                    let mut extra = vec![("prompt", Value::String(prompt.into()))];
+                    if long {
+                        extra.push(("long", Value::Bool(true)));
+                    }
+                    let id = serve.command("bg", extra);
                     self.pending.push((id, Pending::Bg));
                 }
             }

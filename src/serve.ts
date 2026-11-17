@@ -1437,9 +1437,9 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
     // (e.g. "always allow" from a permission dialog), so they skip the prompt queue too
     const guarded = (p: Promise<unknown>) =>
       void p.catch((e) => out({ type: 'error', message: String(e?.message ?? e) }));
-    void checkSubtasks();
-    if (['set_mode', 'status', 'timeline', 'context', 'queue', 'usage', 'stats', 'insights', 'preset_save', 'preset_list', 'preset_get', 'permissions_list', 'permissions_add', 'permissions_remove', 'import', 'cd', 'pwd', 'add_dir', 'config_show', 'init', 'doctor', 'debug_zip', 'set_plan', 'set_effort', 'memory', 'remember', 'skills', 'goal', 'loop', 'worktree_create', 'worktree_list', 'worktree_remove', 'worktree_merge', 'bg', 'tasks', 'stop_task', 'agents_show', 'agents_set', 'mcp_list', 'plugins_list'].includes(cmd.cmd)) {
+    if (['set_mode', 'status', 'timeline', 'context', 'queue', 'usage', 'stats', 'insights', 'preset_save', 'preset_list', 'preset_get', 'permissions_list', 'permissions_add', 'permissions_remove', 'import', 'cd', 'pwd', 'add_dir', 'config_show', 'init', 'doctor', 'debug_zip', 'set_plan', 'set_effort', 'memory', 'remember', 'skills', 'goal', 'loop', 'worktree_create', 'worktree_list', 'worktree_remove', 'worktree_merge', 'tasks', 'agents_show', 'agents_set', 'mcp_list', 'plugins_list'].includes(cmd.cmd)) {
       guarded(handle(cmd));
+      void checkSubtasks(); // immediate lane only: never between a prompt line and its turn start
       return;
     }
     if (cmd.cmd === 'rewind' || cmd.cmd === 'undo' || cmd.cmd === 'redo') {
@@ -1471,6 +1471,8 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
           out({ type: 'result', id: cmd.id, ok: false, error: 'interrupted (dropped from queue)' });
           return;
         }
+        // non-prompt queued commands are a safe write-back moment too (never mid-turn)
+        if (cmd.cmd !== 'prompt') void checkSubtasks();
         return handle(cmd);
       })
       .catch((e) => out({ type: 'error', message: String(e?.message ?? e) }));
