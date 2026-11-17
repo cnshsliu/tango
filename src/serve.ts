@@ -10,6 +10,7 @@
  * frames:    hello | stream | btw_stream | message | tool_result | permission_request | turn_end | error | result
  */
 import { createInterface } from 'node:readline';
+import { restoreSnapshot } from './core/git-snapshot.js';
 import { hasKey, keyProblem, loadConfig, loadModels, pickModel, saveConfig, sessionsDir } from './core/config.js';
 import { listDrafts, promoteDraft, saveDraft } from './core/skills.js';
 import { join } from 'node:path';
@@ -124,11 +125,114 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
     out(ok ? { type: 'result', id: cmd.id, ok: true, data } : { type: 'result', id: cmd.id, ok: false, error });
   };
 
+  // ---------- time travel: turns, rewind, undo, redo ----------
+
+  /** one prompt turn: its user-message entry, its last entry, and its pre-turn snapshot */
+  function turns(): { entryIndex: number; end: number; ts: string; firstLine: string; hash?: string }[] {
+    const indexed = store.indexedEntries();
+    const list: { entryIndex: number; end: number; ts: string; firstLine: string; hash?: string }[] = [];
+    for (const { entry, index } of indexed) {
+      if (entry.kind !== 'message' || entry.message.role !== 'user') continue;
+      const first = entry.message.content[0];
+      if (!first || first.type !== 'text') continue; // tool-result messages are not turns
+      list.push({
+        entryIndex: index,
+        end: index,
+        ts: entry.ts,
+        firstLine: first.text.split('\n')[0].slice(0, 80)
+      });
+    }
+    // a checkpoint entry belongs to the turn whose user message precedes it: the
+    // snapshot taken BEFORE that turn's first write (state after the previous turn)
+    for (const { entry, index } of indexed) {
+      if (entry.kind !== 'checkpoint') continue;
+      for (let i = list.length - 1; i >= 0; i--) {
+        if (list[i].entryIndex < index) {
+          if (!list[i].hash) list[i].hash = entry.hash;
+          break;
+        }
+      }
+    }
+    for (let i = 0; i < list.length; i++)
+      list[i].end = (i + 1 < list.length ? list[i + 1].entryIndex : indexed.length) - 1;
+    return list;
+  }
+
+  let promptInFlight = false;
+
+  /**
+   * Drop turns[k..]: restore code to the workspace state at the boundary just
+   * before turns[k] ran, then truncate the projection to match.
+   *
+   * boundary(k) = the last checkpoint logged before turns[k]'s user message
+   * (= post-snapshot of turn k-1), falling back to the first checkpoint after
+   * it (= turn k's own pre-snapshot) when k is the first writing turn.
+   */
+  async function rewindToTurn(k: number, cmd: Command): Promise<void> {
+    const list = turns();
+    if (k < 0 || k >= list.length) return reply(cmd, false, undefined, 'nothing to rewind/redo');
+    const target = list[k];
+    let code: { restored?: number; deleted?: string[]; kept?: string[] } = {};
+    const cps = store
+      .indexedEntries()
+      .filter(({ entry }) => entry.kind === 'checkpoint')
+      .map(({ entry, index }) => ({ hash: (entry as { hash: string }).hash, index }));
+    let boundaryIdx = -1;
+    for (const cp of cps) if (cp.index < target.entryIndex) boundaryIdx = Math.max(boundaryIdx, cps.indexOf(cp));
+    if (boundaryIdx < 0) boundaryIdx = cps.findIndex((cp) => cp.index > target.entryIndex);
+    if (boundaryIdx >= 0) {
+      const later = cps.slice(boundaryIdx + 1).map((c) => c.hash);
+      code = await restoreSnapshot(cwd, cps[boundaryIdx].hash, later);
+    }
+    await store.rewindTo(target.entryIndex - 1);
+    reply(cmd, true, { codeRestored: boundaryIdx >= 0, turnDropped: k, ...code });
+  }
+
+  /** index of the last turn visible in the current projection */
+  function lastVisibleTurn(list: ReturnType<typeof turns>): number {
+    const visibleEnd = store.visibleEntries().length;
+    let last = -1;
+    for (let i = 0; i < list.length; i++) {
+      if (list[i].entryIndex < visibleEnd) last = i;
+      else break;
+    }
+    return last;
+  }
+
+  function timeTravel(cmd: Command): Promise<void> | void {
+    if (promptInFlight) return reply(cmd, false, undefined, 'a turn is running — interrupt it first');
+    const list = turns();
+    if (cmd.cmd === 'timeline') {
+      reply(cmd, true, {
+        nodes: list.map((t) => ({
+          entryIndex: t.entryIndex, ts: t.ts, firstLine: t.firstLine, hasSnapshot: !!t.hash
+        }))
+      });
+      return;
+    }
+    const last = lastVisibleTurn(list);
+    if (cmd.cmd === 'rewind') {
+      const entryIndex = Number(cmd.entryIndex);
+      const k = list.findIndex((t) => t.entryIndex === entryIndex);
+      if (k < 0) return reply(cmd, false, undefined, `rewind: no turn at entry ${entryIndex}`);
+      return rewindToTurn(k, cmd);
+    }
+    if (cmd.cmd === 'undo') {
+      if (last < 0) return reply(cmd, false, undefined, 'nothing to undo');
+      return rewindToTurn(last, cmd);
+    }
+    if (cmd.cmd === 'redo') {
+      if (last >= list.length - 1) return reply(cmd, false, undefined, 'nothing to redo');
+      return rewindToTurn(last + 2, cmd);
+    }
+  }
+
   async function handle(cmd: Command): Promise<void> {
     switch (cmd.cmd) {
       case 'prompt': {
         const text = String(cmd.text ?? '');
         if (!text.trim()) return reply(cmd, false, undefined, 'prompt: empty text');
+        promptInFlight = true;
         try {
           const msg = await agent.prompt(text, (ev) => {
             if (ev.type !== 'done') out({ type: 'stream', event: ev });
@@ -136,6 +240,8 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
           reply(cmd, true, { stopReason: msg.stopReason ?? 'stop' });
         } catch (e: any) {
           reply(cmd, false, undefined, String(e?.message ?? e));
+        } finally {
+          promptInFlight = false;
         }
         return;
       }
@@ -173,10 +279,11 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
         return;
       }
       case 'history': {
-        // the full conversation (compaction ignored) flattened for display: a resumed client
-        // redraws its transcript from this; tool calls are paired with their results
+        // the visible conversation (compaction ignored, rewind respected) flattened for
+        // display: a resumed client redraws its transcript from this; tool calls are
+        // paired with their results
         const results = new Map<string, { isError: boolean; output: string }>();
-        const all = store.allMessages();
+        const all = store.allVisibleMessages();
         for (const m of all)
           for (const b of m.content)
             if (b.type === 'tool_result')
@@ -300,6 +407,11 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
         });
         return;
       }
+      case 'timeline':
+      case 'rewind':
+      case 'undo':
+      case 'redo':
+        return timeTravel(cmd);
       case 'status':
         reply(cmd, true, {
           sessionId: store.id,
@@ -345,8 +457,12 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
     }
     // mode flips and status reads are instant state ops: they must land mid-turn
     // (e.g. "always allow" from a permission dialog), so they skip the prompt queue too
-    if (cmd.cmd === 'set_mode' || cmd.cmd === 'status') {
+    if (cmd.cmd === 'set_mode' || cmd.cmd === 'status' || cmd.cmd === 'timeline') {
       void handle(cmd);
+      return;
+    }
+    if (cmd.cmd === 'rewind' || cmd.cmd === 'undo' || cmd.cmd === 'redo') {
+      void timeTravel(cmd);
       return;
     }
     queue = queue.then(() => handle(cmd));

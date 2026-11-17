@@ -121,6 +121,7 @@ export class Agent {
       await this.events.emit('error', { error: e instanceof Error ? e : new Error(String(e)) });
       throw e;
     } finally {
+      await this.events.emit('prompt_end', {});
       this.controller = undefined;
     }
   }

@@ -143,6 +143,8 @@ export interface TangoEvents {
   session_start: { sessionId: string; cwd: string };
   /** a prompt turn began; re-arms per-turn machinery like checkpointing */
   prompt_start: { text: string };
+  /** the prompt turn ended (stop, abort or error); per-turn machinery closes out */
+  prompt_end: Record<string, never>;
   /** may mutate req before it is sent */
   before_request: { req: CompletionRequest; model: ModelSpec };
   message: { message: Message };

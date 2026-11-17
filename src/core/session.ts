@@ -164,6 +164,11 @@ export class SessionStore {
     return this.entries.filter((e) => e.kind === 'message').map((e) => (e as { message: Message }).message);
   }
 
+  /** Full history of the CURRENT projection, ignoring compaction (what the UI shows). */
+  allVisibleMessages(): Message[] {
+    return this.visibleEntries().filter((e) => e.kind === 'message').map((e) => (e as { message: Message }).message);
+  }
+
   meta(): SessionMeta | undefined {
     return this.entries.find((e) => e.kind === 'meta');
   }

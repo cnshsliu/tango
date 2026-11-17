@@ -22,17 +22,32 @@ export function checkpointEnabled(cfg: { checkpoint?: string }): boolean {
 export function installCheckpoints(events: EventBus, opts: CheckpointOpts): void {
   const snap = opts.snapshot ?? ((cwd: string, sessionId: string) => takeSnapshot(cwd, sessionId));
   let armed = false;
+  let dirty = false; // a write happened this turn: close it with a post-turn snapshot
   events.on('prompt_start', () => {
     armed = true; // a fresh prompt re-arms; its first write tool snapshots
   });
   events.on('before_tool', async ({ call, tool }) => {
     if (!armed || !tool.writeEffect) return;
     armed = false;
+    dirty = true;
     try {
       const hash = await snap(opts.cwd, opts.store.id);
       if (hash) await opts.store.append({ kind: 'checkpoint', ts: new Date().toISOString(), hash });
     } catch {
       // a failed snapshot must never veto the tool or break the turn (spec RF#1)
+    }
+  });
+  events.on('prompt_end', async () => {
+    armed = false;
+    if (!dirty) return;
+    dirty = false;
+    try {
+      // the post-turn state: rewinding ACROSS this turn needs it to tell agent
+      // leftovers (in this snapshot) from the user's own between-turn files
+      const hash = await snap(opts.cwd, opts.store.id);
+      if (hash) await opts.store.append({ kind: 'checkpoint', ts: new Date().toISOString(), hash, note: 'post' });
+    } catch {
+      // best effort only
     }
   });
 }

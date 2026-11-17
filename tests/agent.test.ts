@@ -266,22 +266,23 @@ test('installCheckpoints: one snapshot per prompt, before the first write-effect
       model: { id: 'fake/m', provider: 'fake', model: 'm', api: 'openai-completions', baseUrl: `http://127.0.0.1:${port}/v1`, apiKey: 'test' }
     });
 
-    // turn 1: one write tool → exactly one checkpoint, taken BEFORE the tool ran
+    // turn 1: one write tool → pre-turn + post-turn checkpoint (post captures leftovers)
     await agent.prompt('do work');
     let cps = store.entriesOf('checkpoint');
-    assert.equal(cps.length, 1);
+    assert.equal(cps.length, 2, 'pre + post snapshots for a write turn');
     assert.ok((cps[0] as any).hash.length > 10);
     assert.equal(spawnSync('git', ['cat-file', '-t', (cps[0] as any).hash], { cwd: dir, encoding: 'utf8' }).stdout.trim(), 'commit');
-    // snapshot predates the tool's write: work.txt is NOT in the first snapshot
+    // the PRE snapshot predates the tool's write; the POST one contains it
     const { snapshotFileList } = await import('../src/core/git-snapshot.js');
     assert.ok(!(await snapshotFileList(dir, (cps[0] as any).hash)).has('work.txt'));
+    assert.ok((await snapshotFileList(dir, (cps[1] as any).hash)).has('work.txt'));
 
-    // turn 2: another write tool → a second checkpoint
+    // turn 2: another write tool → two more checkpoints
     await agent.prompt('more work');
     cps = store.entriesOf('checkpoint');
-    assert.equal(cps.length, 2);
+    assert.equal(cps.length, 4);
 
-    assert.equal(latestCheckpoints(store).length, 2);
+    assert.equal(latestCheckpoints(store).length, 4);
     assert.ok(latestCheckpoints(store)[0].entryIndex > 0, 'checkpoint carries its raw entry index');
 
     // config gate

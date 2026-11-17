@@ -2,7 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createServer } from 'node:http';
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AddressInfo } from 'node:net';
@@ -472,5 +473,90 @@ test('serve: btw streams an ephemeral answer outside session history', async () 
   } finally {
     s.child.kill();
     mock.server.close();
+  }
+});
+
+test('serve: timeline/rewind/undo/redo with real git restore', async () => {
+  const mock = await startMock();
+  const home = await mkdtemp(join(tmpdir(), 'tango-serve-home-'));
+  const work = await mkdtemp(join(tmpdir(), 'tango-serve-work-'));
+  await writeFile(join(home, 'models.json'), JSON.stringify([
+    { id: 'mock/mock', provider: 'mock', model: 'mock-model', api: 'openai-completions', baseUrl: `http://127.0.0.1:${(mock.server.address() as AddressInfo).port}/v1`, apiKey: 'MOCK_SERVE_KEY', contextWindow: 200 }
+  ]));
+  // a real git repo so checkpoints produce real snapshots
+  const git = (args: string[]) => spawnSync('git', args, { cwd: work, encoding: 'utf8' });
+  git(['init', '-q']); git(['config', 'user.email', 't@t']); git(['config', 'user.name', 't']);
+  await writeFile(join(work, 'seed.txt'), 'seed\n'); git(['add', '.']); git(['commit', '-q', '-m', 'init']);
+
+  // turns: 1 write (v1), 2 write (v2 + leftover), 3 plain (no tools)
+  // each write turn = two requests (tool call, then the finisher); plain turns = one
+  let turnNo = 0;
+  let pendingTool = false;
+  mock.setScript(() => {
+    if (!pendingTool) turnNo++;
+    if (!pendingTool && turnNo <= 2) {
+      pendingTool = true;
+      const cmd = turnNo === 1 ? 'echo v1 > work.txt' : 'echo v2 > work.txt && echo junk > leftover.txt';
+      return SSE({ choices: [{ delta: { tool_calls: [{ index: 0, id: 'w' + turnNo, function: { name: 'bash', arguments: JSON.stringify({ command: cmd }) } }] }, finish_reason: 'tool_calls' }] }) + 'data: [DONE]\n\n';
+    }
+    pendingTool = false;
+    return SSE({ choices: [{ delta: { content: '纯文本回复' } }] }) + SSE({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 10, completion_tokens: 5 } }) + 'data: [DONE]\n\n';
+  });
+
+  const s = await startServe(home, work, 0);
+  try {
+    await s.next(); // hello
+    for (let i = 0; i < 3; i++) {
+      s.send({ id: 100 + i, cmd: 'prompt', text: `turn ${i + 1}` });
+      await s.until((f: any) => f.type === 'result' && f.ok, 'turn result');
+    }
+    assert.equal((await readFile(join(work, 'work.txt'), 'utf8')).trim(), 'v2');
+    assert.ok(existsSync(join(work, 'leftover.txt')));
+
+    // timeline: three turns, first two with snapshots
+    s.send({ id: 200, cmd: 'timeline' });
+    const tl = await s.until((f: any) => f.type === 'result' && f.data?.nodes, 'timeline');
+    const nodes = tl.data.nodes;
+    assert.equal(nodes.length, 3);
+    assert.equal(nodes[0].hasSnapshot, true);
+    assert.equal(nodes[1].hasSnapshot, true);
+    assert.equal(nodes[2].hasSnapshot, false, 'plain turn has no code snapshot');
+    assert.ok(nodes[0].firstLine.includes('turn 1'));
+
+    // rewind to before turn 2: work.txt back to v1, leftover gone, history truncated
+    s.send({ id: 201, cmd: 'rewind', entryIndex: nodes[1].entryIndex });
+    const rw = await s.until((f: any) => f.type === 'result' && f.id === 201, 'rewind');
+    assert.ok(rw.ok, JSON.stringify(rw));
+    assert.equal((await readFile(join(work, 'work.txt'), 'utf8')).trim(), 'v1');
+    assert.ok(!existsSync(join(work, 'leftover.txt')), 'agent leftover smart-deleted');
+    assert.ok(rw.data.deleted.includes('leftover.txt'));
+
+    s.send({ id: 202, cmd: 'history' });
+    const h1 = await s.until((f: any) => f.type === 'result' && f.data?.items, 'history');
+    const texts = JSON.stringify(h1.data.items);
+    assert.ok(texts.includes('turn 1'));
+    assert.ok(!texts.includes('turn 2'));
+    assert.ok(!texts.includes('turn 3'));
+
+    // redo: turn 2+3 come back (work.txt v2 again, leftover back)
+    s.send({ id: 203, cmd: 'redo' });
+    await s.until((f: any) => f.type === 'result' && f.id === 203, 'redo');
+    assert.equal((await readFile(join(work, 'work.txt'), 'utf8')).trim(), 'v2');
+    assert.ok(existsSync(join(work, 'leftover.txt')));
+
+    // undo: drop the last visible turn (turn 2 — redo had re-included only it);
+    // code follows back to the end of turn 1
+    s.send({ id: 204, cmd: 'undo' });
+    await s.until((f: any) => f.type === 'result' && f.id === 204, 'undo');
+    s.send({ id: 205, cmd: 'history' });
+    const h2 = await s.until((f: any) => f.type === 'result' && f.data?.items, 'history after undo');
+    assert.ok(!JSON.stringify(h2.data.items).includes('turn 3'));
+    assert.ok(!JSON.stringify(h2.data.items).includes('turn 2'));
+    assert.equal((await readFile(join(work, 'work.txt'), 'utf8')).trim(), 'v1');
+  } finally {
+    s.child.kill();
+    mock.server.close();
+    await rm(home, { recursive: true, force: true });
+    await rm(work, { recursive: true, force: true });
   }
 });
