@@ -94,6 +94,50 @@ export class SessionStore {
     return this.append({ kind: 'model', ts: this.now(), modelId });
   }
 
+  /**
+   * Rewind the visible projection to `entryIndex` (inclusive) by appending a
+   * rewind entry — the log itself never loses the abandoned future.
+   */
+  rewindTo(entryIndex: number): Promise<void> {
+    return this.append({ kind: 'rewind', ts: this.now(), to: entryIndex });
+  }
+
+  /**
+   * Watermark projection: the last rewind entry (at index R, target T) abandons
+   * entries (T, R] — the discarded future, kept in the log but invisible to the
+   * model. Entries appended after R are new-timeline work and visible again.
+   * A rewind "forward" (redo) re-includes a previously abandoned range.
+   */
+  visibleEntries(): SessionEntry[] {
+    for (let i = this.entries.length - 1; i >= 0; i--) {
+      if (this.entries[i].kind === 'rewind') {
+        const to = (this.entries[i] as { to: number }).to;
+        return [...this.entries.slice(0, to + 1), ...this.entries.slice(i + 1)];
+      }
+    }
+    return this.entries;
+  }
+
+  /** Copy entries[0..toIndex] into a brand-new fork session file. */
+  async forkTo(dir: string, newId: string, toIndex: number): Promise<SessionStore> {
+    const meta = this.meta();
+    const prefix = this.entries
+      .slice(0, toIndex + 1)
+      .filter((e) => e.kind !== 'meta' && e.kind !== 'rewind');
+    const metaEntry: SessionEntry = {
+      ...meta,
+      kind: 'meta',
+      id: newId,
+      createdAt: this.now(),
+      forkOf: { sessionId: this.id, entryIndex: toIndex }
+    };
+    const fork = new SessionStore(dir, newId);
+    fork.entries = [metaEntry, ...prefix];
+    await mkdir(dir, { recursive: true });
+    await appendFile(fork.file, fork.entries.map((e) => JSON.stringify(e) + '\n').join(''), 'utf8');
+    return fork;
+  }
+
   /** Messages currently visible to the model (summary + everything after last compaction). */
   messageCount(): number {
     return this.messages().length;
@@ -130,19 +174,22 @@ export class SessionStore {
 
   /**
    * Messages for model context: everything after the latest compaction,
-   * with its summary injected as a leading user message.
+   * with its summary injected as a leading user message. Runs on the
+   * watermark projection, so a rewind past a compaction brings the
+   * pre-compaction messages back.
    */
   messages(): Message[] {
+    const visible = this.visibleEntries();
     let start = -1;
-    for (let i = this.entries.length - 1; i >= 0; i--) {
-      if (this.entries[i].kind === 'compaction') {
+    for (let i = visible.length - 1; i >= 0; i--) {
+      if (visible[i].kind === 'compaction') {
         start = i;
         break;
       }
     }
     const out: Message[] = [];
     if (start >= 0) {
-      const e = this.entries[start];
+      const e = visible[start];
       if (e.kind === 'compaction') {
         out.push({
           role: 'user',
@@ -150,8 +197,8 @@ export class SessionStore {
         });
       }
     }
-    for (let i = start + 1; i < this.entries.length; i++) {
-      const e = this.entries[i];
+    for (let i = start + 1; i < visible.length; i++) {
+      const e = visible[i];
       if (e.kind === 'message') out.push(e.message);
     }
     return out;

@@ -113,3 +113,80 @@ test('write-effect tools are marked for checkpointing', async () => {
   for (const name of ['read', 'grep', 'find', 'ls', 'diff', 'notify'])
     assert.notEqual(tools.get(name)?.writeEffect, true, name);
 });
+
+test('rewind watermark: projection truncates, log keeps everything, redo restores', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'tango-test-'));
+  try {
+    const store = await SessionStore.create(dir, '/work');
+    for (const t of ['one', 'two', 'three'])
+      await store.appendMessage({ role: 'user', content: [{ type: 'text', text: t }] });
+    // entry 0 = meta; message entries are 1,2,3
+    await store.rewindTo(1); // keep only "one"
+
+    assert.equal(store.messages().length, 1);
+    assert.equal(store.messages()[0].content[0].type === 'text' && (store.messages()[0].content[0] as any).text, 'one');
+
+    // new work after the rewind joins the projection
+    await store.appendMessage({ role: 'user', content: [{ type: 'text', text: 'four' }] });
+    assert.equal(store.messages().length, 2);
+
+    // the abandoned future is never lost
+    assert.equal(store.allMessages().length, 4);
+
+    // redo: rewind forward to a bigger watermark — abandoned messages visible again
+    await store.rewindTo(3); // entries 1..3 visible: one, two, three (four is entry 5 → abandoned now)
+    assert.equal(store.allMessages().length, 4);
+    const texts = store.messages().map((m) => (m.content[0] as any).text);
+    assert.deepEqual(texts, ['one', 'two', 'three']);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('rewind across a compaction restores pre-compaction context', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'tango-test-'));
+  try {
+    const store = await SessionStore.create(dir, '/work');
+    await store.appendMessage({ role: 'user', content: [{ type: 'text', text: 'early1' }] }); // entry 1
+    await store.appendMessage({ role: 'assistant', content: [{ type: 'text', text: 'early2' }] }); // entry 2
+    await store.compact('summary of early'); // entry 3
+    await store.appendMessage({ role: 'user', content: [{ type: 'text', text: 'late' }] }); // entry 4
+
+    // normally the compaction hides early messages
+    assert.equal(store.messages().length, 2); // summary + late
+
+    // rewind to before the compaction: full early context is back, no summary injected
+    await store.rewindTo(2);
+    const texts = store.messages().map((m) => (m.content[0] as any).text);
+    assert.deepEqual(texts, ['early1', 'early2']);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('forkTo copies a prefix into a new session with forkOf lineage', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'tango-test-'));
+  try {
+    const store = await SessionStore.create(dir, '/work', 'original');
+    await store.appendMessage({ role: 'user', content: [{ type: 'text', text: 'a' }] }); // entry 1
+    await store.appendMessage({ role: 'user', content: [{ type: 'text', text: 'b' }] }); // entry 2
+
+    const fork = await store.forkTo(dir, 'fork-id-1', 1);
+    assert.equal(fork.id, 'fork-id-1');
+    assert.equal(fork.messages().length, 1);
+    assert.equal(fork.meta()?.forkOf?.sessionId, store.id);
+    assert.equal(fork.meta()?.forkOf?.entryIndex, 1);
+    assert.equal(fork.meta()?.cwd, '/work');
+
+    // independence: appending on either side does not leak to the other
+    await fork.appendMessage({ role: 'user', content: [{ type: 'text', text: 'fork-only' }] });
+    assert.equal(store.messages().length, 2);
+    assert.equal(fork.messages().length, 2);
+
+    // reopening the fork from disk sees the same projection
+    const reopened = await SessionStore.open(dir, 'fork-id-1');
+    assert.equal(reopened.messages().length, 2);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
