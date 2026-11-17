@@ -32,6 +32,8 @@ export interface Config {
   checkpoint?: 'on' | 'off';
   /** Auto-compact threshold as a window share; 'off'/0 disables. Missing means 0.75. */
   autocompact?: number | 'off';
+  /** Custom status bar template with {model} {mode} {cost} {ctx} {pct} {session} {tokens}; missing = default bar */
+  statusline?: string;
 }
 
 async function readJson<T>(path: string): Promise<T | undefined> {

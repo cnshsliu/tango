@@ -120,6 +120,7 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
     keys: config.keys,
     nvimViewer: config.nvimViewer,
     autocompact: config.autocompact ?? 0.75,
+    statusline: config.statusline,
     tools: buildTools().schemas().map(({ name, description }) => ({ name, description }))
   });
 
@@ -363,6 +364,15 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
         agent.compactAt = value;
         await saveConfig({ ...(await loadConfig()), autocompact: value === 0 ? 'off' : value });
         reply(cmd, true, { autocompact: value });
+        return;
+      }
+      case 'set_statusline': {
+        const template = cmd.template === null ? null : String(cmd.template ?? '');
+        if (template !== null && !template.includes('{')) {
+          return reply(cmd, false, undefined, 'statusline: template has no {placeholder}');
+        }
+        await saveConfig({ ...(await loadConfig()), statusline: template ?? undefined });
+        reply(cmd, true, { template });
         return;
       }
       case 'queue': {

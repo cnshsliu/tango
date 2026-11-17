@@ -85,6 +85,7 @@ enum Pending {
     Insights,
     AutocompactShow,
     AutocompactSet,
+    Statusline,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -250,6 +251,10 @@ const SLASH: &[(&str, &str)] = &[
         "把本会话存成技能草稿 · /skill finish <file> 定稿",
     ),
     ("/status", "会话信息"),
+    (
+        "/statusline [tpl|off]",
+        "自定义状态栏模板：{model} {mode} {cost} {ctx} {pct} {session}",
+    ),
     ("/theme", "选择并实时应用 dark/light/auto 主题"),
     ("/timestamps", "聊天行首 [HH:MM] 时间戳开关"),
     (
@@ -320,6 +325,8 @@ pub struct App {
     assistant_replies: Vec<String>,
     /// show [HH:MM] prefixes on chat lines (/timestamps)
     timestamps: bool,
+    /// custom status bar template with {model} {mode} {cost} {ctx} {pct} {session} {tokens}
+    statusline: Option<String>,
     /// tool detail level: 0 compact / 1 default / 2 full (/density)
     density: u8,
     pending: Vec<(u64, Pending)>,
@@ -380,6 +387,7 @@ impl App {
             assistant_replies: Vec::new(),
             timestamps: false,
             density: 1,
+            statusline: None,
             pending: Vec::new(),
             permission: None,
             model: "…".into(),
@@ -1116,6 +1124,26 @@ impl App {
             "/insights" => {
                 let id = serve.command("insights", vec![]);
                 self.pending.push((id, Pending::Insights));
+            }
+            "/statusline" => {
+                if rest.is_empty() {
+                    let cur = self.statusline.clone().unwrap_or_else(|| "（默认）".into());
+                    self.push(
+                        format!(
+                            "当前状态栏模板：{cur}\n可用占位符：{{model}} {{mode}} {{cost}} {{session}} {{tokens}} {{ctx}} {{pct}} {{work}} · /statusline off 恢复默认"
+                        ),
+                        Tone::Muted,
+                    );
+                } else if rest.trim() == "off" {
+                    let id = serve.command("set_statusline", vec![("template", Value::Null)]);
+                    self.pending.push((id, Pending::Statusline));
+                } else {
+                    let id = serve.command(
+                        "set_statusline",
+                        vec![("template", Value::String(rest.trim().into()))],
+                    );
+                    self.pending.push((id, Pending::Statusline));
+                }
             }
             "/autocompact" => {
                 if rest.is_empty() {
@@ -2386,6 +2414,7 @@ impl App {
                     std::env::var("COLORFGBG").ok().as_deref(),
                 );
                 self.mouse = v["mouse"].as_bool().unwrap_or(true);
+                self.statusline = v["statusline"].as_str().map(|t| t.to_string());
                 self.mouse_capture = Some(self.mouse);
                 self.model = v["model"].as_str().unwrap_or("?").into();
                 self.mode = v["mode"].as_str().unwrap_or("?").into();
@@ -2981,6 +3010,15 @@ impl App {
                                 self.push("自动压缩已关闭", Tone::Muted);
                             }
                         }
+                        (Pending::Statusline, true) => {
+                            if let Some(t) = d["template"].as_str() {
+                                self.statusline = Some(t.to_string());
+                                self.push(format!("状态栏模板已保存并应用"), Tone::Success);
+                            } else {
+                                self.statusline = None;
+                                self.push("状态栏已恢复默认", Tone::Muted);
+                            }
+                        }
                         (Pending::History, true) => self.load_history(d),
                         (Pending::Theme, true) => {
                             self.theme = Theme::resolve(
@@ -3197,56 +3235,7 @@ impl App {
         self.chat_area = chat_a;
 
         // status bar
-        let work = if self.busy { "● working" } else { "idle" };
-        let mut spans = vec![
-            Span::styled(format!(" {} ", self.model), self.theme.style(Tone::Badge)),
-            Span::styled(format!(" {} ", self.mode), self.theme.style(Tone::Muted)),
-            Span::styled(
-                format!(" ${:.4} ", self.cost),
-                self.theme.style(Tone::Warning),
-            ),
-            Span::styled(
-                format!(" {work} "),
-                if self.busy {
-                    self.theme.style(Tone::Success)
-                } else {
-                    self.theme.style(Tone::Muted)
-                },
-            ),
-            Span::styled(
-                format!(" sess {} ", self.session),
-                self.theme.style(Tone::Muted),
-            ),
-        ];
-        if self.context_window > 0 {
-            let percent = self.context_tokens.saturating_mul(100) / self.context_window;
-            spans.push(Span::styled(
-                format!(
-                    " ctx {}/{} {}% ",
-                    Self::token_count(self.context_tokens),
-                    Self::token_count(self.context_window),
-                    percent
-                ),
-                self.theme.style(self.context_tone()),
-            ));
-        }
-        if self.focus {
-            spans.push(Span::styled(" focus ", self.theme.style(Tone::Badge)));
-        }
-        if self.vim {
-            let mode = if self.vim_command.is_some() {
-                "COMMAND"
-            } else if self.edit_mode == EditMode::Insert {
-                "INSERT"
-            } else {
-                "NORMAL"
-            };
-            spans.push(Span::styled(
-                format!(" VIM {mode} "),
-                self.theme.style(Tone::Badge),
-            ));
-        }
-
+        let spans = self.status_spans();
         f.render_widget(Paragraph::new(Line::from(spans)), status_a);
 
         // chat with bottom-anchored scrolling (scroll_back=0 follows the newest line)
@@ -3552,6 +3541,99 @@ impl App {
                 }
             }
         }
+    }
+
+    /// Status bar spans; a custom {placeholder} template replaces the whole bar.
+    fn status_spans(&mut self) -> Vec<Span<'static>> {
+        let work = if self.busy { "● working" } else { "idle" };
+        if let Some(template) = self.statusline.clone() {
+            let percent = if self.context_window > 0 {
+                self.context_tokens.saturating_mul(100) / self.context_window
+            } else {
+                0
+            };
+            let raw = template
+                .replace("{model}", &self.model)
+                .replace("{mode}", &self.mode)
+                .replace("{cost}", &format!("{:.4}", self.cost))
+                .replace("{session}", &self.session)
+                .replace(
+                    "{tokens}",
+                    &Self::token_count(self.context_tokens).to_string(),
+                )
+                .replace(
+                    "{ctx}",
+                    &format!(
+                        "{}/{}",
+                        Self::token_count(self.context_tokens),
+                        Self::token_count(self.context_window)
+                    ),
+                )
+                .replace("{pct}", &format!("{percent}%"))
+                .replace("{work}", work);
+            return vec![Span::styled(
+                format!(" {} ", raw.chars().take(200).collect::<String>()),
+                self.theme.style(Tone::Badge),
+            )];
+        }
+        let mut spans = vec![
+            Span::styled(format!(" {} ", self.model), self.theme.style(Tone::Badge)),
+            Span::styled(format!(" {} ", self.mode), self.theme.style(Tone::Muted)),
+            Span::styled(
+                format!(" ${:.4} ", self.cost),
+                self.theme.style(Tone::Warning),
+            ),
+            Span::styled(
+                format!(" {work} "),
+                if self.busy {
+                    self.theme.style(Tone::Success)
+                } else {
+                    self.theme.style(Tone::Muted)
+                },
+            ),
+            Span::styled(
+                format!(" sess {} ", self.session),
+                self.theme.style(Tone::Muted),
+            ),
+        ];
+        if self.context_window > 0 {
+            let percent = self.context_tokens.saturating_mul(100) / self.context_window;
+            spans.push(Span::styled(
+                format!(
+                    " ctx {}/{} {}% ",
+                    Self::token_count(self.context_tokens),
+                    Self::token_count(self.context_window),
+                    percent
+                ),
+                self.theme.style(self.context_tone()),
+            ));
+        }
+        if self.focus {
+            spans.push(Span::styled(" focus ", self.theme.style(Tone::Badge)));
+        }
+        if self.vim {
+            let mode = if self.vim_command.is_some() {
+                "COMMAND"
+            } else if self.edit_mode == EditMode::Insert {
+                "INSERT"
+            } else {
+                "NORMAL"
+            };
+            spans.push(Span::styled(
+                format!(" VIM {mode} "),
+                self.theme.style(Tone::Badge),
+            ));
+        }
+        spans
+    }
+
+    /// plain text of the status bar (tests and /statusline preview)
+    fn status_segments_text(&mut self) -> String {
+        self.status_spans()
+            .iter()
+            .map(|s| s.content.to_string())
+            .collect::<Vec<_>>()
+            .join("")
     }
 }
 
@@ -4876,5 +4958,39 @@ mod tests {
         app.run_slash("/autocompact off", &mut serve);
         let sent3: Value = serde_json::from_str(&serve.sent[2]).unwrap();
         assert_eq!(sent3["value"], "off");
+    }
+
+    #[test]
+    fn statusline_template_replaces_known_placeholders_and_off_restores() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.model = "m1".into();
+        app.mode = "ask".into();
+        app.session = "sess9".into();
+        app.context_tokens = 1000;
+        app.context_window = 4000;
+        app.cost = 0.5;
+        let default = app.status_segments_text();
+        assert!(default.contains("m1"), "no template: default status");
+
+        app.statusline = Some("{model}|{mode}|{pct}%|{unknown}".into());
+        let text = app.status_segments_text();
+        assert!(text.contains("m1|ask"), "placeholders replaced: {text}");
+        assert!(text.contains("25%"), "pct computed: {text}");
+        assert!(
+            text.contains("{unknown}"),
+            "unknown placeholders stay verbatim: {text}"
+        );
+
+        app.run_slash("/statusline off", &mut serve);
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        assert_eq!(sent["cmd"], "set_statusline");
+        assert_eq!(sent["template"], serde_json::Value::Null);
+        app.run_slash("/statusline", &mut serve);
+        assert!(
+            app.lines
+                .iter()
+                .any(|l| l.text.contains("{model}") && l.text.contains("{ctx}"))
+        );
     }
 }
