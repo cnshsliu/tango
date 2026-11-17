@@ -109,6 +109,9 @@ enum Pending {
     Goal,
     Loop,
     Worktree,
+    Bg,
+    Tasks,
+    StopTask,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1298,6 +1301,27 @@ impl App {
                     let id =
                         serve.command("set_effort", vec![("level", Value::String(arg.into()))]);
                     self.pending.push((id, Pending::Effort));
+                }
+            }
+            "/bg" => {
+                if rest.is_empty() {
+                    self.push("usage: /bg <任务描述>", Tone::Muted);
+                } else {
+                    let id = serve.command("bg", vec![("prompt", Value::String(rest.into()))]);
+                    self.pending.push((id, Pending::Bg));
+                }
+            }
+            "/tasks" => {
+                let id = serve.command("tasks", vec![]);
+                self.pending.push((id, Pending::Tasks));
+            }
+            "/stop" => {
+                if rest.is_empty() {
+                    self.push("usage: /stop <任务id或名字>（/tasks 里看）", Tone::Muted);
+                } else {
+                    let id =
+                        serve.command("stop_task", vec![("id", Value::String(rest.trim().into()))]);
+                    self.pending.push((id, Pending::StopTask));
                 }
             }
             "/worktree" => {
@@ -3701,6 +3725,53 @@ impl App {
                                 self.push(format!("worktree 已创建 → {p}"), Tone::Success);
                             }
                         }
+                        (Pending::Bg, true) => {
+                            let t = &d["task"];
+                            self.push(
+                                format!(
+                                    "● 后台任务 {} 已启动（worktree 隔离）· /tasks 查看",
+                                    t["id"].as_str().unwrap_or("?")
+                                ),
+                                Tone::Success,
+                            );
+                        }
+                        (Pending::Tasks, true) => {
+                            let mut text = String::from("后台任务：\n\n");
+                            if let Some(list) = d["tasks"].as_array() {
+                                for t in list {
+                                    let status = t["status"].as_str().unwrap_or("?");
+                                    let mark = match status {
+                                        "running" => "▶",
+                                        "done" => "✓",
+                                        "failed" => "✗",
+                                        _ => "■",
+                                    };
+                                    let prompt: String = t["prompt"]
+                                        .as_str()
+                                        .unwrap_or("")
+                                        .chars()
+                                        .take(40)
+                                        .collect();
+                                    let sess = t["sessionId"].as_str().unwrap_or("");
+                                    text.push_str(&format!(
+                                        "  {mark} {} [{}] {} · {}\n      /resume {} 可查看 · /stop {}\n",
+                                        t["id"].as_str().unwrap_or("?"),
+                                        status,
+                                        prompt,
+                                        t["model"].as_str().unwrap_or("?"),
+                                        sess,
+                                        t["id"].as_str().unwrap_or("?"),
+                                    ));
+                                }
+                            }
+                            if text.trim() == "后台任务：" {
+                                text.push_str("  （空）· /bg <描述> 启动一个");
+                            }
+                            self.viewer = Some(Viewer::read_only("后台任务", text));
+                        }
+                        (Pending::StopTask, true) => {
+                            self.push("后台任务已停止", Tone::Muted);
+                        }
                         (Pending::History, true) => self.load_history(d),
                         (Pending::Theme, true) => {
                             self.theme = Theme::resolve(
@@ -6063,5 +6134,36 @@ mod tests {
         app.run_slash("/worktree rm exp1", &mut serve);
         let sent4: Value = serde_json::from_str(&serve.sent[3]).unwrap();
         assert_eq!(sent4["cmd"], "worktree_remove");
+    }
+
+    #[test]
+    fn bg_tasks_stop_wire_up() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.run_slash("/bg 后台检查", &mut serve);
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        assert_eq!(sent["cmd"], "bg");
+        assert_eq!(sent["prompt"], "后台检查");
+        app.frame(
+            json!({"type": "result", "id": sent["id"], "ok": true, "data": {"task": {"id": "abc", "status": "running"}}}),
+        );
+        assert!(app.lines.iter().any(|l| l.text.contains("abc")));
+
+        app.run_slash("/tasks", &mut serve);
+        let sent2: Value = serde_json::from_str(&serve.sent[1]).unwrap();
+        assert_eq!(sent2["cmd"], "tasks");
+        app.frame(
+            json!({"type": "result", "id": sent2["id"], "ok": true, "data": {"tasks": [
+                {"id": "abc", "status": "done", "model": "m", "prompt": "后台检查", "sessionId": "sess1"}
+            ]}}),
+        );
+        let v = app.viewer.as_ref().unwrap();
+        assert!(v.text.contains("done"));
+        assert!(v.text.contains("后台检查"));
+
+        app.run_slash("/stop abc", &mut serve);
+        let sent3: Value = serde_json::from_str(&serve.sent[2]).unwrap();
+        assert_eq!(sent3["cmd"], "stop_task");
+        assert_eq!(sent3["id"], "abc");
     }
 }
