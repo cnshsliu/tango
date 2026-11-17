@@ -143,7 +143,11 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<(), Box<dyn 
                 crossterm::cursor::Show,
                 LeaveAlternateScreen
             )?;
-            let result = crate::nvim::run(&request.editor, &request.viewer.text, request.read_only);
+            let result = if request.plain {
+                crate::nvim::run_plain(&request.editor.executable, &request.viewer.text)
+            } else {
+                crate::nvim::run(&request.editor, &request.viewer.text, request.read_only)
+            };
             enable_raw_mode()?;
             execute!(
                 terminal.backend_mut(),

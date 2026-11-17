@@ -21,6 +21,8 @@ pub struct NvimRequest {
     pub viewer: Viewer,
     pub read_only: bool,
     pub target: NvimTarget,
+    /// generic $EDITOR flow: run without nvim-specific flags (run_plain)
+    pub plain: bool,
 }
 
 pub fn detect() -> Option<Neovim> {
@@ -72,6 +74,25 @@ pub fn write_temp(text: &str) -> io::Result<PathBuf> {
         io::ErrorKind::AlreadyExists,
         "cannot allocate Neovim temporary file",
     ))
+}
+
+/// Generic $EDITOR round-trip: no editor-specific flags, tolerate multi-word
+/// EDITOR values ("code -w"), read the file back and normalize the final newline.
+pub fn run_plain(program: &str, text: &str) -> io::Result<String> {
+    let path = write_temp(text)?;
+    let mut parts = program.split_whitespace();
+    let mut command = Command::new(parts.next().unwrap_or(program));
+    for a in parts {
+        command.arg(a);
+    }
+    let result = command.arg("--").arg(&path).status();
+    let edited = if result.is_ok() {
+        read_to_string(&path)
+    } else {
+        result.map(|_| String::new())
+    };
+    let _ = remove_file(path);
+    edited.map(|edited| normalize_editor_output(text, &edited))
 }
 
 pub fn run(editor: &Neovim, text: &str, read_only: bool) -> io::Result<String> {
@@ -245,5 +266,19 @@ mod tests {
         );
         assert_eq!(normalize_editor_output("one\ntwo", "one\ntwo"), "one\ntwo");
         assert_eq!(normalize_editor_output("", "\n"), "");
+    }
+
+    #[test]
+    fn run_plain_round_trips_with_cat() {
+        // $EDITOR=cat style: reads the draft back unchanged (empty EDITOR args)
+        let edited = run_plain("cat", "draft text\nline two\n");
+        assert_eq!(
+            edited.unwrap(),
+            "draft text\nline two\n",
+            "cat leaves the file byte-identical"
+        );
+        // an editor that ADDS a final newline gets it stripped when the draft had none
+        let stripped = run_plain("cat", "no-newline");
+        assert_eq!(stripped.unwrap(), "no-newline");
     }
 }

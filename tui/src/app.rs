@@ -234,6 +234,10 @@ const SLASH: &[(&str, &str)] = &[
         "工具详情密度 0紧凑/1默认/2完整 · /density [0|1|2]",
     ),
     ("/diff", "只读查看工作区 diff · /diff --staged [paths]"),
+    (
+        "/editor",
+        "用 $VISUAL/$EDITOR 编辑当前草稿（nvim 专用 /nvim）",
+    ),
     ("/exit", "退出"),
     (
         "/export [md|html]",
@@ -250,6 +254,7 @@ const SLASH: &[(&str, &str)] = &[
     ("/model <id>", "切换模型（存为默认），裸 /model 打开列表"),
     ("/mode <m>", "ask | auto | readonly"),
     ("/mouse", "切换鼠标捕获 · /mouse on|off"),
+    ("/multiline", "Enter 换行/发送切换（ctrl+s 始终发送）"),
     ("/new", "开新会话"),
     ("/recap", "一行总结当前对话（不写入会话）"),
     ("/rename <name>", "重命名当前会话"),
@@ -341,6 +346,8 @@ pub struct App {
     timestamps: bool,
     /// custom status bar template with {model} {mode} {cost} {ctx} {pct} {session} {tokens}
     statusline: Option<String>,
+    /// Enter inserts a newline instead of sending (/multiline)
+    multiline_enter: bool,
     /// tool detail level: 0 compact / 1 default / 2 full (/density)
     density: u8,
     pending: Vec<(u64, Pending)>,
@@ -402,6 +409,7 @@ impl App {
             timestamps: false,
             density: 1,
             statusline: None,
+            multiline_enter: false,
             pending: Vec::new(),
             permission: None,
             model: "…".into(),
@@ -590,6 +598,34 @@ impl App {
             viewer,
             read_only,
             target: NvimTarget::Viewer,
+            plain: false,
+        });
+    }
+
+    /// /editor: generic $VISUAL/$EDITOR round-trip (no nvim-specific flags)
+    fn edit_draft_generic(&mut self) {
+        let program = std::env::var("VISUAL")
+            .or_else(|_| std::env::var("EDITOR"))
+            .ok()
+            .filter(|p| !p.trim().is_empty());
+        let Some(program) = program else {
+            self.push(
+                "未设置 $EDITOR/$VISUAL · 设置后重试（/nvim 始终可用）",
+                Tone::Muted,
+            );
+            return;
+        };
+        let draft: String = self.input.iter().collect();
+        self.popup = None;
+        self.vim_command = None;
+        self.nvim_request = Some(NvimRequest {
+            editor: Neovim {
+                executable: program,
+            },
+            viewer: Viewer::new("输入草稿", draft),
+            read_only: false,
+            target: NvimTarget::Draft,
+            plain: true,
         });
     }
 
@@ -606,6 +642,7 @@ impl App {
             viewer: Viewer::new("输入草稿", draft),
             read_only: false,
             target: NvimTarget::Draft,
+            plain: false,
         });
     }
 
@@ -1390,6 +1427,21 @@ impl App {
                 self.vim_override = Some(enabled);
             }
             "/nvim" => self.edit_draft(),
+            "/editor" => self.edit_draft_generic(),
+            "/multiline" => {
+                self.multiline_enter = !self.multiline_enter;
+                self.push(
+                    format!(
+                        "Enter {} · ctrl+s 始终发送",
+                        if self.multiline_enter {
+                            "换行（多行模式）"
+                        } else {
+                            "发送（默认）"
+                        }
+                    ),
+                    Tone::Muted,
+                );
+            }
             "/mode" => {
                 if rest.is_empty() {
                     self.push("usage: /mode ask|auto|readonly", Tone::Muted);
@@ -2410,6 +2462,10 @@ impl App {
                 self.refresh_popup();
             }
             KeyCode::Enter if self.vim => {}
+            KeyCode::Enter if self.multiline_enter => {
+                self.insert_char('\n');
+                self.refresh_popup();
+            }
             KeyCode::Enter if !self.busy => self.send_prompt(serve),
             KeyCode::Enter => {
                 self.push("[queued — ctrl+c interrupts]", Tone::Muted);
@@ -5265,5 +5321,48 @@ mod tests {
         let sent3: Value = serde_json::from_str(&serve.sent[2]).unwrap();
         assert_eq!(sent3["cmd"], "permissions_remove");
         assert_eq!(sent3["rule"], "bash:rm");
+    }
+
+    #[test]
+    fn editor_uses_dollar_editor_and_multiline_switches_enter() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        unsafe {
+            std::env::set_var("EDITOR", "cat");
+            std::env::remove_var("VISUAL");
+        }
+        app.run_slash("/editor", &mut serve);
+        let req = app.nvim_request.as_ref().expect("editor request queued");
+        assert_eq!(req.editor.executable, "cat");
+        assert_eq!(req.target, NvimTarget::Draft);
+        unsafe {
+            std::env::remove_var("EDITOR");
+        }
+
+        // /editor without EDITOR/VISUAL reports and keeps the draft
+        app.nvim_request = None;
+        app.run_slash("/editor", &mut serve);
+        assert!(app.nvim_request.is_none());
+        assert!(app.lines.iter().any(|l| l.text.contains("$EDITOR")));
+
+        // /multiline: default Enter sends; after toggling it inserts a newline
+        let mut app2 = App::new();
+        app2.input = "hi".chars().collect();
+        app2.cursor = 2;
+        app2.key(
+            crossterm::event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut serve,
+        );
+        assert_eq!(serve.sent.len(), 1, "default: Enter sends");
+
+        app2.run_slash("/multiline", &mut serve);
+        app2.input = "hi".chars().collect();
+        app2.cursor = 2;
+        app2.key(
+            crossterm::event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut serve,
+        );
+        assert_eq!(serve.sent.len(), 1, "toggled: Enter does not send");
+        assert_eq!(app2.input.iter().collect::<String>(), "hi\n");
     }
 }
