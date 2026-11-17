@@ -116,6 +116,7 @@ enum Pending {
     AgentsSet,
     Subtask,
     McpList,
+    PluginsList,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1354,6 +1355,10 @@ impl App {
                     let id = serve.command("subtask", vec![("prompt", Value::String(rest.into()))]);
                     self.pending.push((id, Pending::Subtask));
                 }
+            }
+            "/plugins" => {
+                let id = serve.command("plugins_list", vec![]);
+                self.pending.push((id, Pending::PluginsList));
             }
             "/mcp" => {
                 let id = serve.command("mcp_list", vec![]);
@@ -3869,6 +3874,28 @@ impl App {
                             text.push_str("\n工具以 mcp_<server>_<tool> 形式出现在模型工具表里");
                             self.viewer = Some(Viewer::read_only("MCP", text));
                         }
+                        (Pending::PluginsList, true) => {
+                            let mut text = String::from("本地插件：\n\n");
+                            if let Some(list) = d["plugins"].as_array() {
+                                for p in list {
+                                    let enabled = p["enabled"].as_bool().unwrap_or(false);
+                                    text.push_str(&format!(
+                                        "  {} · {} · {}\n",
+                                        p["name"].as_str().unwrap_or("?"),
+                                        p["description"].as_str().unwrap_or(""),
+                                        if enabled {
+                                            "启用"
+                                        } else {
+                                            "停用（plugin.json enabled:false）"
+                                        }
+                                    ));
+                                }
+                            }
+                            if text.trim() == "本地插件：" {
+                                text.push_str("  （无）· 放 ~/.tango/plugins/<名>/plugin.json");
+                            }
+                            self.viewer = Some(Viewer::read_only("plugins", text));
+                        }
                         (Pending::History, true) => self.load_history(d),
                         (Pending::Theme, true) => {
                             self.theme = Theme::resolve(
@@ -6309,5 +6336,17 @@ mod tests {
         let v = app.viewer.as_ref().unwrap();
         assert!(v.text.contains("demo"));
         assert!(v.text.contains("已连接"));
+    }
+
+    #[test]
+    fn plugins_command_lists() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.run_slash("/plugins", &mut serve);
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        assert_eq!(sent["cmd"], "plugins_list");
+        app.frame(json!({"type": "result", "id": sent["id"], "ok": true,
+                "data": {"plugins": [{"name": "demo", "description": "测试", "enabled": true}]}}));
+        assert!(app.viewer.as_ref().unwrap().text.contains("demo"));
     }
 }

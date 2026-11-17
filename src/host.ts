@@ -1,4 +1,6 @@
 import { spawn, spawnSync } from 'node:child_process';
+import { readFileSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
 /**
  * Shared host wiring: every frontend (terminal REPL, serve protocol, task daemon)
  * assembles its agent here so tools, permissions and diagnostics stay identical.
@@ -6,7 +8,7 @@ import { spawn, spawnSync } from 'node:child_process';
  */
 import { Agent } from './core/agent.js';
 import { checkpointEnabled, installCheckpoints } from './core/checkpoint.js';
-import { keyProblem, loadConfig, loadModels, pickModel, sessionsDir } from './core/config.js';
+import { keyProblem, loadConfig, loadModels, pickModel, sessionsDir, tangoDir } from './core/config.js';
 import { installDiagnostics } from './core/diagnostics.js';
 import { EventBus } from './core/events.js';
 import { installPermissionGate, parseRule, type AllowRule, type AskFn, type PermissionMode } from './core/permissions.js';
@@ -62,6 +64,30 @@ function runHook(script: string, payload: unknown): void {
   child.stdin.end();
 }
 
+/** Local plugins (~/.tango/plugins/<name>/plugin.json): hooks merge in, enabled:false skips. */
+export function loadPluginHooks(): { plugins: { name: string; description: string; enabled: boolean }[]; hooks: { beforeTool?: string; afterTool?: string } } {
+  const plugins: { name: string; description: string; enabled: boolean }[] = [];
+  const hooks: { beforeTool?: string; afterTool?: string } = {};
+  const dir = join(tangoDir(), 'plugins');
+  let names: string[] = [];
+  try {
+    names = readdirSync(dir).filter((d) => d !== '.DS_Store');
+  } catch {
+    return { plugins, hooks };
+  }
+  for (const name of names) {
+    try {
+      const meta = JSON.parse(readFileSync(join(dir, name, 'plugin.json'), 'utf8'));
+      const enabled = meta.enabled !== false;
+      plugins.push({ name: meta.name ?? name, description: meta.description ?? '', enabled });
+      if (!enabled) continue;
+      if (meta.hooks?.beforeTool && !hooks.beforeTool) hooks.beforeTool = meta.hooks.beforeTool;
+      if (meta.hooks?.afterTool && !hooks.afterTool) hooks.afterTool = meta.hooks.afterTool;
+    } catch {}
+  }
+  return { plugins, hooks };
+}
+
 export function makeAgent(model: ModelSpec, store: SessionStore, cwd: string, perm: PermState, cfg: { checkpoint?: string; permissions?: { allow: string[] }; extraDirs?: string[]; hooks?: { beforeTool?: string; afterTool?: string } } = {}): Agent {
   const events = new EventBus();
   // gate first: a vetoed call is never announced as running
@@ -86,6 +112,12 @@ export function makeAgent(model: ModelSpec, store: SessionStore, cwd: string, pe
     plan: () => plan.on
   });
   installDiagnostics(events, cwd);
+  const pluginHooks = loadPluginHooks().hooks;
+  const mergedHooks = {
+    beforeTool: cfg.hooks?.beforeTool ?? pluginHooks.beforeTool,
+    afterTool: cfg.hooks?.afterTool ?? pluginHooks.afterTool
+  };
+  cfg = { ...cfg, hooks: mergedHooks };
   if (cfg.hooks?.beforeTool) {
     const script = cfg.hooks.beforeTool;
     events.on('before_tool', ({ call, tool }) => runHook(script, { phase: 'before', name: call.name, tool: tool.name, input: call.input }));

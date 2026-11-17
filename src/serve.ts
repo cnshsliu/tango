@@ -25,7 +25,7 @@ import { SessionStore } from './core/session.js';
 import { costUsd } from './core/models/registry.js';
 import type { AskFn, PermissionMode } from './core/permissions.js';
 import type { ToolResult } from './core/types.js';
-import { buildTools, openAgent, VERSION, type HostArgs, type PermState } from './host.js';
+import { buildTools, loadPluginHooks, openAgent, VERSION, type HostArgs, type PermState } from './host.js';
 import { diffTool } from './core/tools/diff.js';
 
 export const PROTOCOL = 1;
@@ -648,6 +648,10 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
         await saveConfig({ ...cfg0, roles });
         if (role === 'driver') void agent.setModel(found); // the driver takes effect immediately
         reply(cmd, true, { roles });
+        return;
+      }
+      case 'plugins_list': {
+        reply(cmd, true, { plugins: loadPluginHooks().plugins });
         return;
       }
       case 'mcp_list': {
@@ -1434,7 +1438,7 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
     const guarded = (p: Promise<unknown>) =>
       void p.catch((e) => out({ type: 'error', message: String(e?.message ?? e) }));
     void checkSubtasks();
-    if (['set_mode', 'status', 'timeline', 'context', 'queue', 'usage', 'stats', 'insights', 'preset_save', 'preset_list', 'preset_get', 'permissions_list', 'permissions_add', 'permissions_remove', 'import', 'cd', 'pwd', 'add_dir', 'config_show', 'init', 'doctor', 'debug_zip', 'set_plan', 'set_effort', 'memory', 'remember', 'skills', 'goal', 'loop', 'worktree_create', 'worktree_list', 'worktree_remove', 'worktree_merge', 'bg', 'tasks', 'stop_task', 'agents_show', 'agents_set', 'mcp_list'].includes(cmd.cmd)) {
+    if (['set_mode', 'status', 'timeline', 'context', 'queue', 'usage', 'stats', 'insights', 'preset_save', 'preset_list', 'preset_get', 'permissions_list', 'permissions_add', 'permissions_remove', 'import', 'cd', 'pwd', 'add_dir', 'config_show', 'init', 'doctor', 'debug_zip', 'set_plan', 'set_effort', 'memory', 'remember', 'skills', 'goal', 'loop', 'worktree_create', 'worktree_list', 'worktree_remove', 'worktree_merge', 'bg', 'tasks', 'stop_task', 'agents_show', 'agents_set', 'mcp_list', 'plugins_list'].includes(cmd.cmd)) {
       guarded(handle(cmd));
       return;
     }

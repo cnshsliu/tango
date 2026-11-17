@@ -1989,3 +1989,50 @@ test('mcp: tools bridge in, calls work, dead server does not crash serve', async
     await rm(work, { recursive: true, force: true });
   }
 });
+
+test('plugins: local plugin hooks load; enabled:false skips', async () => {
+  const mock = await startMock();
+  const home = await mkdtemp(join(tmpdir(), 'tango-serve-home-'));
+  const work = await mkdtemp(join(tmpdir(), 'tango-serve-work-'));
+  await writeFile(join(home, 'models.json'), JSON.stringify([
+    { id: 'mock/mock', provider: 'mock', model: 'm', api: 'openai-completions', baseUrl: `http://127.0.0.1:${(mock.server.address() as AddressInfo).port}/v1`, apiKey: 'MOCK_SERVE_KEY', contextWindow: 8000 }
+  ]));
+  const { mkdir: mkp, writeFile: wfp } = await import('node:fs/promises');
+  await mkp(join(home, 'plugins', 'demo'), { recursive: true });
+  await wfp(join(home, 'plugins', 'demo', 'plugin.json'), JSON.stringify({
+    name: 'demo', description: '测试插件',
+    hooks: { beforeTool: `cat > ${join(work, 'plugin-hook.json')}` }
+  }));
+  await mkp(join(home, 'plugins', 'off-one'), { recursive: true });
+  await wfp(join(home, 'plugins', 'off-one', 'plugin.json'), JSON.stringify({ name: 'off-one', description: '停用', enabled: false, hooks: { beforeTool: 'touch /should-not-exist' } }));
+
+  let n = 0;
+  mock.setScript(() => {
+    n++;
+    if (n % 2 === 1) return SSE({ choices: [{ delta: { tool_calls: [{ index: 0, id: 'p1', function: { name: 'bash', arguments: JSON.stringify({ command: 'echo p > plugin-ran.txt' }) } }] }, finish_reason: 'tool_calls' }] }) + 'data: [DONE]\n\n';
+    return SSE({ choices: [{ delta: { content: 'done' } }] }) + SSE({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1 } }) + 'data: [DONE]\n\n';
+  });
+  const s = await startServe(home, work, 0);
+  try {
+    await s.next();
+    s.send({ id: 100, cmd: 'prompt', text: 'run' });
+    await s.until((f: any) => f.type === 'result' && f.id === 100 && f.ok, 'turn');
+    assert.ok(existsSync(join(work, 'plugin-ran.txt')), 'tool ran');
+    assert.ok(existsSync(join(work, 'plugin-hook.json')), 'plugin hook fired');
+    const payload = JSON.parse(await readFile(join(work, 'plugin-hook.json'), 'utf8'));
+    assert.equal(payload.name, 'bash');
+    assert.ok(!existsSync('/should-not-exist'), 'disabled plugin skipped');
+
+    s.send({ id: 200, cmd: 'plugins_list' });
+    const pl = await s.until((f: any) => f.type === 'result' && f.id === 200, 'plugins');
+    assert.ok(pl.ok);
+    const byName = Object.fromEntries(pl.data.plugins.map((p: any) => [p.name, p]));
+    assert.ok(byName.demo.enabled);
+    assert.ok(!byName['off-one'].enabled);
+  } finally {
+    s.child.kill();
+    mock.server.close();
+    await rm(home, { recursive: true, force: true });
+    await rm(work, { recursive: true, force: true });
+  }
+});
