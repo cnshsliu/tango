@@ -1437,7 +1437,7 @@ test('review/security-review inline the working diff into the prompt', async () 
   const git = (args: string[]) => spawnSync('git', args, { cwd: work, encoding: 'utf8' });
   git(['init', '-q']); git(['config', 'user.email', 't@t']); git(['config', 'user.name', 't']);
   await writeFile(join(work, 'seed.txt'), 'seed\n'); git(['add', '.']); git(['commit', '-q', '-m', 'i']);
-  await writeFile(join(work, 'changed.txt'), 'NEWLY ADDED REVIEWMARK\n');
+  await writeFile(join(work, 'seed.txt'), 'seed\nREVIEWMARK CHANGE\n');
   mock.setScript(() => SSE({ choices: [{ delta: { content: 'review done' } }] }) + SSE({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 5, completion_tokens: 2 } }) + 'data: [DONE]\n\n');
   const s = await startServe(home, work, 0);
   try {
