@@ -4,9 +4,10 @@
  * Non-git dirs: a tar.gz under TANGO_HOME/snapshots, addressed as "tar:<abs path>".
  */
 import { spawnSync } from 'node:child_process';
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 import { homedir } from 'node:os';
 
 function git(cwd: string, args: string[], env: NodeJS.ProcessEnv = {}): string {
@@ -81,4 +82,68 @@ export async function snapshotFileList(cwd: string, snap: string): Promise<Set<s
   const root = repoRoot(cwd) ?? cwd;
   const out = gitOk(root, ['ls-tree', '-r', '--name-only', snap]) ?? '';
   return new Set(out.split('\n').filter(Boolean));
+}
+
+export interface RestoreReport {
+  restored: number;
+  deleted: string[];
+  kept: string[];
+}
+
+/** Restore a snapshot with smart-delete semantics (design spec §3.3). */
+export async function restoreSnapshot(cwd: string, target: string, later: string[]): Promise<RestoreReport> {
+  const root = repoRoot(cwd) ?? cwd;
+  const targetFiles = await snapshotFileList(cwd, target);
+  // union of files present in any LATER snapshot — the candidates for deletion
+  const laterFiles = new Set<string>();
+  for (const h of later) for (const f of await snapshotFileList(cwd, h)) laterFiles.add(f);
+
+  // 1. put every target-tree file back on disk
+  if (target.startsWith('tar:')) {
+    const tmp = await mkdtemp(join(tmpdir(), 'tango-restore-'));
+    try {
+      spawnSync('tar', ['-xzf', target.slice(4), '-C', tmp], { encoding: 'utf8' });
+      for (const f of targetFiles) {
+        const src = join(tmp, f);
+        if (!existsSync(src)) continue;
+        const dest = join(root, f);
+        await mkdir(dirname(dest), { recursive: true });
+        await writeFile(dest, await readFile(src));
+      }
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  } else {
+    const tmpIndex = await mkdtemp(join(tmpdir(), 'tango-idx-'));
+    try {
+      const env = { GIT_INDEX_FILE: join(tmpIndex, 'index') };
+      git(root, ['read-tree', target], env);
+      git(root, ['checkout-index', '-a', '-f', '--'], env); // writes worktree files
+    } finally {
+      await rm(tmpIndex, { recursive: true, force: true });
+    }
+  }
+
+  // 2. smart delete: on disk, not in the target tree, but in a later snapshot → agent leftover
+  const deleted: string[] = [];
+  for (const f of laterFiles) {
+    if (targetFiles.has(f)) continue;
+    const abs = join(root, f);
+    if (!existsSync(abs)) continue;
+    await rm(abs, { force: true });
+    deleted.push(f);
+  }
+
+  // 3. report files on disk that no snapshot knows about (the user's own work) — untouched
+  const kept: string[] = [];
+  const known = new Set([...targetFiles, ...laterFiles]);
+  const listing = spawnSync('find', [root, '-type', 'f', '-not', '-path', '*/.git/*'], { encoding: 'utf8' });
+  if (listing.status === 0) {
+    for (const abs of listing.stdout.split('\n').filter(Boolean)) {
+      const rel = relative(root, abs);
+      if (!known.has(rel)) kept.push(rel);
+    }
+  }
+
+  return { restored: targetFiles.size, deleted, kept };
 }

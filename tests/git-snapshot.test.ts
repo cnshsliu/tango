@@ -1,10 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, rm, writeFile, readFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { takeSnapshot, snapshotFileList } from '../src/core/git-snapshot.js';
+import { takeSnapshot, snapshotFileList, restoreSnapshot } from '../src/core/git-snapshot.js';
 
 /** Fresh git repo helper: init, identity, one commit, returns repo path. */
 async function freshRepo(): Promise<string> {
@@ -75,6 +76,60 @@ test('non-git directories fall back to a tar snapshot', async () => {
     assert.ok(snap?.startsWith('tar:'), `expected tar: id, got ${snap}`);
     const files = await snapshotFileList(dir, snap!);
     assert.ok(files.has('plain.txt'));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('restoreSnapshot: smart delete — agent leftovers removed, user files kept, target content restored', async () => {
+  const repo = await freshRepo();
+  try {
+    await writeFile(join(repo, '.gitignore'), 'ignored.txt\n.env\n');
+    const t1 = await takeSnapshot(repo); // v1 world
+    assert.ok(t1);
+
+    // the "agent turn": modify tracked file, create a leftover, snapshot after
+    await writeFile(join(repo, 'tracked.txt'), 'v2-mutated\n');
+    await writeFile(join(repo, 'leftover.txt'), 'agent made this\n');
+    const t2 = await takeSnapshot(repo);
+    assert.ok(t2);
+
+    // the user's own hand-made file, never snapshotted
+    await writeFile(join(repo, 'handmade.txt'), 'user made this\n');
+    await writeFile(join(repo, '.env'), 'SECRET=1\n');
+
+    const report = await restoreSnapshot(repo, t1!, [t2!]);
+
+    // target content restored
+    assert.equal(await readFile(join(repo, 'tracked.txt'), 'utf8'), 'v1\n');
+    // agent leftover deleted
+    assert.ok(!existsSync(join(repo, 'leftover.txt')));
+    assert.ok(report.deleted.includes('leftover.txt'));
+    // user's hand-made file kept on disk and reported
+    assert.equal(await readFile(join(repo, 'handmade.txt'), 'utf8'), 'user made this\n');
+    assert.ok(report.kept.includes('handmade.txt'));
+    // ignored file untouched
+    assert.equal(await readFile(join(repo, '.env'), 'utf8'), 'SECRET=1\n');
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test('restoreSnapshot: tar snapshots get the same smart-delete semantics', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'tango-tar2-'));
+  try {
+    await writeFile(join(dir, 'a.txt'), 'one\n');
+    const t1 = await takeSnapshot(dir);
+    await writeFile(join(dir, 'a.txt'), 'one-changed\n');
+    await writeFile(join(dir, 'b.txt'), 'agent\n');
+    const t2 = await takeSnapshot(dir);
+    await writeFile(join(dir, 'mine.txt'), 'user\n');
+
+    const report = await restoreSnapshot(dir, t1!, [t2!]);
+    assert.equal(await readFile(join(dir, 'a.txt'), 'utf8'), 'one\n');
+    assert.ok(!existsSync(join(dir, 'b.txt')));
+    assert.ok(report.kept.includes('mine.txt'));
+    assert.equal(await readFile(join(dir, 'mine.txt'), 'utf8'), 'user\n');
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
