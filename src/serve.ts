@@ -511,6 +511,19 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
           await rm2(tmp, { recursive: true, force: true });
         }
       }
+      case 'skills': {
+        const { discoverSkills } = await import('./core/context.js');
+        const found = await discoverSkills(cwd);
+        reply(cmd, true, {
+          skills: found.map((sk) => ({
+            name: sk.name,
+            description: sk.description,
+            path: sk.path,
+            scope: sk.path.startsWith(tangoDir()) ? 'global' : 'project'
+          }))
+        });
+        return;
+      }
       case 'memory': {
         const { readFile: rf5 } = await import('node:fs/promises');
         const path = join(tangoDir(), 'AGENTS.md');
@@ -1133,7 +1146,7 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
     // (e.g. "always allow" from a permission dialog), so they skip the prompt queue too
     const guarded = (p: Promise<unknown>) =>
       void p.catch((e) => out({ type: 'error', message: String(e?.message ?? e) }));
-    if (['set_mode', 'status', 'timeline', 'context', 'queue', 'usage', 'stats', 'insights', 'preset_save', 'preset_list', 'preset_get', 'permissions_list', 'permissions_add', 'permissions_remove', 'import', 'cd', 'pwd', 'add_dir', 'config_show', 'init', 'doctor', 'debug_zip', 'set_plan', 'set_effort', 'memory', 'remember'].includes(cmd.cmd)) {
+    if (['set_mode', 'status', 'timeline', 'context', 'queue', 'usage', 'stats', 'insights', 'preset_save', 'preset_list', 'preset_get', 'permissions_list', 'permissions_add', 'permissions_remove', 'import', 'cd', 'pwd', 'add_dir', 'config_show', 'init', 'doctor', 'debug_zip', 'set_plan', 'set_effort', 'memory', 'remember', 'skills'].includes(cmd.cmd)) {
       guarded(handle(cmd));
       return;
     }

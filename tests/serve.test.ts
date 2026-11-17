@@ -1497,3 +1497,37 @@ test('remember appends to global AGENTS.md and memory returns it', async () => {
     await rm(work, { recursive: true, force: true });
   }
 });
+
+test('skills command lists global and project skills with sources', async () => {
+  const mock = await startMock();
+  const home = await mkdtemp(join(tmpdir(), 'tango-serve-home-'));
+  const work = await mkdtemp(join(tmpdir(), 'tango-serve-work-'));
+  await writeFile(join(home, 'models.json'), JSON.stringify([
+    { id: 'mock/mock', provider: 'mock', model: 'm', api: 'openai-completions', baseUrl: `http://127.0.0.1:${(mock.server.address() as AddressInfo).port}/v1`, apiKey: 'MOCK_SERVE_KEY', contextWindow: 200 }
+  ]));
+  // a global skill in TANGO_HOME
+  const { mkdir: mk4, writeFile: wf6 } = await import('node:fs/promises');
+  const gdir = join(home, 'skills', 'global-demo');
+  await mk4(gdir, { recursive: true });
+  await wf6(join(gdir, 'SKILL.md'), '---\nname: global-demo\ndescription: 全局演示技能\n---\nbody');
+  // a project skill in cwd
+  const pdir = join(work, '.tango', 'skills', 'proj-demo');
+  await mk4(pdir, { recursive: true });
+  await wf6(join(pdir, 'SKILL.md'), '---\nname: proj-demo\ndescription: 项目技能\n---\nbody');
+  mock.setScript(() => SSE({ choices: [{ delta: { content: 'ok' } }] }) + SSE({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1 } }) + 'data: [DONE]\n\n');
+  const s = await startServe(home, work, 0);
+  try {
+    await s.next();
+    s.send({ id: 200, cmd: 'skills' });
+    const sk = await s.until((f: any) => f.type === 'result' && f.id === 200, 'skills');
+    assert.ok(sk.ok);
+    const names = sk.data.skills.map((x: any) => `${x.name}|${x.scope}`);
+    assert.ok(names.includes('global-demo|global'), JSON.stringify(names));
+    assert.ok(names.includes('proj-demo|project'), JSON.stringify(names));
+  } finally {
+    s.child.kill();
+    mock.server.close();
+    await rm(home, { recursive: true, force: true });
+    await rm(work, { recursive: true, force: true });
+  }
+});
