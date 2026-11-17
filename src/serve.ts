@@ -94,6 +94,33 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
   // /goal state: auto-continue until the model confirms the goal is done (cap: maxRounds)
   const goal = { text: null as string | null, paused: false, rounds: 0, maxRounds: 5 };
 
+  // pending subtask write-backs: checked lazily on each command, skipped while a turn runs (RF#4)
+  const subtasks: { taskId: string; name: string }[] = [];
+  const checkSubtasks = async (): Promise<void> => {
+    if (promptInFlight || !subtasks.length) return;
+    const tasks = await reconcileTasks();
+    for (const pending of [...subtasks]) {
+      const t = tasks.find((x) => x.id === pending.taskId);
+      if (!t || t.status === 'running') continue;
+      subtasks.splice(subtasks.indexOf(pending), 1);
+      if (t.status === 'done' && t.sessionId) {
+        try {
+          const sub = await SessionStore.open(sessionsDir(), t.sessionId);
+          const last = [...sub.allMessages()].reverse().find((m) => m.role === 'assistant' && m.content.some((b) => b.type === 'text'));
+          const text = last?.content.filter((b) => b.type === 'text').map((b) => (b as { text: string }).text).join('') ?? '';
+          const summary = text.trim().split('\n').filter(Boolean).slice(-6).join(' ').slice(0, 500);
+          await store.appendMessage({
+            role: 'assistant',
+            content: [{ type: 'text', text: `⑂ subtask ${pending.name} 完成：${summary}` }]
+          });
+          out({ type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: `⑂ subtask ${pending.name} 完成（worktree ${t.worktreeName} · /resume ${t.sessionId} 看全程）` }] } as never });
+        } catch {}
+      } else {
+        out({ type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: `⑂ subtask ${pending.name} ${t.status === 'failed' ? '失败' : '停止'}` }] } as never });
+      }
+    }
+  };
+
   // /loop state: interval-repeated prompt; off/interrupt/EOF must stop the timer chain
   const loop = { timer: null as NodeJS.Timeout | null, everySec: 0, prompt: '' };
   const stopLoop = () => {
@@ -555,6 +582,26 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
         } finally {
           await rm2(tmp, { recursive: true, force: true });
         }
+      }
+      case 'subtask': {
+        // a subagent: a bg task whose final summary is written back into the main session
+        const prompt = String(cmd.prompt ?? '');
+        if (!prompt.trim()) return reply(cmd, false, undefined, 'subtask: empty prompt');
+        try {
+          const roles = (await loadConfig()).roles;
+          const task = await startBgTask({
+            prompt: `${prompt}\n\n（你是子代理：在当前目录独立完成这个小任务，最后一句话总结你做了什么。）`,
+            name: String(cmd.name ?? ''),
+            roleModel: roles?.subagent,
+            mainCwd: cwd,
+            currentModel: agent.model.id
+          });
+          subtasks.push({ taskId: task.id, name: task.name || task.worktreeName });
+          reply(cmd, true, { task });
+        } catch (e: any) {
+          reply(cmd, false, undefined, String(e?.message ?? e));
+        }
+        return;
       }
       case 'agents_show': {
         const cfg0 = await loadConfig();
@@ -1354,6 +1401,7 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
     // (e.g. "always allow" from a permission dialog), so they skip the prompt queue too
     const guarded = (p: Promise<unknown>) =>
       void p.catch((e) => out({ type: 'error', message: String(e?.message ?? e) }));
+    void checkSubtasks();
     if (['set_mode', 'status', 'timeline', 'context', 'queue', 'usage', 'stats', 'insights', 'preset_save', 'preset_list', 'preset_get', 'permissions_list', 'permissions_add', 'permissions_remove', 'import', 'cd', 'pwd', 'add_dir', 'config_show', 'init', 'doctor', 'debug_zip', 'set_plan', 'set_effort', 'memory', 'remember', 'skills', 'goal', 'loop', 'worktree_create', 'worktree_list', 'worktree_remove', 'worktree_merge', 'bg', 'tasks', 'stop_task', 'agents_show', 'agents_set'].includes(cmd.cmd)) {
       guarded(handle(cmd));
       return;

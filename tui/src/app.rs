@@ -114,6 +114,7 @@ enum Pending {
     StopTask,
     AgentsShow,
     AgentsSet,
+    Subtask,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -319,6 +320,10 @@ const SLASH: &[(&str, &str)] = &[
     ),
     ("/skills", "列出全局/项目技能"),
     ("/status", "会话信息"),
+    (
+        "/subtask <任务>",
+        "派子代理在独立 worktree 干活，完成后摘要写回本会话",
+    ),
     (
         "/statusline [tpl|off]",
         "自定义状态栏模板：{model} {mode} {cost} {ctx} {pct} {session}",
@@ -1335,6 +1340,17 @@ impl App {
                         "usage: /agents [driver|subagent|longContext] <model>",
                         Tone::Muted,
                     );
+                }
+            }
+            "/subtask" => {
+                if rest.is_empty() {
+                    self.push(
+                        "usage: /subtask <小任务描述> · 完成后摘要自动写回",
+                        Tone::Muted,
+                    );
+                } else {
+                    let id = serve.command("subtask", vec![("prompt", Value::String(rest.into()))]);
+                    self.pending.push((id, Pending::Subtask));
                 }
             }
             "/tasks" => {
@@ -3815,6 +3831,16 @@ impl App {
                         (Pending::AgentsSet, true) => {
                             self.push("角色模型已保存", Tone::Success);
                         }
+                        (Pending::Subtask, true) => {
+                            let t = &d["task"];
+                            self.push(
+                                format!(
+                                    "⑂ 子代理 {} 已派出（独立 worktree）· 摘要将写回本会话",
+                                    t["id"].as_str().unwrap_or("?")
+                                ),
+                                Tone::Success,
+                            );
+                        }
                         (Pending::History, true) => self.load_history(d),
                         (Pending::Theme, true) => {
                             self.theme = Theme::resolve(
@@ -6228,5 +6254,18 @@ mod tests {
         assert_eq!(sent2["cmd"], "agents_set");
         assert_eq!(sent2["role"], "subagent");
         assert_eq!(sent2["model"], "mock/flash");
+    }
+
+    #[test]
+    fn subtask_command_sends() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.run_slash("/subtask 修个测试", &mut serve);
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        assert_eq!(sent["cmd"], "subtask");
+        assert_eq!(sent["prompt"], "修个测试");
+        app.frame(json!({"type": "result", "id": sent["id"], "ok": true,
+                "data": {"task": {"id": "s1", "status": "running", "worktreeName": "bg-1"}}}));
+        assert!(app.lines.iter().any(|l| l.text.contains("s1")));
     }
 }

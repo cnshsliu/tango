@@ -1897,3 +1897,40 @@ test('roles: /agents set routes bg tasks to the subagent model', async () => {
     await rm(work, { recursive: true, force: true });
   }
 });
+
+test('subtask: runs in a worktree and writes its summary back to the main session', async () => {
+  const mock = await startMock();
+  const home = await mkdtemp(join(tmpdir(), 'tango-serve-home-'));
+  const work = await mkdtemp(join(tmpdir(), 'tango-serve-work-'));
+  await writeFile(join(home, 'models.json'), JSON.stringify([
+    { id: 'mock/mock', provider: 'mock', model: 'm', api: 'openai-completions', baseUrl: `http://127.0.0.1:${(mock.server.address() as AddressInfo).port}/v1`, apiKey: 'MOCK_SERVE_KEY', contextWindow: 8000 }
+  ]));
+  mock.setScript(() => SSE({ choices: [{ delta: { content: '子任务完成：实现了 X 和 Y。SUBTASKMARK' } }] }) + SSE({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 5, completion_tokens: 5 } }) + 'data: [DONE]\n\n');
+  const git = (args: string[]) => spawnSync('git', args, { cwd: work, encoding: 'utf8' });
+  git(['init', '-q']); git(['config', 'user.email', 't@t']); git(['config', 'user.name', 't']);
+  await writeFile(join(work, 'seed.txt'), 'seed\n'); git(['add', '.']); git(['commit', '-q', '-m', 'i']);
+
+  const s = await startServe(home, work, 0);
+  try {
+    await s.next();
+    s.send({ id: 200, cmd: 'subtask', prompt: '实现功能X', name: 'sub-x' });
+    const st = await s.until((f: any) => f.type === 'result' && f.id === 200, 'subtask');
+    assert.ok(st.ok, JSON.stringify(st));
+
+    // poll history until the write-back lands (reconcile runs on commands)
+    let wroteBack = false;
+    for (let i = 0; i < 40 && !wroteBack; i++) {
+      await sleep(500);
+      s.send({ id: 201, cmd: 'history' });
+      const h = await s.until((f: any) => f.type === 'result' && f.id === 201, 'history');
+      if (JSON.stringify(h.data.items).includes('SUBTASKMARK')) wroteBack = true;
+    }
+    assert.ok(wroteBack, 'subtask summary written back to the main session');
+  } finally {
+    s.child.kill();
+    spawnSync('git', ['worktree', 'prune'], { cwd: work });
+    mock.server.close();
+    await rm(home, { recursive: true, force: true });
+    await rm(work, { recursive: true, force: true });
+  }
+});
