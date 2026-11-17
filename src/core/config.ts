@@ -42,6 +42,8 @@ export interface Config {
   hooks?: { beforeTool?: string; afterTool?: string };
   /** Role-based model routing (/agents): driver / subagent / longContext */
   roles?: { driver?: string; subagent?: string; longContext?: string };
+  /** MCP servers (stdio JSON-RPC); tools bridge in as mcp_<server>_<tool> */
+  mcpServers?: Record<string, { command: string; args?: string[]; env?: Record<string, string> }>;
 }
 
 async function readJson<T>(path: string): Promise<T | undefined> {

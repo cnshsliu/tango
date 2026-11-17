@@ -14,6 +14,7 @@ import { createInterface } from 'node:readline';
 import { randomUUID } from 'node:crypto';
 import { buildContext } from './core/context.js';
 import { reconcileTasks, startBgTask, stopTask } from './core/bgtask.js';
+import { connectServers } from './core/mcp.js';
 import { worktreeCreate, worktreeList, worktreeMerge, worktreeRemove } from './core/worktrees.js';
 import { parseRule } from './core/permissions.js';
 import { restoreSnapshot } from './core/git-snapshot.js';
@@ -73,6 +74,31 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
   // the persisted threshold (or 'off') must survive restarts
   if (config.autocompact === 'off') agent.compactAt = 0;
   else if (typeof config.autocompact === 'number') agent.compactAt = config.autocompact;
+  // MCP servers: connect before hello so their tools ride the tool list
+  const mcpServers = await connectServers(config.mcpServers);
+  for (const server of mcpServers) {
+    if (!server.connected) continue;
+    for (const t of await server.listTools().catch(() => [])) {
+      agent.tools.register({
+        name: `mcp_${server.name}_${t.name}`,
+        description: t.description,
+        input: t.inputSchema,
+        writeEffect: true, // external tools: unknown side effects, checkpoint them
+        execute: async (input) => {
+          if (!server.connected) {
+            return { content: [{ type: 'text', text: `mcp server "${server.name}" is disconnected` }], isError: true };
+          }
+          try {
+            const r = await server.callTool(t.name, (input ?? {}) as Record<string, unknown>);
+            return { content: [{ type: 'text', text: r.text }], isError: r.isError };
+          } catch (e: any) {
+            return { content: [{ type: 'text', text: String(e?.message ?? e) }], isError: true };
+          }
+        }
+      });
+    }
+  }
+  process.on('exit', () => mcpServers.forEach((s) => s.stop()));
   const pricedModels = await loadModels();
   let sessionCostUsd = store.allMessages().reduce((sum, m) => {
     if (m.role !== 'assistant' || !m.usage) return sum;
@@ -179,7 +205,7 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
     nvimViewer: config.nvimViewer,
     autocompact: agent.compactAt,
     statusline: config.statusline,
-    tools: buildTools().schemas().map(({ name, description }) => ({ name, description }))
+    tools: agent.tools.schemas().map(({ name, description }) => ({ name, description }))
   });
 
   /** /goal auto-continuation: ask (no tools) whether the goal is done; continue or clear. */
@@ -622,6 +648,12 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
         await saveConfig({ ...cfg0, roles });
         if (role === 'driver') void agent.setModel(found); // the driver takes effect immediately
         reply(cmd, true, { roles });
+        return;
+      }
+      case 'mcp_list': {
+        reply(cmd, true, {
+          servers: mcpServers.map((s) => ({ name: s.name, connected: s.connected }))
+        });
         return;
       }
       case 'bg': {
@@ -1402,7 +1434,7 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
     const guarded = (p: Promise<unknown>) =>
       void p.catch((e) => out({ type: 'error', message: String(e?.message ?? e) }));
     void checkSubtasks();
-    if (['set_mode', 'status', 'timeline', 'context', 'queue', 'usage', 'stats', 'insights', 'preset_save', 'preset_list', 'preset_get', 'permissions_list', 'permissions_add', 'permissions_remove', 'import', 'cd', 'pwd', 'add_dir', 'config_show', 'init', 'doctor', 'debug_zip', 'set_plan', 'set_effort', 'memory', 'remember', 'skills', 'goal', 'loop', 'worktree_create', 'worktree_list', 'worktree_remove', 'worktree_merge', 'bg', 'tasks', 'stop_task', 'agents_show', 'agents_set'].includes(cmd.cmd)) {
+    if (['set_mode', 'status', 'timeline', 'context', 'queue', 'usage', 'stats', 'insights', 'preset_save', 'preset_list', 'preset_get', 'permissions_list', 'permissions_add', 'permissions_remove', 'import', 'cd', 'pwd', 'add_dir', 'config_show', 'init', 'doctor', 'debug_zip', 'set_plan', 'set_effort', 'memory', 'remember', 'skills', 'goal', 'loop', 'worktree_create', 'worktree_list', 'worktree_remove', 'worktree_merge', 'bg', 'tasks', 'stop_task', 'agents_show', 'agents_set', 'mcp_list'].includes(cmd.cmd)) {
       guarded(handle(cmd));
       return;
     }

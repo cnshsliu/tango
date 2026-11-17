@@ -1934,3 +1934,58 @@ test('subtask: runs in a worktree and writes its summary back to the main sessio
     await rm(work, { recursive: true, force: true });
   }
 });
+
+test('mcp: tools bridge in, calls work, dead server does not crash serve', async () => {
+  const mock = await startMock();
+  const home = await mkdtemp(join(tmpdir(), 'tango-serve-home-'));
+  const work = await mkdtemp(join(tmpdir(), 'tango-serve-work-'));
+  await writeFile(join(home, 'models.json'), JSON.stringify([
+    { id: 'mock/mock', provider: 'mock', model: 'm', api: 'openai-completions', baseUrl: `http://127.0.0.1:${(mock.server.address() as AddressInfo).port}/v1`, apiKey: 'MOCK_SERVE_KEY', contextWindow: 8000 }
+  ]));
+  await writeFile(join(home, 'config.json'), JSON.stringify({
+    mcpServers: { demo: { command: process.execPath, args: [join(import.meta.dirname, 'fixtures', 'mock-mcp-server.mjs')] } },
+    // bridged MCP tools are write-effect: allow the echo tool for this test
+    permissions: { allow: ['tool:mcp_demo_echo'] }
+  }));
+  // turn 1 calls the bridged echo tool; turn 2 is plain
+  let n = 0;
+  mock.setScript(() => {
+    n++;
+    if (n === 1) return SSE({ choices: [{ delta: { tool_calls: [{ index: 0, id: 'm1', function: { name: 'mcp_demo_echo', arguments: JSON.stringify({ message: 'HELLO-MCP' }) } }] }, finish_reason: 'tool_calls' }] }) + 'data: [DONE]\n\n';
+    return SSE({ choices: [{ delta: { content: 'ok' } }] }) + SSE({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1 } }) + 'data: [DONE]\n\n';
+  });
+  const s = await startServe(home, work, 0);
+  try {
+    // hello must list the bridged tool
+    const hello = await s.next();
+    const toolNames = hello.tools.map((t: any) => t.name);
+    assert.ok(toolNames.includes('mcp_demo_echo'), `echo bridged: ${toolNames.join(',')}`);
+    assert.ok(toolNames.includes('mcp_demo_boom'));
+
+    s.send({ id: 100, cmd: 'prompt', text: 'call the echo tool' });
+    let echoed = false;
+    const r = await (async () => {
+      for (;;) {
+        const f = await s.next();
+        if (f.type === 'tool_result' && f.call?.name === 'mcp_demo_echo') {
+          assert.ok(!f.isError);
+          assert.ok(String(f.output).includes('echo: HELLO-MCP'), String(f.output));
+          echoed = true;
+        }
+        if (f.type === 'result' && f.id === 100) return f;
+      }
+    })();
+    assert.ok(r.ok);
+    assert.ok(echoed, 'the MCP tool actually ran');
+
+    s.send({ id: 200, cmd: 'mcp_list' });
+    const list = await s.until((f: any) => f.type === 'result' && f.id === 200, 'mcp list');
+    assert.ok(list.ok);
+    assert.ok(list.data.servers.some((x: any) => x.name === 'demo' && x.connected));
+  } finally {
+    s.child.kill();
+    mock.server.close();
+    await rm(home, { recursive: true, force: true });
+    await rm(work, { recursive: true, force: true });
+  }
+});

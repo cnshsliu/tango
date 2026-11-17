@@ -115,6 +115,7 @@ enum Pending {
     AgentsShow,
     AgentsSet,
     Subtask,
+    McpList,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -292,6 +293,7 @@ const SLASH: &[(&str, &str)] = &[
     ("/interrupt", "停止当前回合"),
     ("/model <id>", "切换模型（存为默认），裸 /model 打开列表"),
     ("/mode <m>", "ask | auto | readonly"),
+    ("/mcp", "MCP 服务器与桥接工具状态"),
     ("/memory", "查看长期记忆（全局 AGENTS.md，ctrl+e 编辑）"),
     ("/remember <text>", "记住一条偏好 → 全局记忆，所有会话生效"),
     ("/mouse", "切换鼠标捕获 · /mouse on|off"),
@@ -1352,6 +1354,10 @@ impl App {
                     let id = serve.command("subtask", vec![("prompt", Value::String(rest.into()))]);
                     self.pending.push((id, Pending::Subtask));
                 }
+            }
+            "/mcp" => {
+                let id = serve.command("mcp_list", vec![]);
+                self.pending.push((id, Pending::McpList));
             }
             "/tasks" => {
                 let id = serve.command("tasks", vec![]);
@@ -3841,6 +3847,28 @@ impl App {
                                 Tone::Success,
                             );
                         }
+                        (Pending::McpList, true) => {
+                            let mut text = String::from("MCP 服务器：\n\n");
+                            if let Some(list) = d["servers"].as_array() {
+                                for s in list {
+                                    let connected = s["connected"].as_bool().unwrap_or(false);
+                                    text.push_str(&format!(
+                                        "  {} {}\n",
+                                        s["name"].as_str().unwrap_or("?"),
+                                        if connected {
+                                            "· 已连接"
+                                        } else {
+                                            "· 未连接（config.json 的 mcpServers 配置）"
+                                        }
+                                    ));
+                                }
+                            }
+                            if text.trim() == "MCP 服务器：" {
+                                text.push_str("  （无）· config.json 里配 mcpServers");
+                            }
+                            text.push_str("\n工具以 mcp_<server>_<tool> 形式出现在模型工具表里");
+                            self.viewer = Some(Viewer::read_only("MCP", text));
+                        }
                         (Pending::History, true) => self.load_history(d),
                         (Pending::Theme, true) => {
                             self.theme = Theme::resolve(
@@ -6267,5 +6295,19 @@ mod tests {
         app.frame(json!({"type": "result", "id": sent["id"], "ok": true,
                 "data": {"task": {"id": "s1", "status": "running", "worktreeName": "bg-1"}}}));
         assert!(app.lines.iter().any(|l| l.text.contains("s1")));
+    }
+
+    #[test]
+    fn mcp_command_lists_servers() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.run_slash("/mcp", &mut serve);
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        assert_eq!(sent["cmd"], "mcp_list");
+        app.frame(json!({"type": "result", "id": sent["id"], "ok": true,
+                "data": {"servers": [{"name": "demo", "connected": true}]}}));
+        let v = app.viewer.as_ref().unwrap();
+        assert!(v.text.contains("demo"));
+        assert!(v.text.contains("已连接"));
     }
 }

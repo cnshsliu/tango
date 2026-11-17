@@ -41,7 +41,7 @@ export class Agent {
   totalCostUsd = 0;
 
   private readonly store: SessionStore;
-  private readonly tools: ToolRegistry;
+  readonly tools: ToolRegistry;
   /** live working directory (/cd); tools and context read it per call */
   cwd: string;
   /** reasoning effort for adapters that support it (/effort) */
