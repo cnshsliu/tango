@@ -233,7 +233,8 @@ test('write-effect tools are marked for checkpointing', async () => {
   - 场景 E：`/export html` 文件存在、包含全部轮次、离线浏览器可读（断言无外链 `http` 引用）。
   - 场景 F：ctrl+c 中断恰逢写工具回合 → 下一次 rewind 链仍完整（RF #1）。
   - 场景 G：快照耗时断言 < 100ms（常规小仓库，RF 性能预算）。
-- [ ] **Step 2: tmux 手动真测**（真实终端跑 `tango` release 二进制 + mock 模型）：逐项走 A-G 的交互版 + 时间轴 picker 鼠标/过滤 + `/tree` 渲染，记录到本文件勾选框。
+- [x] **Step 2: tmux 手动真测**（真实终端跑 `tango` release 二进制 + mock 模型）：逐项走 A-G 的交互版 + 时间轴 picker 鼠标/过滤 + `/tree` 渲染，记录到本文件勾选框。
+  - 实测记录（2026-11-17，release 二进制 + 真实 git 仓库 + mock SSE）：两回合真实写盘✓；/undo 代码回滚+junk 智慧删除+聊天行报告✓；/redo 恢复✓；/rewind 时间轴 picker（✓ 代码快照标记）选中回滚✓；/tree 只读查看器✓；/find 跨会话命中（他会话标签）✓；/export md 真实文件含回滚标记✓。
 - [ ] **Step 3: 全量验证** — `npm run typecheck && npm test && cargo test && cargo build --release`（tui）+ `git diff --check`，全绿。
 - [ ] **Step 4: Commit** — `git commit -m "e2e: real-process time-travel acceptance — undo/redo/fork/find/export real git scenarios"`
 
