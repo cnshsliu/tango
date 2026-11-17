@@ -97,14 +97,14 @@ test('allow rules: tool/path/bash matching with boundary safety, readonly wins',
   const { parseRule, decide } = await import('../src/core/permissions.js');
   const cwd = '/w';
   const call = (name: string, input: unknown) => ({ type: 'tool_call' as const, id: 'x', name, input });
-  const rules = ['tool:diff', 'path:src', 'bash:git status'].map(parseRule);
+  const rules = ['tool:diff', 'path:src', 'bash:git status'].map(parseRule).map((r: any) => r.rule);
 
   // tool rule: exact name
   assert.equal(decide('ask', call('diff', {}), cwd, rules).action, 'allow');
   assert.notEqual(decide('ask', call('write', { path: '/elsewhere/x' }), cwd, rules).action, 'allow');
 
   // path rule: segment boundary, and rules CAN allow outside-cwd subtrees
-  const rules2 = ['tool:diff', 'path:src', 'path:../sib'].map(parseRule);
+  const rules2 = ['tool:diff', 'path:src', 'path:../sib'].map(parseRule).map((r: any) => r.rule);
   assert.equal(decide('ask', call('write', { path: 'src/a.ts' }), cwd, rules2).action, 'allow');
   assert.equal(decide('ask', call('write', { path: '../sib/x' }), cwd, rules2).action, 'allow', 'outside-cwd rule target allowed');
   assert.equal(decide('ask', call('write', { path: '../sib-evil/x' }), cwd, rules2).action, 'ask', 'segment boundary: sib does not match sib-evil');
