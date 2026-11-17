@@ -44,7 +44,8 @@ export class Agent {
   private readonly tools: ToolRegistry;
   private readonly cwd: string;
   private readonly maxTurns: number;
-  private readonly compactAt: number;
+  /** auto-compact threshold as a share of the context window; 0 disables (/autocompact) */
+  compactAt: number;
   private controller?: AbortController;
 
   constructor(opts: AgentOptions) {

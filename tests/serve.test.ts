@@ -973,3 +973,48 @@ test('usage/stats aggregate across sessions; insights writes an offline HTML rep
     await rm(work, { recursive: true, force: true });
   }
 });
+
+test('autocompact: set/persist/off and threshold actually compacts', async () => {
+  const mock = await startMock();
+  const home = await mkdtemp(join(tmpdir(), 'tango-serve-home-'));
+  const work = await mkdtemp(join(tmpdir(), 'tango-serve-work-'));
+  await writeFile(join(home, 'models.json'), JSON.stringify([
+    { id: 'mock/mock', provider: 'mock', model: 'm', api: 'openai-completions', baseUrl: `http://127.0.0.1:${(mock.server.address() as AddressInfo).port}/v1`, apiKey: 'MOCK_SERVE_KEY', contextWindow: 200 }
+  ]));
+  mock.setScript(() => SSE({ choices: [{ delta: { content: 'somewhat long answer to accumulate tokens for the estimator quickly' } }] }) + SSE({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 5, completion_tokens: 2 } }) + 'data: [DONE]\n\n');
+  const s = await startServe(home, work, 0);
+  try {
+    await s.next();
+    // invalid rejected
+    s.send({ id: 200, cmd: 'set_autocompact', value: 'bogus' });
+    const bad = await s.until((f: any) => f.type === 'result' && f.id === 200, 'invalid');
+    assert.ok(!bad.ok);
+    // set a tiny threshold so the next prompt must trigger compaction
+    s.send({ id: 201, cmd: 'set_autocompact', value: 0.01 });
+    const ok = await s.until((f: any) => f.type === 'result' && f.id === 201, 'set');
+    assert.ok(ok.ok && ok.data.autocompact === 0.01);
+    const cfg = JSON.parse(await readFile(join(home, 'config.json'), 'utf8'));
+    assert.equal(cfg.autocompact, 0.01);
+
+    s.send({ id: 100, cmd: 'prompt', text: 'hello one' });
+    await s.until((f: any) => f.type === 'result' && f.ok, 'turn1');
+    s.send({ id: 101, cmd: 'prompt', text: 'hello two' });
+    await s.until((f: any) => f.type === 'result' && f.ok, 'turn2');
+    // compact() needs >= 4 visible messages; the third prompt starts with 4 on context
+    s.send({ id: 102, cmd: 'prompt', text: 'hello three' });
+    await s.until((f: any) => f.type === 'result' && f.ok, 'turn3');
+    const store = await SessionStore.open(join(home, 'sessions'), (await SessionStore.list(join(home, 'sessions')))[0].id);
+    assert.ok(store.entriesOf('compaction').length >= 1, 'low threshold triggered a compaction');
+
+    // off disables
+    s.send({ id: 202, cmd: 'set_autocompact', value: 'off' });
+    const off = await s.until((f: any) => f.type === 'result' && f.id === 202, 'off');
+    assert.ok(off.ok && off.data.autocompact === 0);
+    assert.equal(JSON.parse(await readFile(join(home, 'config.json'), 'utf8')).autocompact, 'off');
+  } finally {
+    s.child.kill();
+    mock.server.close();
+    await rm(home, { recursive: true, force: true });
+    await rm(work, { recursive: true, force: true });
+  }
+});

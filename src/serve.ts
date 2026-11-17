@@ -119,6 +119,7 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
     editor: config.editor,
     keys: config.keys,
     nvimViewer: config.nvimViewer,
+    autocompact: config.autocompact ?? 0.75,
     tools: buildTools().schemas().map(({ name, description }) => ({ name, description }))
   });
 
@@ -346,6 +347,22 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
           return;
         }
         reply(cmd, true, data);
+        return;
+      }
+      case 'set_autocompact': {
+        // accepts a fraction (0.5), a percent (50), or 'off'; anything else is refused
+        const raw = cmd.value;
+        let value: number;
+        if (raw === 'off' || raw === 0) value = 0;
+        else if (typeof raw === 'number' && raw > 0 && raw < 1) value = raw;
+        else if (typeof raw === 'number' && Number.isInteger(raw) && raw >= 1 && raw <= 100) value = raw / 100;
+        else if (typeof raw === 'string' && /^\d+(\.\d+)?%?$/.test(raw)) {
+          const n = parseFloat(raw.replace('%', ''));
+          value = raw.endsWith('%') || n >= 1 ? n / 100 : n;
+        } else return reply(cmd, false, undefined, 'autocompact: use a fraction (0.5), percent (50 / 50%) or "off"');
+        agent.compactAt = value;
+        await saveConfig({ ...(await loadConfig()), autocompact: value === 0 ? 'off' : value });
+        reply(cmd, true, { autocompact: value });
         return;
       }
       case 'queue': {
@@ -702,7 +719,8 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
           contextMessages: store.messageCount(),
           totalCostUsd: sessionCostUsd,
           contextTokens: agent.contextTokenEstimate(),
-          contextWindow: agent.model.contextWindow ?? 128_000
+          contextWindow: agent.model.contextWindow ?? 128_000,
+          autocompact: agent.compactAt
         });
         return;
       default:

@@ -30,6 +30,8 @@ export interface Config {
   nvimViewer?: 'ask' | 'readonly';
   /** Per-turn workspace snapshots for time travel; missing means on */
   checkpoint?: 'on' | 'off';
+  /** Auto-compact threshold as a window share; 'off'/0 disables. Missing means 0.75. */
+  autocompact?: number | 'off';
 }
 
 async function readJson<T>(path: string): Promise<T | undefined> {

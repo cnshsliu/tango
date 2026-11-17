@@ -83,6 +83,8 @@ enum Pending {
     Queue,
     Usage,
     Insights,
+    AutocompactShow,
+    AutocompactSet,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1114,6 +1116,18 @@ impl App {
             "/insights" => {
                 let id = serve.command("insights", vec![]);
                 self.pending.push((id, Pending::Insights));
+            }
+            "/autocompact" => {
+                if rest.is_empty() {
+                    let id = serve.command("status", vec![]);
+                    self.pending.push((id, Pending::AutocompactShow));
+                } else {
+                    let id = serve.command(
+                        "set_autocompact",
+                        vec![("value", Value::String(rest.trim().into()))],
+                    );
+                    self.pending.push((id, Pending::AutocompactSet));
+                }
             }
             "/timestamps" => {
                 self.timestamps = !self.timestamps;
@@ -2945,6 +2959,27 @@ impl App {
                         (Pending::Insights, true) => {
                             let path = d["path"].as_str().unwrap_or("?");
                             self.push(format!("insights → {path}"), Tone::Success);
+                        }
+                        (Pending::AutocompactShow, true) => {
+                            let v = d["autocompact"].as_f64().unwrap_or(0.75);
+                            self.push(
+                                format!(
+                                    "自动压缩：上下文达窗口 {:.0}% 时触发 · /autocompact <N%|0.N|off>",
+                                    v * 100.0
+                                ),
+                                Tone::Muted,
+                            );
+                        }
+                        (Pending::AutocompactSet, true) => {
+                            let v = d["autocompact"].as_f64().unwrap_or(0.0);
+                            if v > 0.0 {
+                                self.push(
+                                    format!("自动压缩阈值 → {:.0}%", v * 100.0),
+                                    Tone::Success,
+                                );
+                            } else {
+                                self.push("自动压缩已关闭", Tone::Muted);
+                            }
                         }
                         (Pending::History, true) => self.load_history(d),
                         (Pending::Theme, true) => {
@@ -4814,5 +4849,32 @@ mod tests {
             "timestamps prefix [HH:MM"
         );
         assert!(app.lines.iter().any(|l| l.text.contains("时间戳")));
+    }
+
+    #[test]
+    fn autocompact_shows_and_sets_threshold() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        // bare: reads current value from status-like result
+        app.run_slash("/autocompact", &mut serve);
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        assert_eq!(sent["cmd"], "status");
+        app.frame(
+            json!({"type": "result", "id": sent["id"], "ok": true, "data": {"autocompact": 0.5}}),
+        );
+        assert!(app.lines.iter().any(|l| l.text.contains("50%")));
+
+        app.run_slash("/autocompact 60%", &mut serve);
+        let sent2: Value = serde_json::from_str(&serve.sent[1]).unwrap();
+        assert_eq!(sent2["cmd"], "set_autocompact");
+        assert_eq!(sent2["value"], "60%");
+        app.frame(
+            json!({"type": "result", "id": sent2["id"], "ok": true, "data": {"autocompact": 0.6}}),
+        );
+        assert!(app.lines.iter().any(|l| l.text.contains("60")));
+
+        app.run_slash("/autocompact off", &mut serve);
+        let sent3: Value = serde_json::from_str(&serve.sent[2]).unwrap();
+        assert_eq!(sent3["value"], "off");
     }
 }
