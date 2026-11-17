@@ -4,6 +4,7 @@
  * Nothing in this file prints to stdout except where a caller passes a printer.
  */
 import { Agent } from './core/agent.js';
+import { checkpointEnabled, installCheckpoints } from './core/checkpoint.js';
 import { keyProblem, loadConfig, loadModels, pickModel, sessionsDir } from './core/config.js';
 import { installDiagnostics } from './core/diagnostics.js';
 import { EventBus } from './core/events.js';
@@ -35,11 +36,12 @@ export function buildTools(): ToolRegistry {
   return tools;
 }
 
-export function makeAgent(model: ModelSpec, store: SessionStore, cwd: string, perm: PermState): Agent {
+export function makeAgent(model: ModelSpec, store: SessionStore, cwd: string, perm: PermState, cfg: { checkpoint?: string } = {}): Agent {
   const events = new EventBus();
   // gate first: a vetoed call is never announced as running
   installPermissionGate(events, { mode: () => perm.mode, cwd, ask: (c, r) => (perm.ask ? perm.ask(c, r) : Promise.resolve(false)) });
   installDiagnostics(events, cwd);
+  if (checkpointEnabled(cfg)) installCheckpoints(events, { cwd, store });
   return new Agent({ store, tools: buildTools(), model, cwd, events });
 }
 
@@ -86,6 +88,6 @@ export async function openAgent(args: HostArgs, perm: PermState): Promise<Opened
   // honour a model switch made earlier in a resumed session unless the user asked explicitly
   const stored = !args.model && !cfg.model ? store.lastModel() : undefined;
   const effective = stored ? models.find((m) => m.id === stored) ?? model : model;
-  const agent = makeAgent(effective, store, cwd, perm);
+  const agent = makeAgent(effective, store, cwd, perm, cfg);
   return { agent, store, cwd, warning: keyProblem(effective) };
 }

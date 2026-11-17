@@ -125,10 +125,11 @@ export class SessionStore {
       .slice(0, toIndex + 1)
       .filter((e) => e.kind !== 'meta' && e.kind !== 'rewind');
     const metaEntry: SessionEntry = {
-      ...meta,
       kind: 'meta',
       id: newId,
       createdAt: this.now(),
+      cwd: meta?.cwd ?? '',
+      name: meta?.name,
       forkOf: { sessionId: this.id, entryIndex: toIndex }
     };
     const fork = new SessionStore(dir, newId);
@@ -151,6 +152,11 @@ export class SessionStore {
   /** All messages of a given entry kind (e.g. task_run records). */
   entriesOf<K extends SessionEntry['kind']>(kind: K): Extract<SessionEntry, { kind: K }>[] {
     return this.entries.filter((e): e is Extract<SessionEntry, { kind: K }> => e.kind === kind);
+  }
+
+  /** Raw entries with their stable append-order index (rewind targets reference these). */
+  indexedEntries(): { entry: SessionEntry; index: number }[] {
+    return this.entries.map((entry, index) => ({ entry, index }));
   }
 
   /** Full history, ignoring compaction (used by /save-as-skill). */

@@ -74,6 +74,7 @@ export class Agent {
   async prompt(text: string, onStream?: (ev: StreamEvent) => void): Promise<Message> {
     const user: Message = { role: 'user', content: [{ type: 'text', text }] };
     await this.store.appendMessage(user);
+    await this.events.emit('prompt_start', { text });
 
     this.controller = new AbortController();
     try {

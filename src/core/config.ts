@@ -28,6 +28,8 @@ export interface Config {
   keys?: Record<string, string>;
   /** Neovim viewer preference; standard Vim is never used */
   nvimViewer?: 'ask' | 'readonly';
+  /** Per-turn workspace snapshots for time travel; missing means on */
+  checkpoint?: 'on' | 'off';
 }
 
 async function readJson<T>(path: string): Promise<T | undefined> {

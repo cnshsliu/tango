@@ -224,3 +224,109 @@ test('agent ask uses context without tools or session writes', async () => {
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test('installCheckpoints: one snapshot per prompt, before the first write-effect tool', async () => {
+  const { installCheckpoints, checkpointEnabled, latestCheckpoints } = await import('../src/core/checkpoint.js');
+  const { EventBus } = await import('../src/core/events.js');
+  const { spawnSync } = await import('node:child_process');
+  const { writeFile } = await import('node:fs/promises');
+
+  const bodies: any[] = [];
+  const server = createServer((req, res) => {
+    let raw = '';
+    req.on('data', (d) => (raw += d));
+    req.on('end', () => {
+      bodies.push(JSON.parse(raw));
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      if (bodies.length % 2 === 1) {
+        res.write(chunk({ tool_calls: [{ index: 0, id: `c${bodies.length}`, function: { name: 'bash', arguments: JSON.stringify({ command: 'echo turn-work >> work.txt' }) } }] }, 'tool_calls'));
+      } else {
+        res.write(chunk({ content: 'done' }, 'stop'));
+      }
+      res.write(`data: ${JSON.stringify({ choices: [], usage: { prompt_tokens: 10, completion_tokens: 5 } })}\n\n`);
+      res.end('data: [DONE]\n\n');
+    });
+  });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  const port = (server.address() as AddressInfo).port;
+
+  const dir = await mkdtemp(join(tmpdir(), 'tango-ckpt-'));
+  try {
+    const g = (args: string[]) => spawnSync('git', args, { cwd: dir, encoding: 'utf8' });
+    g(['init', '-q']); g(['config', 'user.email', 't@t']); g(['config', 'user.name', 't']);
+    await writeFile(join(dir, 'seed.txt'), 'seed\n'); g(['add', '.']); g(['commit', '-q', '-m', 'init']);
+
+    const store = await SessionStore.create(join(dir, 'sessions'), dir);
+    const events = new EventBus();
+    installCheckpoints(events, { cwd: dir, store });
+    const tools = new ToolRegistry();
+    tools.register(bashTool);
+    const agent = new Agent({
+      store, tools, events, cwd: dir,
+      model: { id: 'fake/m', provider: 'fake', model: 'm', api: 'openai-completions', baseUrl: `http://127.0.0.1:${port}/v1`, apiKey: 'test' }
+    });
+
+    // turn 1: one write tool → exactly one checkpoint, taken BEFORE the tool ran
+    await agent.prompt('do work');
+    let cps = store.entriesOf('checkpoint');
+    assert.equal(cps.length, 1);
+    assert.ok((cps[0] as any).hash.length > 10);
+    assert.equal(spawnSync('git', ['cat-file', '-t', (cps[0] as any).hash], { cwd: dir, encoding: 'utf8' }).stdout.trim(), 'commit');
+    // snapshot predates the tool's write: work.txt is NOT in the first snapshot
+    const { snapshotFileList } = await import('../src/core/git-snapshot.js');
+    assert.ok(!(await snapshotFileList(dir, (cps[0] as any).hash)).has('work.txt'));
+
+    // turn 2: another write tool → a second checkpoint
+    await agent.prompt('more work');
+    cps = store.entriesOf('checkpoint');
+    assert.equal(cps.length, 2);
+
+    assert.equal(latestCheckpoints(store).length, 2);
+    assert.ok(latestCheckpoints(store)[0].entryIndex > 0, 'checkpoint carries its raw entry index');
+
+    // config gate
+    assert.equal(checkpointEnabled({}), true);
+    assert.equal(checkpointEnabled({ checkpoint: 'off' }), false);
+    assert.equal(checkpointEnabled({ checkpoint: 'on' }), true);
+  } finally {
+    server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('installCheckpoints: a failing snapshot never vetoes the tool', async () => {
+  const { installCheckpoints } = await import('../src/core/checkpoint.js');
+  const { EventBus } = await import('../src/core/events.js');
+  const dir = await mkdtemp(join(tmpdir(), 'tango-ckpt2-'));
+  try {
+    const store = await SessionStore.create(dir, dir);
+    const events = new EventBus();
+    installCheckpoints(events, {
+      cwd: dir,
+      store,
+      snapshot: async () => { throw new Error('boom'); }
+    });
+    let ran = false;
+    events.on('after_tool', () => { ran = true; });
+    const tool = { name: 'write', description: 'd', input: {}, writeEffect: true, execute: async () => ({ content: [{ type: 'text' as const, text: 'ok' }] }) };
+    const veto = await events.emit('before_tool', {
+      call: { type: 'tool_call', id: 'x', name: 'write', input: {} },
+      tool: tool as any
+    });
+    assert.equal(veto, undefined); // no veto despite snapshot failure
+    assert.equal(store.entriesOf('checkpoint').length, 0);
+
+    // read-only tools never trigger a checkpoint
+    await events.emit('prompt_start', { text: 'go' });
+    const readTool = { name: 'read', description: 'd', input: {}, execute: async () => ({ content: [{ type: 'text' as const, text: 'ok' }] }) };
+    await events.emit('before_tool', { call: { type: 'tool_call', id: 'y', name: 'read', input: {} }, tool: readTool as any });
+    assert.equal(store.entriesOf('checkpoint').length, 0);
+    // prompt with no write tool at all → armed, but nothing fires
+    const writeTool2 = { ...tool, name: 'write2' };
+    await events.emit('prompt_start', { text: 'go2' });
+    await events.emit('before_tool', { call: { type: 'tool_call', id: 'z', name: 'write2', input: {} }, tool: { ...writeTool2, writeEffect: false } as any });
+    assert.equal(store.entriesOf('checkpoint').length, 0);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

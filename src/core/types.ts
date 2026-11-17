@@ -141,6 +141,8 @@ export type SessionEntry =
 
 export interface TangoEvents {
   session_start: { sessionId: string; cwd: string };
+  /** a prompt turn began; re-arms per-turn machinery like checkpointing */
+  prompt_start: { text: string };
   /** may mutate req before it is sent */
   before_request: { req: CompletionRequest; model: ModelSpec };
   message: { message: Message };

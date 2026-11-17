@@ -180,8 +180,8 @@ function textOf(m: Message): string {
 }
 
 /** host.makeAgent + the REPL's one-line tool printer (stdout here is human output, not a protocol). */
-function replAgent(model: ModelSpec, store: SessionStore, cwd: string): Agent {
-  const agent = makeAgent(model, store, cwd, perm);
+function replAgent(model: ModelSpec, store: SessionStore, cwd: string, cfg: { checkpoint?: string } = {}): Agent {
+  const agent = makeAgent(model, store, cwd, perm, cfg);
   // registered after the gate: a vetoed call is never announced as running
   agent.events.on('before_tool', ({ call }) => {
     if (process.stdout.isTTY) process.stdout.write(dim(`⚙ ${call.name} ${toolSummary(call)}\n`));
@@ -366,7 +366,7 @@ async function interactive(agent: Agent, store: SessionStore): Promise<void> {
         return true;
       case 'new': {
         store = await SessionStore.create(sessionsDir(), process.cwd());
-        agent = replAgent(agent.model, store, process.cwd());
+        agent = replAgent(agent.model, store, process.cwd(), await loadConfig());
         console.log(dim(`new session ${store.id.slice(0, 8)}`));
         return true;
       }
