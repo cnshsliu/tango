@@ -415,6 +415,108 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
       case 'undo':
       case 'redo':
         return timeTravel(cmd);
+      case 'find': {
+        // full-text search across ALL sessions, including entries abandoned by
+        // rewinds — the whole point is finding a discarded future again
+        const needle = String(cmd.text ?? '').toLowerCase();
+        if (!needle) return reply(cmd, false, undefined, 'find: empty query');
+        const hits: { sessionId: string; entryIndex: number; ts: string; firstLine: string; snippet: string; orphaned: boolean }[] = [];
+        for (const summ of await SessionStore.list(sessionsDir())) {
+          if (hits.length >= 200) break;
+          const st = await SessionStore.open(sessionsDir(), summ.id);
+          const visible = new Set(st.visibleEntries());
+          let perSession = 0;
+          for (const { entry, index } of st.indexedEntries()) {
+            if (perSession >= 20) break;
+            if (entry.kind !== 'message') continue;
+            for (const b of entry.message.content) {
+              const text = b.type === 'text' ? b.text : b.type === 'tool_call' ? JSON.stringify(b.input ?? {}) : '';
+              const at = text.toLowerCase().indexOf(needle);
+              if (at < 0) continue;
+              const from = Math.max(0, at - 40);
+              hits.push({
+                sessionId: summ.id,
+                entryIndex: index,
+                ts: entry.ts,
+                firstLine: text.split('\n')[0].slice(0, 80),
+                snippet: text.slice(from, from + 120),
+                orphaned: !visible.has(entry)
+              });
+              perSession++;
+              break;
+            }
+          }
+        }
+        reply(cmd, true, { hits });
+        return;
+      }
+      case 'export': {
+        const format = cmd.format === 'html' ? 'html' : 'md';
+        const parts: string[] = [];
+        let inOrphan = false;
+        const indexed = store.indexedEntries();
+        const visible = new Set(store.visibleEntries());
+        for (const { entry, index } of indexed) {
+          if (entry.kind !== 'message') continue;
+          const orph = !visible.has(entry);
+          if (orph !== inOrphan) {
+            parts.push(orph ? '\n---\n**⟲ 以下为已回滚的未来（/redo 可找回）**\n' : '\n---\n**⟲ 回到当前时间线**\n');
+            inOrphan = orph;
+          }
+          for (const b of entry.message.content) {
+            if (b.type === 'text') parts.push(`**${entry.message.role}**: ${b.text}\n`);
+            else if (b.type === 'tool_call') parts.push(`*tool ${b.name}* \`${JSON.stringify(b.input ?? {}).slice(0, 200)}\`\n`);
+            else if (b.type === 'tool_result')
+              parts.push(`*result* ${b.content.map((c) => (c.type === 'text' ? c.text : '[image]')).join('\n').slice(0, 500)}\n`);
+          }
+        }
+        const body = parts.join('\n');
+        const out = format === 'html'
+          ? `<!doctype html><meta charset="utf-8"><title>tango export</title><style>body{font-family:ui-monospace,monospace;max-width:60em;margin:2em auto;line-height:1.5;padding:0 1em}hr{border:0;border-top:1px dashed #999}</style><pre>${body.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</pre>`
+          : `# tango 会话导出\n\n${body}`;
+        const path = join(cwd, `tango-export-${store.id.slice(0, 8)}.${format}`);
+        const { writeFile: wf } = await import('node:fs/promises');
+        await wf(path, out, 'utf8');
+        reply(cmd, true, { path, format });
+        return;
+      }
+      case 'transcript': {
+        const lines: string[] = [];
+        const visible = new Set(store.visibleEntries());
+        for (const { entry, index } of store.indexedEntries()) {
+          if (entry.kind !== 'message') continue;
+          const orph = !visible.has(entry);
+          const tag = orph ? '⟲' : ' ';
+          for (const b of entry.message.content) {
+            if (b.type === 'text') lines.push(`${tag} ${entry.message.role}: ${b.text}`);
+            else if (b.type === 'tool_call') lines.push(`${tag} tool ${b.name}: ${JSON.stringify(b.input ?? {}).slice(0, 200)}`);
+            else if (b.type === 'tool_result')
+              lines.push(`${tag} result: ${b.content.map((c) => (c.type === 'text' ? c.text : '[image]')).join(' ').slice(0, 400)}`);
+          }
+        }
+        reply(cmd, true, { text: lines.join('\n') });
+        return;
+      }
+      case 'rename': {
+        const name = String(cmd.name ?? '').trim();
+        if (!name) return reply(cmd, false, undefined, 'rename: empty name');
+        await store.append({ kind: 'meta', id: store.id, createdAt: new Date().toISOString(), cwd, name });
+        reply(cmd, true, { name });
+        return;
+      }
+      case 'recap': {
+        try {
+          const msg = await agent.ask(
+            '用一两句话总结当前对话到目前为止的要点，直接给出总结，不要任何前缀。',
+            (ev) => { if (ev.type !== 'done') out({ type: 'btw_stream', id: cmd.id, event: ev }); }
+          );
+          const text = msg.content.filter((b) => b.type === 'text').map((b) => (b as { text: string }).text).join('');
+          reply(cmd, true, { text });
+        } catch (e: any) {
+          reply(cmd, false, undefined, String(e?.message ?? e));
+        }
+        return;
+      }
       case 'fork': {
         if (promptInFlight) return reply(cmd, false, undefined, 'a turn is running — interrupt it first');
         const list = turns();
@@ -517,7 +619,7 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
       void timeTravel(cmd);
       return;
     }
-    if (cmd.cmd === 'fork' || cmd.cmd === 'branch' || cmd.cmd === 'tree') {
+    if (cmd.cmd === 'fork' || cmd.cmd === 'branch' || cmd.cmd === 'tree' || cmd.cmd === 'find' || cmd.cmd === 'export' || cmd.cmd === 'transcript' || cmd.cmd === 'rename') {
       void handle(cmd);
       return;
     }

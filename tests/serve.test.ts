@@ -640,3 +640,77 @@ test('serve: fork/branch/tree — independent timelines sharing snapshot objects
     await rm(work, { recursive: true, force: true });
   }
 });
+
+test('serve: find orphaned futures, export, transcript, rename, recap', async () => {
+  const mock = await startMock();
+  const home = await mkdtemp(join(tmpdir(), 'tango-serve-home-'));
+  const work = await mkdtemp(join(tmpdir(), 'tango-serve-work-'));
+  await writeFile(join(home, 'models.json'), JSON.stringify([
+    { id: 'mock/mock', provider: 'mock', model: 'mock-model', api: 'openai-completions', baseUrl: `http://127.0.0.1:${(mock.server.address() as AddressInfo).port}/v1`, apiKey: 'MOCK_SERVE_KEY', contextWindow: 200 }
+  ]));
+  mock.setScript(() =>
+    SSE({ choices: [{ delta: { content: 'MAGICWORD-PLAIN-ANSWER' } }] }) + SSE({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 5, completion_tokens: 3 } }) + 'data: [DONE]\n\n'
+  );
+
+  const s = await startServe(home, work, 0);
+  try {
+    await s.next(); // hello
+    s.send({ id: 300, cmd: 'prompt', text: 'please say MAGICWORD-USER-PROMPT' });
+    await s.until((f: any) => f.type === 'result' && f.id === 300 && f.ok, 'turn');
+
+    // rewind it away, then find must still locate it as orphaned
+    s.send({ id: 301, cmd: 'timeline' });
+    const tl = await s.until((f: any) => f.type === 'result' && f.data?.nodes, 'timeline');
+    s.send({ id: 302, cmd: 'rewind', entryIndex: tl.data.nodes[0].entryIndex });
+    await s.until((f: any) => f.type === 'result' && f.id === 302 && f.ok, 'rewind');
+
+    s.send({ id: 303, cmd: 'find', text: 'MAGICWORD' });
+    const fd = await s.until((f: any) => f.type === 'result' && f.id === 303, 'find');
+    assert.ok(fd.ok, JSON.stringify(fd));
+    assert.ok(fd.data.hits.length >= 2, 'user prompt and plain answer both hit');
+    assert.ok(fd.data.hits.every((h: any) => h.orphaned === true), 'rewound entries are marked orphaned');
+    assert.ok(fd.data.hits[0].snippet.length > 0);
+
+    // export md: real file with both visible and abandoned content
+    s.send({ id: 304, cmd: 'export', format: 'md' });
+    const ex = await s.until((f: any) => f.type === 'result' && f.id === 304, 'export');
+    assert.ok(ex.ok);
+    assert.ok(existsSync(ex.data.path));
+    const md = await readFile(ex.data.path, 'utf8');
+    assert.ok(md.includes('MAGICWORD-USER-PROMPT'), 'abandoned future is in the export');
+    assert.ok(md.includes('已回滚') || md.toLowerCase().includes('rewind'), 'rewind boundary marked');
+
+    // transcript: raw text including orphans
+    s.send({ id: 305, cmd: 'transcript' });
+    const tr = await s.until((f: any) => f.type === 'result' && f.id === 305, 'transcript');
+    assert.ok(tr.ok);
+    assert.ok(tr.data.text.includes('MAGICWORD-USER-PROMPT'));
+
+    // rename shows up in sessions
+    s.send({ id: 306, cmd: 'rename', name: 'my-named-session' });
+    const rn = await s.until((f: any) => f.type === 'result' && f.id === 306, 'rename');
+    assert.ok(rn.ok);
+    s.send({ id: 307, cmd: 'sessions' });
+    const ss = await s.until((f: any) => f.type === 'result' && f.id === 307, 'sessions');
+    assert.ok(ss.data.sessions.some((x: any) => x.name === 'my-named-session' && x.current === true));
+
+    // recap: text answer, no session writes
+    s.send({ id: 308, cmd: 'prompt', text: 'another turn' });
+    await s.until((f: any) => f.type === 'result' && f.id === 308 && f.ok, 'turn2');
+    s.send({ id: 309, cmd: 'sessions' });
+    const before = await s.until((f: any) => f.type === 'result' && f.id === 309, 'count before');
+    const countBefore = before.data.sessions.find((x: any) => x.current).messages;
+    s.send({ id: 310, cmd: 'recap' });
+    const rc = await s.until((f: any) => f.type === 'result' && f.id === 310, 'recap');
+    assert.ok(rc.ok);
+    assert.ok(String(rc.data.text).length > 0);
+    s.send({ id: 311, cmd: 'sessions' });
+    const after = await s.until((f: any) => f.type === 'result' && f.id === 311, 'count after');
+    assert.equal(after.data.sessions.find((x: any) => x.current).messages, countBefore, 'recap itself adds nothing');
+  } finally {
+    s.child.kill();
+    mock.server.close();
+    await rm(home, { recursive: true, force: true });
+    await rm(work, { recursive: true, force: true });
+  }
+});
