@@ -1018,7 +1018,7 @@ impl App {
                 self.pending.push((id, Pending::Timeline));
             }
             "/undo" | "/redo" => {
-                let id = serve.command(&head, vec![]);
+                let id = serve.command(head.trim_start_matches('/'), vec![]);
                 self.pending.push((
                     id,
                     if head == "/undo" {
