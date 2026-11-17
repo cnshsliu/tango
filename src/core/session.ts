@@ -9,6 +9,7 @@ export interface SessionMeta {
   createdAt: string;
   cwd: string;
   name?: string;
+  forkOf?: { sessionId: string; entryIndex: number };
 }
 
 export interface SessionSummary extends SessionMeta {
@@ -119,7 +120,7 @@ export class SessionStore {
   }
 
   /** Copy entries[0..toIndex] into a brand-new fork session file. */
-  async forkTo(dir: string, newId: string, toIndex: number): Promise<SessionStore> {
+  async forkTo(dir: string, newId: string, toIndex: number, name?: string): Promise<SessionStore> {
     const meta = this.meta();
     const prefix = this.entries
       .slice(0, toIndex + 1)
@@ -129,7 +130,7 @@ export class SessionStore {
       id: newId,
       createdAt: this.now(),
       cwd: meta?.cwd ?? '',
-      name: meta?.name,
+      name: name ?? meta?.name,
       forkOf: { sessionId: this.id, entryIndex: toIndex }
     };
     const fork = new SessionStore(dir, newId);

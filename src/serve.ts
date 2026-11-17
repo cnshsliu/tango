@@ -10,6 +10,7 @@
  * frames:    hello | stream | btw_stream | message | tool_result | permission_request | turn_end | error | result
  */
 import { createInterface } from 'node:readline';
+import { randomUUID } from 'node:crypto';
 import { restoreSnapshot } from './core/git-snapshot.js';
 import { hasKey, keyProblem, loadConfig, loadModels, pickModel, saveConfig, sessionsDir } from './core/config.js';
 import { listDrafts, promoteDraft, saveDraft } from './core/skills.js';
@@ -168,9 +169,9 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
    * (= post-snapshot of turn k-1), falling back to the first checkpoint after
    * it (= turn k's own pre-snapshot) when k is the first writing turn.
    */
-  async function rewindToTurn(k: number, cmd: Command): Promise<void> {
+  async function rewindToTurn(k: number): Promise<{ ok: true; data: Record<string, unknown> } | { ok: false; error: string }> {
     const list = turns();
-    if (k < 0 || k >= list.length) return reply(cmd, false, undefined, 'nothing to rewind/redo');
+    if (k < 0 || k >= list.length) return { ok: false, error: 'nothing to rewind/redo' };
     const target = list[k];
     let code: { restored?: number; deleted?: string[]; kept?: string[] } = {};
     const cps = store
@@ -185,7 +186,7 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
       code = await restoreSnapshot(cwd, cps[boundaryIdx].hash, later);
     }
     await store.rewindTo(target.entryIndex - 1);
-    reply(cmd, true, { codeRestored: boundaryIdx >= 0, turnDropped: k, ...code });
+    return { ok: true, data: { codeRestored: boundaryIdx >= 0, turnDropped: k, ...code } };
   }
 
   /** index of the last turn visible in the current projection */
@@ -211,19 +212,21 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
       return;
     }
     const last = lastVisibleTurn(list);
+    const finish = (r: Awaited<ReturnType<typeof rewindToTurn>>) =>
+      r.ok ? reply(cmd, true, r.data) : reply(cmd, false, undefined, r.error);
     if (cmd.cmd === 'rewind') {
       const entryIndex = Number(cmd.entryIndex);
       const k = list.findIndex((t) => t.entryIndex === entryIndex);
       if (k < 0) return reply(cmd, false, undefined, `rewind: no turn at entry ${entryIndex}`);
-      return rewindToTurn(k, cmd);
+      return rewindToTurn(k).then(finish);
     }
     if (cmd.cmd === 'undo') {
       if (last < 0) return reply(cmd, false, undefined, 'nothing to undo');
-      return rewindToTurn(last, cmd);
+      return rewindToTurn(last).then(finish);
     }
     if (cmd.cmd === 'redo') {
       if (last >= list.length - 1) return reply(cmd, false, undefined, 'nothing to redo');
-      return rewindToTurn(last + 2, cmd);
+      return rewindToTurn(last + 2).then(finish);
     }
   }
 
@@ -412,6 +415,55 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
       case 'undo':
       case 'redo':
         return timeTravel(cmd);
+      case 'fork': {
+        if (promptInFlight) return reply(cmd, false, undefined, 'a turn is running — interrupt it first');
+        const list = turns();
+        const entryIndex = cmd.entryIndex === undefined
+          ? store.visibleEntries().length - 1 // fork from the current position
+          : Number(cmd.entryIndex);
+        const at = list.find((t) => t.entryIndex === entryIndex);
+        const toIndex = at ? at.end : Math.max(0, Math.min(entryIndex, store.indexedEntries().length - 1));
+        const forkId = randomUUID();
+        await store.forkTo(sessionsDir(), forkId, toIndex, cmd.name ? String(cmd.name) : undefined);
+        reply(cmd, true, { sessionId: forkId, name: cmd.name ?? null });
+        return;
+      }
+      case 'branch': {
+        if (promptInFlight) return reply(cmd, false, undefined, 'a turn is running — interrupt it first');
+        const list = turns();
+        const entryIndex = cmd.entryIndex === undefined ? undefined : Number(cmd.entryIndex);
+        let k: number;
+        if (entryIndex === undefined) {
+          k = lastVisibleTurn(list);
+        } else {
+          k = list.findIndex((t) => t.entryIndex === entryIndex);
+        }
+        if (k < 0 || k >= list.length) return reply(cmd, false, undefined, 'branch: no such turn');
+        // keep the named turn, drop everything after it (same slice fork would copy)
+        const r = await rewindToTurn(k + 1);
+        if (!r.ok) return reply(cmd, false, undefined, r.error);
+        reply(cmd, true, { branch: true, branchedAt: list[k].entryIndex, ...r.data });
+        return;
+      }
+      case 'tree': {
+        const sessions = await SessionStore.list(sessionsDir());
+        const metas = await Promise.all(
+          sessions.map(async (summ) => {
+            const st = await SessionStore.open(sessionsDir(), summ.id);
+            return st.meta();
+          })
+        );
+        reply(cmd, true, {
+          nodes: metas.map((m) => ({
+            sessionId: m?.id,
+            name: m?.name,
+            createdAt: m?.createdAt,
+            forkOf: m?.forkOf,
+            cwd: m?.cwd
+          }))
+        });
+        return;
+      }
       case 'status':
         reply(cmd, true, {
           sessionId: store.id,
@@ -463,6 +515,10 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
     }
     if (cmd.cmd === 'rewind' || cmd.cmd === 'undo' || cmd.cmd === 'redo') {
       void timeTravel(cmd);
+      return;
+    }
+    if (cmd.cmd === 'fork' || cmd.cmd === 'branch' || cmd.cmd === 'tree') {
+      void handle(cmd);
       return;
     }
     queue = queue.then(() => handle(cmd));

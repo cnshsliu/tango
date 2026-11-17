@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createServer } from 'node:http';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AddressInfo } from 'node:net';
@@ -552,6 +552,86 @@ test('serve: timeline/rewind/undo/redo with real git restore', async () => {
     const h2 = await s.until((f: any) => f.type === 'result' && f.data?.items, 'history after undo');
     assert.ok(!JSON.stringify(h2.data.items).includes('turn 3'));
     assert.ok(!JSON.stringify(h2.data.items).includes('turn 2'));
+    assert.equal((await readFile(join(work, 'work.txt'), 'utf8')).trim(), 'v1');
+  } finally {
+    s.child.kill();
+    mock.server.close();
+    await rm(home, { recursive: true, force: true });
+    await rm(work, { recursive: true, force: true });
+  }
+});
+
+test('serve: fork/branch/tree — independent timelines sharing snapshot objects', async () => {
+  const mock = await startMock();
+  const home = await mkdtemp(join(tmpdir(), 'tango-serve-home-'));
+  const work = await mkdtemp(join(tmpdir(), 'tango-serve-work-'));
+  await writeFile(join(home, 'models.json'), JSON.stringify([
+    { id: 'mock/mock', provider: 'mock', model: 'mock-model', api: 'openai-completions', baseUrl: `http://127.0.0.1:${(mock.server.address() as AddressInfo).port}/v1`, apiKey: 'MOCK_SERVE_KEY', contextWindow: 200 }
+  ]));
+  const git = (args: string[]) => spawnSync('git', args, { cwd: work, encoding: 'utf8' });
+  git(['init', '-q']); git(['config', 'user.email', 't@t']); git(['config', 'user.name', 't']);
+  await writeFile(join(work, 'seed.txt'), 'seed\n'); git(['add', '.']); git(['commit', '-q', '-m', 'init']);
+
+  let turnNo = 0;
+  let pendingTool = false;
+  mock.setScript(() => {
+    if (!pendingTool) turnNo++;
+    if (!pendingTool && turnNo <= 2) {
+      pendingTool = true;
+      const cmd = turnNo === 1 ? 'echo v1 > work.txt' : 'echo v2 > work.txt';
+      return SSE({ choices: [{ delta: { tool_calls: [{ index: 0, id: 'w' + turnNo, function: { name: 'bash', arguments: JSON.stringify({ command: cmd }) } }] }, finish_reason: 'tool_calls' }] }) + 'data: [DONE]\n\n';
+    }
+    pendingTool = false;
+    return SSE({ choices: [{ delta: { content: '回复' } }] }) + SSE({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 10, completion_tokens: 5 } }) + 'data: [DONE]\n\n';
+  });
+
+  const s = await startServe(home, work, 0);
+  try {
+    await s.next(); // hello
+    for (let i = 0; i < 2; i++) {
+      s.send({ id: 100 + i, cmd: 'prompt', text: `turn ${i + 1}` });
+      await s.until((f: any) => f.type === 'result' && f.ok, 'turn result');
+    }
+    s.send({ id: 200, cmd: 'timeline' });
+    const tl = await s.until((f: any) => f.type === 'result' && f.data?.nodes, 'timeline');
+    const node1 = tl.data.nodes[0];
+
+    // fork from before turn 2, named
+    s.send({ id: 201, cmd: 'fork', name: 'alt-path', entryIndex: node1.entryIndex });
+    const fk = await s.until((f: any) => f.type === 'result' && f.id === 201, 'fork');
+    assert.ok(fk.ok, JSON.stringify(fk));
+    const forkId: string = fk.data.sessionId;
+    assert.notEqual(forkId, undefined);
+    // the fork file exists with the prefix projection
+    assert.ok(existsSync(join(home, 'sessions', `${forkId}.jsonl`)));
+
+    // tree shows both sessions with lineage
+    s.send({ id: 202, cmd: 'tree' });
+    const tree = await s.until((f: any) => f.type === 'result' && f.data?.nodes, 'tree');
+    const byId = Object.fromEntries(tree.data.nodes.map((n: any) => [n.sessionId, n]));
+    assert.ok(byId[forkId]);
+    assert.equal(byId[forkId].forkOf.sessionId, byId[Object.keys(byId).find((k) => !byId[k].forkOf) as string].sessionId);
+    assert.equal(byId[forkId].name, 'alt-path');
+
+    // original session keeps working; its projection is unaffected by the fork
+    s.send({ id: 203, cmd: 'prompt', text: 'turn 3 on original' });
+    await s.until((f: any) => f.type === 'result' && f.id === 203 && f.ok, 'turn 3');
+    s.send({ id: 204, cmd: 'history' });
+    const h = await s.until((f: any) => f.type === 'result' && f.data?.items, 'history');
+    assert.ok(JSON.stringify(h.data.items).includes('turn 3 on original'));
+
+    // branch: in-place conversation fork — no new session file, projection rewinds
+    const before = readdirSync(join(home, 'sessions')).length;
+    s.send({ id: 205, cmd: 'branch', entryIndex: node1.entryIndex });
+    const br = await s.until((f: any) => f.type === 'result' && f.id === 205, 'branch');
+    assert.ok(br.ok);
+    assert.equal(br.data.branch, true);
+    assert.equal(readdirSync(join(home, 'sessions')).length, before, 'branch creates no session file');
+    s.send({ id: 206, cmd: 'history' });
+    const hb = await s.until((f: any) => f.type === 'result' && f.data?.items, 'history after branch');
+    assert.ok(!JSON.stringify(hb.data.items).includes('turn 3 on original'));
+    assert.ok(!JSON.stringify(hb.data.items).includes('turn 2'));
+    // code restored to end of turn 1
     assert.equal((await readFile(join(work, 'work.txt'), 'utf8')).trim(), 'v1');
   } finally {
     s.child.kill();
