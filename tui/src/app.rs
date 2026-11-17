@@ -112,6 +112,8 @@ enum Pending {
     Bg,
     Tasks,
     StopTask,
+    AgentsShow,
+    AgentsSet,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -274,6 +276,10 @@ const SLASH: &[(&str, &str)] = &[
     ),
     ("/rewind", "打开时间轴：代码+对话+上下文整体回滚"),
     ("/add_dir <dir>", "添加 cwd 之外的额外可写目录（持久化）"),
+    (
+        "/agents [role model]",
+        "角色模型路由：driver/subagent/longContext（/bg 自动用 subagent）",
+    ),
     ("/init", "生成 AGENTS.md 项目说明脚手架（--force 追加）"),
     ("/doctor", "环境体检：git/key/目录/版本"),
     ("/help", "命令列表"),
@@ -1309,6 +1315,26 @@ impl App {
                 } else {
                     let id = serve.command("bg", vec![("prompt", Value::String(rest.into()))]);
                     self.pending.push((id, Pending::Bg));
+                }
+            }
+            "/agents" => {
+                if rest.is_empty() {
+                    let id = serve.command("agents_show", vec![]);
+                    self.pending.push((id, Pending::AgentsShow));
+                } else if let Some((role, model)) = rest.split_once(' ') {
+                    let id = serve.command(
+                        "agents_set",
+                        vec![
+                            ("role", Value::String(role.trim().into())),
+                            ("model", Value::String(model.trim().into())),
+                        ],
+                    );
+                    self.pending.push((id, Pending::AgentsSet));
+                } else {
+                    self.push(
+                        "usage: /agents [driver|subagent|longContext] <model>",
+                        Tone::Muted,
+                    );
                 }
             }
             "/tasks" => {
@@ -3772,6 +3798,23 @@ impl App {
                         (Pending::StopTask, true) => {
                             self.push("后台任务已停止", Tone::Muted);
                         }
+                        (Pending::AgentsShow, true) => {
+                            let mut text = String::from("角色模型路由：\n\n");
+                            let driver = d["driver"].as_str().unwrap_or("?");
+                            let get = |k: &str| d["roles"][k].as_str().unwrap_or(driver);
+                            for (role, note) in [
+                                ("driver", "主会话（立即生效）"),
+                                ("subagent", "/subtask 与 /bg 默认"),
+                                ("longContext", "/bg --long 长上下文"),
+                            ] {
+                                text.push_str(&format!("  {role:<12} {} · {note}\n", get(role)));
+                            }
+                            text.push_str("\n/agents <role> <model> 设置");
+                            self.viewer = Some(Viewer::read_only("agents", text));
+                        }
+                        (Pending::AgentsSet, true) => {
+                            self.push("角色模型已保存", Tone::Success);
+                        }
                         (Pending::History, true) => self.load_history(d),
                         (Pending::Theme, true) => {
                             self.theme = Theme::resolve(
@@ -6165,5 +6208,25 @@ mod tests {
         let sent3: Value = serde_json::from_str(&serve.sent[2]).unwrap();
         assert_eq!(sent3["cmd"], "stop_task");
         assert_eq!(sent3["id"], "abc");
+    }
+
+    #[test]
+    fn agents_show_and_set() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.run_slash("/agents", &mut serve);
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        assert_eq!(sent["cmd"], "agents_show");
+        app.frame(json!({"type": "result", "id": sent["id"], "ok": true,
+                "data": {"roles": {"subagent": "mock/flash"}, "driver": "mock/mock"}}));
+        let v = app.viewer.as_ref().unwrap();
+        assert!(v.text.contains("mock/flash"));
+        assert!(v.text.contains("driver"));
+
+        app.run_slash("/agents subagent mock/flash", &mut serve);
+        let sent2: Value = serde_json::from_str(&serve.sent[1]).unwrap();
+        assert_eq!(sent2["cmd"], "agents_set");
+        assert_eq!(sent2["role"], "subagent");
+        assert_eq!(sent2["model"], "mock/flash");
     }
 }

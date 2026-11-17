@@ -556,6 +556,27 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
           await rm2(tmp, { recursive: true, force: true });
         }
       }
+      case 'agents_show': {
+        const cfg0 = await loadConfig();
+        reply(cmd, true, { roles: cfg0.roles ?? {}, driver: agent.model.id });
+        return;
+      }
+      case 'agents_set': {
+        const role = String(cmd.role ?? '');
+        const modelId = String(cmd.model ?? '');
+        if (!['driver', 'subagent', 'longContext'].includes(role)) {
+          return reply(cmd, false, undefined, 'agents_set: role must be driver | subagent | longContext');
+        }
+        const models = await loadModels();
+        const found = models.find((m) => m.id === modelId);
+        if (!found) return reply(cmd, false, undefined, `agents_set: unknown model "${modelId}"`);
+        const cfg0 = await loadConfig();
+        const roles = { ...(cfg0.roles ?? {}), [role]: modelId };
+        await saveConfig({ ...cfg0, roles });
+        if (role === 'driver') void agent.setModel(found); // the driver takes effect immediately
+        reply(cmd, true, { roles });
+        return;
+      }
       case 'bg': {
         const prompt = String(cmd.prompt ?? '');
         if (!prompt.trim()) return reply(cmd, false, undefined, 'bg: empty prompt');
@@ -1333,7 +1354,7 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
     // (e.g. "always allow" from a permission dialog), so they skip the prompt queue too
     const guarded = (p: Promise<unknown>) =>
       void p.catch((e) => out({ type: 'error', message: String(e?.message ?? e) }));
-    if (['set_mode', 'status', 'timeline', 'context', 'queue', 'usage', 'stats', 'insights', 'preset_save', 'preset_list', 'preset_get', 'permissions_list', 'permissions_add', 'permissions_remove', 'import', 'cd', 'pwd', 'add_dir', 'config_show', 'init', 'doctor', 'debug_zip', 'set_plan', 'set_effort', 'memory', 'remember', 'skills', 'goal', 'loop', 'worktree_create', 'worktree_list', 'worktree_remove', 'worktree_merge', 'bg', 'tasks', 'stop_task'].includes(cmd.cmd)) {
+    if (['set_mode', 'status', 'timeline', 'context', 'queue', 'usage', 'stats', 'insights', 'preset_save', 'preset_list', 'preset_get', 'permissions_list', 'permissions_add', 'permissions_remove', 'import', 'cd', 'pwd', 'add_dir', 'config_show', 'init', 'doctor', 'debug_zip', 'set_plan', 'set_effort', 'memory', 'remember', 'skills', 'goal', 'loop', 'worktree_create', 'worktree_list', 'worktree_remove', 'worktree_merge', 'bg', 'tasks', 'stop_task', 'agents_show', 'agents_set'].includes(cmd.cmd)) {
       guarded(handle(cmd));
       return;
     }

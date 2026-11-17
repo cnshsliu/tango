@@ -1851,3 +1851,49 @@ test('bg/tasks/stop: real child runs in a worktree, session resumable', async ()
     await rm(work, { recursive: true, force: true });
   }
 });
+
+test('roles: /agents set routes bg tasks to the subagent model', async () => {
+  const mock = await startMock();
+  const home = await mkdtemp(join(tmpdir(), 'tango-serve-home-'));
+  const work = await mkdtemp(join(tmpdir(), 'tango-serve-work-'));
+  await writeFile(join(home, 'models.json'), JSON.stringify([
+    { id: 'mock/mock', provider: 'mock', model: 'm', api: 'openai-completions', baseUrl: `http://127.0.0.1:${(mock.server.address() as AddressInfo).port}/v1`, apiKey: 'MOCK_SERVE_KEY', contextWindow: 2000 },
+    { id: 'mock/flash', provider: 'mock', model: 'flash', api: 'openai-completions', baseUrl: `http://127.0.0.1:${(mock.server.address() as AddressInfo).port}/v1`, apiKey: 'MOCK_SERVE_KEY', contextWindow: 2000 }
+  ]));
+  mock.setScript(() => SSE({ choices: [{ delta: { content: 'ok' } }] }) + SSE({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1 } }) + 'data: [DONE]\n\n');
+  const git = (args: string[]) => spawnSync('git', args, { cwd: work, encoding: 'utf8' });
+  git(['init', '-q']); git(['config', 'user.email', 't@t']); git(['config', 'user.name', 't']);
+  await writeFile(join(work, 'seed.txt'), 'seed\n'); git(['add', '.']); git(['commit', '-q', '-m', 'i']);
+
+  const s = await startServe(home, work, 0);
+  try {
+    await s.next();
+    s.send({ id: 200, cmd: 'agents_set', role: 'subagent', model: 'mock/flash' });
+    const set = await s.until((f: any) => f.type === 'result' && f.id === 200, 'set');
+    assert.ok(set.ok, JSON.stringify(set));
+    assert.equal(JSON.parse(await readFile(join(home, 'config.json'), 'utf8')).roles.subagent, 'mock/flash');
+
+    // invalid model refused
+    s.send({ id: 201, cmd: 'agents_set', role: 'subagent', model: 'nope/nope' });
+    const bad = await s.until((f: any) => f.type === 'result' && f.id === 201, 'bad');
+    assert.ok(!bad.ok);
+
+    s.send({ id: 202, cmd: 'agents_show' });
+    const show = await s.until((f: any) => f.type === 'result' && f.id === 202, 'show');
+    assert.equal(show.data.roles.subagent, 'mock/flash');
+
+    // a bg task runs on the subagent model
+    s.send({ id: 203, cmd: 'bg', prompt: 'route me' });
+    const bg = await s.until((f: any) => f.type === 'result' && f.id === 203 && f.ok, 'bg');
+    assert.equal(bg.data.task.model, 'mock/flash', 'subagent role routed');
+    // stop it immediately; we only asserted routing
+    s.send({ id: 204, cmd: 'stop_task', id: bg.data.task.id });
+    await sleep(300);
+  } finally {
+    s.child.kill();
+    spawnSync('git', ['worktree', 'prune'], { cwd: work });
+    mock.server.close();
+    await rm(home, { recursive: true, force: true });
+    await rm(work, { recursive: true, force: true });
+  }
+});
