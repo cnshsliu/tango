@@ -80,6 +80,7 @@ enum Pending {
     Rename,
     Recap,
     Context,
+    Queue,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1078,6 +1079,10 @@ impl App {
             "/context" => {
                 let id = serve.command("context", vec![]);
                 self.pending.push((id, Pending::Context));
+            }
+            "/queue" => {
+                let id = serve.command("queue", vec![]);
+                self.pending.push((id, Pending::Queue));
             }
             "/find" => {
                 if rest.is_empty() {
@@ -2813,6 +2818,40 @@ impl App {
                                 }
                             );
                             self.viewer = Some(Viewer::read_only("上下文构成", text));
+                        }
+                        (Pending::Queue, true) => {
+                            let running = d["running"].as_str().unwrap_or("");
+                            let queued: Vec<String> = d["queued"]
+                                .as_array()
+                                .map(|a| {
+                                    a.iter()
+                                        .filter_map(|q| {
+                                            let text = q["text"].as_str()?;
+                                            let waited = q["waitedMs"].as_u64().unwrap_or(0);
+                                            Some(format!("  · {text}（等待 {}s）", waited / 1000))
+                                        })
+                                        .collect()
+                                })
+                                .unwrap_or_default();
+                            let text = if running.is_empty() && queued.is_empty() {
+                                "空闲 — 没有正在运行或排队的提示".to_string()
+                            } else {
+                                format!(
+                                    "运行中：{}\n\n排队（{}）：\n{}",
+                                    if running.is_empty() {
+                                        "（无）"
+                                    } else {
+                                        running
+                                    },
+                                    queued.len(),
+                                    if queued.is_empty() {
+                                        "  （空）".to_string()
+                                    } else {
+                                        queued.join("\n")
+                                    }
+                                )
+                            };
+                            self.viewer = Some(Viewer::read_only("提示队列", text));
                         }
                         (Pending::History, true) => self.load_history(d),
                         (Pending::Theme, true) => {
@@ -4569,5 +4608,31 @@ mod tests {
         assert!(viewer.text.contains("history"));
         assert!(viewer.text.contains("27%"));
         assert!(viewer.text.contains("5520"));
+    }
+
+    #[test]
+    fn queue_command_shows_running_and_queued() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.run_slash("/queue", &mut serve);
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        assert_eq!(sent["cmd"], "queue");
+        app.frame(json!({
+            "type": "result", "id": sent["id"], "ok": true,
+            "data": {"running": "first prompt", "queued": [{"text": "second prompt", "waitedMs": 4200}]}
+        }));
+        let viewer = app.viewer.as_ref().unwrap();
+        assert!(viewer.read_only);
+        assert!(viewer.text.contains("first prompt"));
+        assert!(viewer.text.contains("second prompt"));
+        assert!(viewer.text.contains("4"));
+        // empty state
+        app.run_slash("/queue", &mut serve);
+        let sent2: Value = serde_json::from_str(&serve.sent[1]).unwrap();
+        app.frame(json!({
+            "type": "result", "id": sent2["id"], "ok": true,
+            "data": {"running": null, "queued": []}
+        }));
+        assert!(app.viewer.as_ref().unwrap().text.contains("空闲"));
     }
 }

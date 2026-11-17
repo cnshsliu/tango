@@ -26,7 +26,10 @@ async function startMock() {
     req.on('end', () => {
       requests.push(JSON.parse(raw));
       res.writeHead(200, { 'content-type': 'text/event-stream' });
-      res.end(script());
+      const body = script();
+      const m = /^DELAY:(\d+):/.exec(body);
+      if (m) setTimeout(() => res.end(body.slice(m[0].length)), Number(m[1]));
+      else res.end(body);
     });
   });
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
@@ -881,3 +884,46 @@ test('context command reports a token breakdown of the prompt assembly', async (
     await rm(work, { recursive: true, force: true });
   }
 });
+
+test('queue command shows the running prompt and the queued ones; interrupt clears', async () => {
+  const mock = await startMock();
+  const home = await mkdtemp(join(tmpdir(), 'tango-serve-home-'));
+  const work = await mkdtemp(join(tmpdir(), 'tango-serve-work-'));
+  await writeFile(join(home, 'models.json'), JSON.stringify([
+    { id: 'mock/mock', provider: 'mock', model: 'm', api: 'openai-completions', baseUrl: `http://127.0.0.1:${(mock.server.address() as AddressInfo).port}/v1`, apiKey: 'MOCK_SERVE_KEY', contextWindow: 200 }
+  ]));
+  // request 1 is slow (delayed response end); the rest are instant
+  let n = 0;
+  mock.setScript(() => {
+    n++;
+    const body = SSE({ choices: [{ delta: { content: 'ok' } }] }) + SSE({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 5, completion_tokens: 2 } }) + 'data: [DONE]\n\n';
+    return n === 1 ? `DELAY:2000:${body}` : body;
+  });
+  const s = await startServe(home, work, 0);
+  try {
+    await s.next();
+    s.send({ id: 100, cmd: 'prompt', text: 'slow-prompt-AAAA' });
+    await sleep(150);
+    s.send({ id: 101, cmd: 'prompt', text: 'queued-prompt-BBBB' });
+    await sleep(150);
+    s.send({ id: 200, cmd: 'queue' });
+    const q = await s.until((f: any) => f.type === 'result' && f.id === 200, 'queue');
+    assert.ok(q.ok);
+    assert.ok(String(q.data.running ?? '').includes('slow-prompt'), 'running shown');
+    assert.equal(q.data.queued.length, 1, 'one queued');
+    assert.ok(String(q.data.queued[0].text).includes('queued-prompt'));
+    // interrupt clears the running turn
+    s.send({ cmd: 'interrupt' });
+    await s.until((f: any) => f.type === 'result' && (f.id === 100 || f.id === 101), 'after interrupt');
+    s.send({ id: 201, cmd: 'queue' });
+    const q2 = await s.until((f: any) => f.type === 'result' && f.id === 201, 'queue2');
+    assert.equal(q2.data.running, null);
+  } finally {
+    s.child.kill();
+    mock.server.close();
+    await rm(home, { recursive: true, force: true });
+    await rm(work, { recursive: true, force: true });
+  }
+});
+
+function sleep(ms: number) { return new Promise((r) => setTimeout(r, ms)); }

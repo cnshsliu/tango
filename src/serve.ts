@@ -161,6 +161,9 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
   }
 
   let promptInFlight = false;
+  // queue introspection: what's running and what is waiting behind it
+  let runningText: string | null = null;
+  const queuedTexts: { text: string; enqueuedAt: number }[] = [];
 
   /**
    * Drop turns[k..]: restore code to the workspace state at the boundary just
@@ -280,7 +283,6 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
       case 'prompt': {
         const text = String(cmd.text ?? '');
         if (!text.trim()) return reply(cmd, false, undefined, 'prompt: empty text');
-        promptInFlight = true;
         try {
           const msg = await agent.prompt(text, (ev) => {
             if (ev.type !== 'done') out({ type: 'stream', event: ev });
@@ -289,8 +291,21 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
         } catch (e: any) {
           reply(cmd, false, undefined, String(e?.message ?? e));
         } finally {
-          promptInFlight = false;
+          // promote the next queued prompt (the interrupt handler drains the queue itself)
+          const next = queuedTexts.shift();
+          if (next) runningText = next.text;
+          else {
+            runningText = null;
+            promptInFlight = false;
+          }
         }
+        return;
+      }
+      case 'queue': {
+        reply(cmd, true, {
+          running: runningText,
+          queued: queuedTexts.map((q) => ({ text: q.text, waitedMs: Date.now() - q.enqueuedAt }))
+        });
         return;
       }
       case 'btw': {
@@ -661,8 +676,12 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
       return out({ type: 'error', message: `not JSON: ${line.slice(0, 120)}` });
     }
     if (cmd.cmd === 'interrupt') {
-      // an interrupted turn must not leave a permission dialog hanging open
+      // an interrupted turn must not leave a permission dialog hanging open,
+      // and the prompts queued behind it are dropped, not run
       denyPending();
+      queuedTexts.length = 0;
+      runningText = null;
+      promptInFlight = false;
       agent.abort();
       return;
     }
@@ -678,7 +697,7 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
     // (e.g. "always allow" from a permission dialog), so they skip the prompt queue too
     const guarded = (p: Promise<unknown>) =>
       void p.catch((e) => out({ type: 'error', message: String(e?.message ?? e) }));
-    if (cmd.cmd === 'set_mode' || cmd.cmd === 'status' || cmd.cmd === 'timeline' || cmd.cmd === 'context') {
+    if (['set_mode', 'status', 'timeline', 'context', 'queue'].includes(cmd.cmd)) {
       guarded(handle(cmd));
       return;
     }
@@ -689,6 +708,16 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
     if (cmd.cmd === 'fork' || cmd.cmd === 'branch' || cmd.cmd === 'tree' || cmd.cmd === 'find' || cmd.cmd === 'export' || cmd.cmd === 'transcript' || cmd.cmd === 'rename') {
       guarded(handle(cmd));
       return;
+    }
+    // /queue bookkeeping lives at dispatch time: the serial queue means handle()
+    // for a queued prompt only starts after its predecessor finished
+    if (cmd.cmd === 'prompt') {
+      const text = String(cmd.text ?? '');
+      if (promptInFlight && text.trim()) queuedTexts.push({ text, enqueuedAt: Date.now() });
+      else if (text.trim()) {
+        promptInFlight = true;
+        runningText = text;
+      }
     }
     queue = queue.then(() => handle(cmd)).catch((e) => out({ type: 'error', message: String(e?.message ?? e) }));
   });
