@@ -13,6 +13,7 @@ import { spawnSync } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { randomUUID } from 'node:crypto';
 import { buildContext } from './core/context.js';
+import { worktreeCreate, worktreeList, worktreeMerge, worktreeRemove } from './core/worktrees.js';
 import { parseRule } from './core/permissions.js';
 import { restoreSnapshot } from './core/git-snapshot.js';
 import { hasKey, keyProblem, loadConfig, loadModels, pickModel, saveConfig, sessionsDir, tangoDir } from './core/config.js';
@@ -553,6 +554,36 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
         } finally {
           await rm2(tmp, { recursive: true, force: true });
         }
+      }
+      case 'worktree_create': {
+        try {
+          const entry = await worktreeCreate(cwd, String(cmd.name ?? ''), cmd.base ? String(cmd.base) : undefined);
+          reply(cmd, true, entry);
+        } catch (e: any) {
+          reply(cmd, false, undefined, String(e?.message ?? e));
+        }
+        return;
+      }
+      case 'worktree_list':
+        reply(cmd, true, { worktrees: await worktreeList() });
+        return;
+      case 'worktree_remove': {
+        try {
+          await worktreeRemove(cwd, String(cmd.name ?? ''), cmd.force === true);
+          reply(cmd, true, { removed: cmd.name });
+        } catch (e: any) {
+          reply(cmd, false, undefined, String(e?.message ?? e));
+        }
+        return;
+      }
+      case 'worktree_merge': {
+        try {
+          const r = await worktreeMerge(cwd, String(cmd.name ?? ''));
+          reply(cmd, true, r);
+        } catch (e: any) {
+          reply(cmd, false, undefined, String(e?.message ?? e));
+        }
+        return;
       }
       case 'loop': {
         if (cmd.off === true) {
@@ -1261,7 +1292,7 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
     // (e.g. "always allow" from a permission dialog), so they skip the prompt queue too
     const guarded = (p: Promise<unknown>) =>
       void p.catch((e) => out({ type: 'error', message: String(e?.message ?? e) }));
-    if (['set_mode', 'status', 'timeline', 'context', 'queue', 'usage', 'stats', 'insights', 'preset_save', 'preset_list', 'preset_get', 'permissions_list', 'permissions_add', 'permissions_remove', 'import', 'cd', 'pwd', 'add_dir', 'config_show', 'init', 'doctor', 'debug_zip', 'set_plan', 'set_effort', 'memory', 'remember', 'skills', 'goal', 'loop'].includes(cmd.cmd)) {
+    if (['set_mode', 'status', 'timeline', 'context', 'queue', 'usage', 'stats', 'insights', 'preset_save', 'preset_list', 'preset_get', 'permissions_list', 'permissions_add', 'permissions_remove', 'import', 'cd', 'pwd', 'add_dir', 'config_show', 'init', 'doctor', 'debug_zip', 'set_plan', 'set_effort', 'memory', 'remember', 'skills', 'goal', 'loop', 'worktree_create', 'worktree_list', 'worktree_remove', 'worktree_merge'].includes(cmd.cmd)) {
       guarded(handle(cmd));
       return;
     }

@@ -108,6 +108,7 @@ enum Pending {
     Skills,
     Goal,
     Loop,
+    Worktree,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -124,6 +125,7 @@ enum PickerKind {
     Preset,
     Permissions,
     Skills,
+    Worktree,
 }
 
 #[derive(Clone)]
@@ -326,6 +328,10 @@ const SLASH: &[(&str, &str)] = &[
     ("/tree", "查看会话分叉树"),
     ("/undo", "回退一个回合（/redo 前进一步）"),
     ("/vim", "切换 Vim 编辑 · ctrl+s 发送 · :wq/:wqa 发送"),
+    (
+        "/worktree [new|rm|merge <name>]",
+        "受管 git worktree：后台/子代理的隔离单元",
+    ),
 ];
 
 /// inline @path tokens are expanded into file contents at send time (Claude Code style)
@@ -1292,6 +1298,34 @@ impl App {
                     let id =
                         serve.command("set_effort", vec![("level", Value::String(arg.into()))]);
                     self.pending.push((id, Pending::Effort));
+                }
+            }
+            "/worktree" => {
+                let arg = rest.trim();
+                if let Some(name) = arg.strip_prefix("new ") {
+                    let id = serve.command(
+                        "worktree_create",
+                        vec![("name", Value::String(name.trim().into()))],
+                    );
+                    self.pending.push((id, Pending::Worktree));
+                } else if let Some(name) = arg
+                    .strip_prefix("rm ")
+                    .or_else(|| arg.strip_prefix("remove "))
+                {
+                    let id = serve.command(
+                        "worktree_remove",
+                        vec![("name", Value::String(name.trim().into()))],
+                    );
+                    self.pending.push((id, Pending::Worktree));
+                } else if let Some(name) = arg.strip_prefix("merge ") {
+                    let id = serve.command(
+                        "worktree_merge",
+                        vec![("name", Value::String(name.trim().into()))],
+                    );
+                    self.pending.push((id, Pending::Worktree));
+                } else {
+                    let id = serve.command("worktree_list", vec![]);
+                    self.pending.push((id, Pending::Worktree));
                 }
             }
             "/loop" => {
@@ -3607,6 +3641,57 @@ impl App {
                                 self.push("loop 已停止", Tone::Muted);
                             }
                         }
+                        (Pending::Worktree, true) => {
+                            if let Some(list) = d["worktrees"].as_array() {
+                                let items: Vec<PickItem> = list
+                                    .iter()
+                                    .filter_map(|w| {
+                                        Some(PickItem {
+                                            label: format!(
+                                                "{} · {} · 脏文件 {}",
+                                                w["name"].as_str()?,
+                                                w["branch"].as_str().unwrap_or("?"),
+                                                w["dirty"].as_i64().unwrap_or(-1)
+                                            ),
+                                            note: w["path"].as_str().unwrap_or("").to_string(),
+                                            warn: false,
+                                            current: false,
+                                            id: w["name"].as_str()?.to_string(),
+                                        })
+                                    })
+                                    .collect();
+                                if items.is_empty() {
+                                    self.push(
+                                        "暂无 worktree · /worktree new <name> 创建",
+                                        Tone::Muted,
+                                    );
+                                } else {
+                                    self.picker = Some(Picker::new(PickerKind::Worktree, items));
+                                }
+                            } else if d.get("merged").is_some() {
+                                let ok = d["merged"].as_bool().unwrap_or(false);
+                                self.push(
+                                    if ok {
+                                        "已合并回主工作区".to_string()
+                                    } else {
+                                        format!(
+                                            "合并输出：{}",
+                                            d["output"]
+                                                .as_str()
+                                                .unwrap_or("")
+                                                .chars()
+                                                .take(300)
+                                                .collect::<String>()
+                                        )
+                                    },
+                                    if ok { Tone::Success } else { Tone::Warning },
+                                );
+                            } else if d.get("removed").is_some() {
+                                self.push("worktree 已删除", Tone::Muted);
+                            } else if let Some(p) = d["path"].as_str() {
+                                self.push(format!("worktree 已创建 → {p}"), Tone::Success);
+                            }
+                        }
                         (Pending::History, true) => self.load_history(d),
                         (Pending::Theme, true) => {
                             self.theme = Theme::resolve(
@@ -3965,6 +4050,7 @@ impl App {
                 PickerKind::Preset => "提示模板 · 选中填入输入框（不发送）",
                 PickerKind::Permissions => "允许规则 · /permissions rm <rule> 移除",
                 PickerKind::Skills => "技能列表 · global=全局 project=项目",
+                PickerKind::Worktree => "worktree · /worktree merge <名> 合并 · rm 删除",
                 PickerKind::Command => "命令面板",
                 PickerKind::History => "搜索 prompt 历史",
                 PickerKind::Theme => "选择主题",
@@ -5942,5 +6028,31 @@ mod tests {
         app.run_slash("/loop off", &mut serve);
         let sent2: Value = serde_json::from_str(&serve.sent[1]).unwrap();
         assert_eq!(sent2["off"], true);
+    }
+
+    #[test]
+    fn worktree_command_family() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.run_slash("/worktree", &mut serve);
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        assert_eq!(sent["cmd"], "worktree_list");
+        app.frame(json!({"type": "result", "id": sent["id"], "ok": true,
+            "data": {"worktrees": [{"name": "exp1", "path": "/w/x", "branch": "tango/exp1", "dirty": 2, "createdAt": "t"}]}}));
+        assert!(app.picker.as_ref().unwrap().kind == PickerKind::Worktree);
+        app.key(
+            crossterm::event::KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            &mut serve,
+        );
+        app.run_slash("/worktree new exp2", &mut serve);
+        let sent2: Value = serde_json::from_str(&serve.sent[1]).unwrap();
+        assert_eq!(sent2["cmd"], "worktree_create");
+        assert_eq!(sent2["name"], "exp2");
+        app.run_slash("/worktree merge exp1", &mut serve);
+        let sent3: Value = serde_json::from_str(&serve.sent[2]).unwrap();
+        assert_eq!(sent3["cmd"], "worktree_merge");
+        app.run_slash("/worktree rm exp1", &mut serve);
+        let sent4: Value = serde_json::from_str(&serve.sent[3]).unwrap();
+        assert_eq!(sent4["cmd"], "worktree_remove");
     }
 }

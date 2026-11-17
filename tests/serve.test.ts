@@ -1751,3 +1751,61 @@ test('I1: review sees staged changes too', async () => {
     await rm(work, { recursive: true, force: true });
   }
 });
+
+test('worktree: create/list/merge/remove with safety gates', async () => {
+  const mock = await startMock();
+  const home = await mkdtemp(join(tmpdir(), 'tango-serve-home-'));
+  const work = await mkdtemp(join(tmpdir(), 'tango-serve-work-'));
+  await writeFile(join(home, 'models.json'), JSON.stringify([
+    { id: 'mock/mock', provider: 'mock', model: 'm', api: 'openai-completions', baseUrl: `http://127.0.0.1:${(mock.server.address() as AddressInfo).port}/v1`, apiKey: 'MOCK_SERVE_KEY', contextWindow: 200 }
+  ]));
+  mock.setScript(() => SSE({ choices: [{ delta: { content: 'ok' } }] }) + SSE({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1 } }) + 'data: [DONE]\n\n');
+  const git = (args: string[]) => spawnSync('git', args, { cwd: work, encoding: 'utf8' });
+  git(['init', '-q']); git(['config', 'user.email', 't@t']); git(['config', 'user.name', 't']);
+  await writeFile(join(work, 'seed.txt'), 'seed\n'); git(['add', '.']); git(['commit', '-q', '-m', 'i']);
+
+  const s = await startServe(home, work, 0);
+  try {
+    await s.next();
+    // create
+    s.send({ id: 200, cmd: 'worktree_create', name: 'exp1' });
+    const c = await s.until((f: any) => f.type === 'result' && f.id === 200, 'create');
+    assert.ok(c.ok, JSON.stringify(c));
+    assert.ok(existsSync(c.data.path), 'worktree dir exists');
+    assert.equal(git(['rev-parse', '--abbrev-ref', 'HEAD'], ).status !== 0 || true, true); // noop guard
+    assert.equal(spawnSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: c.data.path, encoding: 'utf8' }).stdout.trim(), 'tango/exp1', 'branch checked out');
+    // main repo untouched
+    assert.equal(spawnSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: work, encoding: 'utf8' }).stdout.trim(), 'main', 'main repo still on its branch');
+
+    // list shows it + dirty count 0
+    s.send({ id: 201, cmd: 'worktree_list' });
+    const l = await s.until((f: any) => f.type === 'result' && f.id === 201, 'list');
+    assert.ok(l.data.worktrees.some((w: any) => w.name === 'exp1' && w.dirty === 0));
+
+    // dirty worktree: remove refused without force
+    await writeFile(join(c.data.path, 'dirty.txt'), 'x\n');
+    s.send({ id: 202, cmd: 'worktree_remove', name: 'exp1' });
+    const refused = await s.until((f: any) => f.type === 'result' && f.id === 202, 'refuse');
+    assert.ok(!refused.ok, 'dirty worktree not removed');
+
+    // commit the dirt, then merge
+    spawnSync('git', ['add', '.'], { cwd: c.data.path });
+    spawnSync('git', ['commit', '-q', '-m', 'exp1 work'], { cwd: c.data.path });
+    s.send({ id: 203, cmd: 'worktree_merge', name: 'exp1' });
+    const m = await s.until((f: any) => f.type === 'result' && f.id === 203, 'merge');
+    assert.ok(m.ok, JSON.stringify(m));
+    assert.ok(existsSync(join(work, 'dirty.txt')), 'merged file landed in main repo');
+
+    // clean worktree removes (branch merged)
+    s.send({ id: 204, cmd: 'worktree_remove', name: 'exp1' });
+    const r = await s.until((f: any) => f.type === 'result' && f.id === 204, 'remove');
+    assert.ok(r.ok, JSON.stringify(r));
+    assert.ok(!existsSync(c.data.path), 'worktree gone');
+  } finally {
+    s.child.kill();
+    spawnSync('git', ['worktree', 'prune'], { cwd: work });
+    mock.server.close();
+    await rm(home, { recursive: true, force: true });
+    await rm(work, { recursive: true, force: true });
+  }
+});
