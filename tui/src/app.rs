@@ -91,6 +91,9 @@ enum Pending {
     PresetSave,
     PresetList,
     PresetGet,
+    PermissionsList,
+    PermissionsAdd,
+    PermissionsRemove,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -105,6 +108,7 @@ enum PickerKind {
     Timeline,
     Find,
     Preset,
+    Permissions,
 }
 
 #[derive(Clone)]
@@ -1138,6 +1142,28 @@ impl App {
                 let id = serve.command("insights", vec![]);
                 self.pending.push((id, Pending::Insights));
             }
+            "/permissions" => {
+                let arg = rest.trim();
+                if let Some(rule) = arg.strip_prefix("add ") {
+                    let id = serve.command(
+                        "permissions_add",
+                        vec![("rule", Value::String(rule.trim().into()))],
+                    );
+                    self.pending.push((id, Pending::PermissionsAdd));
+                } else if let Some(rule) = arg
+                    .strip_prefix("rm ")
+                    .or_else(|| arg.strip_prefix("remove "))
+                {
+                    let id = serve.command(
+                        "permissions_remove",
+                        vec![("rule", Value::String(rule.trim().into()))],
+                    );
+                    self.pending.push((id, Pending::PermissionsRemove));
+                } else {
+                    let id = serve.command("permissions_list", vec![]);
+                    self.pending.push((id, Pending::PermissionsList));
+                }
+            }
             "/preset" => {
                 let arg = rest.trim();
                 if let Some(name) = arg.strip_prefix("save ") {
@@ -1910,6 +1936,13 @@ impl App {
                 PickerKind::Preset => {
                     let id = serve.command("preset_get", vec![("name", Value::String(item.id))]);
                     self.pending.push((id, Pending::PresetGet));
+                }
+                PickerKind::Permissions => {
+                    // selecting a rule shows how to remove it; no accidental action
+                    self.push(
+                        format!("如需移除：/permissions rm {}", item.id),
+                        Tone::Muted,
+                    );
                 }
                 PickerKind::Find => {
                     // item.id carries "sessionId:entryIndex:current-orphan"
@@ -3112,6 +3145,44 @@ impl App {
                                 );
                             }
                         }
+                        (Pending::PermissionsList, true) => {
+                            let items: Vec<PickItem> = d["allow"]
+                                .as_array()
+                                .map(|a| {
+                                    a.iter()
+                                        .filter_map(|r| {
+                                            Some(PickItem {
+                                                label: r["rule"].as_str()?.to_string(),
+                                                note: r["note"].as_str().unwrap_or("").to_string(),
+                                                warn: false,
+                                                current: false,
+                                                id: r["rule"].as_str()?.to_string(),
+                                            })
+                                        })
+                                        .collect()
+                                })
+                                .unwrap_or_default();
+                            if items.is_empty() {
+                                self.push(
+                                    "暂无允许规则 · /permissions add tool:diff|path:src|bash:git status",
+                                    Tone::Muted,
+                                );
+                            } else {
+                                self.picker = Some(Picker::new(PickerKind::Permissions, items));
+                            }
+                        }
+                        (Pending::PermissionsAdd, true) => {
+                            self.push(
+                                format!(
+                                    "规则已添加并生效：{}",
+                                    d["allow"].as_array().map(|a| a.len()).unwrap_or(0)
+                                ),
+                                Tone::Success,
+                            );
+                        }
+                        (Pending::PermissionsRemove, true) => {
+                            self.push("规则已移除", Tone::Muted);
+                        }
                         (Pending::History, true) => self.load_history(d),
                         (Pending::Theme, true) => {
                             self.theme = Theme::resolve(
@@ -3468,6 +3539,7 @@ impl App {
                 PickerKind::Timeline => "时间轴 · 选中即回滚到该回合之前",
                 PickerKind::Find => "搜索命中 · 本会话=回滚到该处 · 他会话=切换过去",
                 PickerKind::Preset => "提示模板 · 选中填入输入框（不发送）",
+                PickerKind::Permissions => "允许规则 · /permissions rm <rule> 移除",
                 PickerKind::Command => "命令面板",
                 PickerKind::History => "搜索 prompt 历史",
                 PickerKind::Theme => "选择主题",
@@ -5157,5 +5229,41 @@ mod tests {
         let again = app.chat_lines();
         let new2 = again.iter().find(|l| l.text.contains("new line")).unwrap();
         assert_eq!(new.text, new2.text);
+    }
+
+    #[test]
+    fn permissions_command_lists_adds_and_removes() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.run_slash("/permissions", &mut serve);
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        assert_eq!(sent["cmd"], "permissions_list");
+        app.frame(json!({
+            "type": "result", "id": sent["id"], "ok": true,
+            "data": {"allow": [{"rule": "bash:rm", "note": "allow bash commands with this prefix"}]}
+        }));
+        assert!(app.picker.as_ref().unwrap().kind == PickerKind::Permissions);
+        assert!(
+            app.picker
+                .as_ref()
+                .unwrap()
+                .items
+                .iter()
+                .any(|i| i.id == "bash:rm")
+        );
+        app.key(
+            crossterm::event::KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            &mut serve,
+        );
+
+        app.run_slash("/permissions add bash:git push", &mut serve);
+        let sent2: Value = serde_json::from_str(&serve.sent[1]).unwrap();
+        assert_eq!(sent2["cmd"], "permissions_add");
+        assert_eq!(sent2["rule"], "bash:git push");
+
+        app.run_slash("/permissions rm bash:rm", &mut serve);
+        let sent3: Value = serde_json::from_str(&serve.sent[2]).unwrap();
+        assert_eq!(sent3["cmd"], "permissions_remove");
+        assert_eq!(sent3["rule"], "bash:rm");
     }
 }
