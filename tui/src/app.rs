@@ -5447,7 +5447,7 @@ mod tests {
                 .contains("/home/config.json")
         );
         app.run_slash("/keymap", &mut serve);
-        assert!(app.lines.iter().any(|l| l.text.contains("keys")));
+        assert!(app.viewer.as_ref().unwrap().text.contains("expandTools"));
         app.run_slash("/pwd", &mut serve);
         let sent3: Value = serde_json::from_str(&serve.sent[1]).unwrap();
         assert_eq!(sent3["cmd"], "pwd");
