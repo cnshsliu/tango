@@ -58,6 +58,9 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
   }
   const { agent, store, cwd } = opened;
   const config = await loadConfig();
+  // the persisted threshold (or 'off') must survive restarts
+  if (config.autocompact === 'off') agent.compactAt = 0;
+  else if (typeof config.autocompact === 'number') agent.compactAt = config.autocompact;
   const pricedModels = await loadModels();
   let sessionCostUsd = store.allMessages().reduce((sum, m) => {
     if (m.role !== 'assistant' || !m.usage) return sum;
@@ -119,7 +122,7 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
     editor: config.editor,
     keys: config.keys,
     nvimViewer: config.nvimViewer,
-    autocompact: config.autocompact ?? 0.75,
+    autocompact: agent.compactAt,
     statusline: config.statusline,
     tools: buildTools().schemas().map(({ name, description }) => ({ name, description }))
   });
@@ -334,12 +337,13 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
           bySession: bySession.sort((a, b) => b.costUsd - a.costUsd),
           since: undefined as string | undefined
         };
+        const esc = (t: string) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
         if (cmd.cmd === 'insights') {
           const maxCost = Math.max(...data.bySession.map((x) => x.costUsd), 1);
           const rows = (title: string, rowsHtml: string) => `<h2>${title}</h2><table>${rowsHtml}</table>`;
           const html = `<!doctype html><meta charset="utf-8"><title>tango insights</title><style>body{font-family:ui-sans-serif,system-ui;margin:2em auto;max-width:52em;padding:0 1em;line-height:1.5}h1,h2{color:#333}table{border-collapse:collapse;width:100%;margin-bottom:1.5em}td,th{border-bottom:1px solid #ddd;padding:6px 10px;text-align:left}td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}.bar{background:#6b8dd6;height:10px}</style>
 <h1>tango 使用报告</h1><p>总花费 <b>$${totalCostUsd.toFixed(4)}</b> · 会话数 ${data.bySession.length}</p>
-${rows('按模型', '<tr><th>模型</th><th class=num>请求</th><th class=num>输入 tok</th><th class=num>输出 tok</th><th class=num>花费</th></tr>' + data.byModel.map((m) => `<tr><td>${m.model}</td><td class=num>${m.requests}</td><td class=num>${m.input}</td><td class=num>${m.output}</td><td class=num>$${m.costUsd.toFixed(4)}</td></tr>`).join(''))}
+${rows('按模型', '<tr><th>模型</th><th class=num>请求</th><th class=num>输入 tok</th><th class=num>输出 tok</th><th class=num>花费</th></tr>' + data.byModel.map((m) => `<tr><td>${esc(m.model)}</td><td class=num>${m.requests}</td><td class=num>${m.input}</td><td class=num>${m.output}</td><td class=num>$${m.costUsd.toFixed(4)}</td></tr>`).join(''))}
 ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th><th class=num>花费</th><th></th></tr>' + data.bySession.map((x) => `<tr><td>${x.id.slice(0, 8)}</td><td>${x.name || ''}</td><td class=num>${x.messages}</td><td class=num>$${x.costUsd.toFixed(4)}</td><td><div class=bar style="width:${Math.round((x.costUsd / maxCost) * 100)}px"></div></td></tr>`).join(''))}`;
           const { writeFile: wf } = await import('node:fs/promises');
           const path = join(cwd, `tango-insights-${new Date().toISOString().slice(0, 10)}.html`);
@@ -380,9 +384,10 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
           const name = String(cmd.name ?? '').trim();
           const text = String(cmd.text ?? '');
           if (!name || !text.trim()) return reply(cmd, false, undefined, 'preset_save: need name and text');
+          const overwritten = presets[name] !== undefined;
           presets[name] = text;
           await wf(file, JSON.stringify(presets, null, 2), 'utf8');
-          reply(cmd, true, { name, overwritten: true });
+          reply(cmd, true, { name, overwritten });
           return;
         }
         if (cmd.cmd === 'preset_list') {
@@ -584,8 +589,9 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
             skills.map((sk: { name: string; description: string; path: string }) => `- ${sk.name}: ${sk.description} (at ${sk.path}; read it before following it)`).join('\n')
           : '';
         const est = (t: string) => Math.round(t.length / 3.5);
-        const system = est(systemPrompt);
         const skillTokens = est(skillLines);
+        // systemPrompt already contains the skills block — subtract it so rows sum to total
+        const system = Math.max(0, est(systemPrompt) - skillTokens);
         const tools = est(JSON.stringify(buildTools().schemas()));
         const history = agent.contextTokenEstimate();
         const total = system + tools + history;
@@ -772,6 +778,8 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
 
   // prompts run one at a time; interrupt and permission answers jump the queue
   let queue: Promise<void> = Promise.resolve();
+  // bumped on interrupt: queued prompts captured under an older generation never run
+  let interruptGen = 0;
   const rl = createInterface({ input: process.stdin });
   rl.on('line', (line) => {
     line = line.trim();
@@ -783,12 +791,12 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
       return out({ type: 'error', message: `not JSON: ${line.slice(0, 120)}` });
     }
     if (cmd.cmd === 'interrupt') {
-      // an interrupted turn must not leave a permission dialog hanging open,
-      // and the prompts queued behind it are dropped, not run
+      // drop the queued prompts (they never run) and abort the running turn; the
+      // running turn's own settle path clears runningText/promptInFlight, so time
+      // travel stays guarded until the abort has fully landed
       denyPending();
       queuedTexts.length = 0;
-      runningText = null;
-      promptInFlight = false;
+      interruptGen++;
       agent.abort();
       return;
     }
@@ -818,15 +826,28 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
     }
     // /queue bookkeeping lives at dispatch time: the serial queue means handle()
     // for a queued prompt only starts after its predecessor finished
+    let wasQueued = false;
     if (cmd.cmd === 'prompt') {
       const text = String(cmd.text ?? '');
-      if (promptInFlight && text.trim()) queuedTexts.push({ text, enqueuedAt: Date.now() });
-      else if (text.trim()) {
+      if (promptInFlight && text.trim()) {
+        queuedTexts.push({ text, enqueuedAt: Date.now() });
+        wasQueued = true;
+      } else if (text.trim()) {
         promptInFlight = true;
         runningText = text;
       }
     }
-    queue = queue.then(() => handle(cmd)).catch((e) => out({ type: 'error', message: String(e?.message ?? e) }));
+    const gen = interruptGen;
+    queue = queue
+      .then(() => {
+        // an interrupt since this prompt was queued dropped it on purpose
+        if (wasQueued && gen !== interruptGen && cmd.id !== undefined) {
+          out({ type: 'result', id: cmd.id, ok: false, error: 'interrupted (dropped from queue)' });
+          return;
+        }
+        return handle(cmd);
+      })
+      .catch((e) => out({ type: 'error', message: String(e?.message ?? e) }));
   });
   rl.on('close', () => {
     // stdin EOF (a pipe, not a UI): finish queued work, then leave; never cut a running prompt short

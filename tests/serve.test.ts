@@ -1059,3 +1059,93 @@ test('presets: save/list/get round-trip in TANGO_HOME', async () => {
     await rm(work, { recursive: true, force: true });
   }
 });
+
+test('C1+I5: interrupt drops queued prompts (they never reach the model) and rewind stays guarded', async () => {
+  const mock = await startMock();
+  const home = await mkdtemp(join(tmpdir(), 'tango-serve-home-'));
+  const work = await mkdtemp(join(tmpdir(), 'tango-serve-work-'));
+  await writeFile(join(home, 'models.json'), JSON.stringify([
+    { id: 'mock/mock', provider: 'mock', model: 'm', api: 'openai-completions', baseUrl: `http://127.0.0.1:${(mock.server.address() as AddressInfo).port}/v1`, apiKey: 'MOCK_SERVE_KEY', contextWindow: 200 }
+  ]));
+  let n = 0;
+  mock.setScript(() => {
+    n++;
+    const body = SSE({ choices: [{ delta: { content: 'ok' } }] }) + SSE({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 5, completion_tokens: 2 } }) + 'data: [DONE]\n\n';
+    return n === 1 ? `DELAY:2000:${body}` : body;
+  });
+  const s = await startServe(home, work, 0);
+  try {
+    await s.next();
+    s.send({ id: 100, cmd: 'prompt', text: 'slow-A' });
+    await sleep(200);
+    const requestsBefore = mock.requests.length;
+    s.send({ id: 101, cmd: 'prompt', text: 'queued-B' });
+    await sleep(150);
+    s.send({ cmd: 'interrupt' });
+    const r100 = await s.until((f: any) => f.type === 'result' && f.id === 100, 'A result');
+    const r101 = await s.until((f: any) => f.type === 'result' && f.id === 101, 'B result');
+    assert.ok(r100.ok === true || r100.ok === false); // aborted turn settles
+    assert.equal(r101.ok, false, 'queued prompt is dropped, not run');
+    assert.match(String(r101.error), /dropped|interrupt/i);
+    await sleep(300);
+    assert.equal(mock.requests.length, requestsBefore, 'B never reached the model');
+
+    // after the abort settles, queue is empty and time travel works
+    s.send({ id: 200, cmd: 'queue' });
+    const q = await s.until((f: any) => f.type === 'result' && f.id === 200, 'queue');
+    assert.equal(q.data.running, null);
+    assert.equal(q.data.queued.length, 0);
+  } finally {
+    s.child.kill();
+    mock.server.close();
+    await rm(home, { recursive: true, force: true });
+    await rm(work, { recursive: true, force: true });
+  }
+});
+
+test('I2: persisted autocompact is restored at startup', async () => {
+  const mock = await startMock();
+  const home = await mkdtemp(join(tmpdir(), 'tango-serve-home-'));
+  const work = await mkdtemp(join(tmpdir(), 'tango-serve-work-'));
+  await writeFile(join(home, 'models.json'), JSON.stringify([
+    { id: 'mock/mock', provider: 'mock', model: 'm', api: 'openai-completions', baseUrl: `http://127.0.0.1:${(mock.server.address() as AddressInfo).port}/v1`, apiKey: 'MOCK_SERVE_KEY', contextWindow: 200 }
+  ]));
+  await writeFile(join(home, 'config.json'), JSON.stringify({ autocompact: 'off' }));
+  mock.setScript(() => SSE({ choices: [{ delta: { content: 'ok' } }] }) + SSE({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 5, completion_tokens: 2 } }) + 'data: [DONE]\n\n');
+  const s = await startServe(home, work, 0);
+  try {
+    const hello = await s.next();
+    assert.equal(hello.autocompact, 0, 'off restores as 0, not the 0.75 default');
+    s.send({ id: 1, cmd: 'status' });
+    const st = await s.until((f: any) => f.type === 'result' && f.id === 1, 'status');
+    assert.equal(st.data.autocompact, 0);
+  } finally {
+    s.child.kill();
+    mock.server.close();
+    await rm(home, { recursive: true, force: true });
+    await rm(work, { recursive: true, force: true });
+  }
+});
+
+test('I4: context breakdown rows sum to the total (skills not double-counted)', async () => {
+  const mock = await startMock();
+  const home = await mkdtemp(join(tmpdir(), 'tango-serve-home-'));
+  const work = await mkdtemp(join(tmpdir(), 'tango-serve-work-'));
+  await writeFile(join(home, 'models.json'), JSON.stringify([
+    { id: 'mock/mock', provider: 'mock', model: 'm', api: 'openai-completions', baseUrl: `http://127.0.0.1:${(mock.server.address() as AddressInfo).port}/v1`, apiKey: 'MOCK_SERVE_KEY', contextWindow: 200 }
+  ]));
+  mock.setScript(() => SSE({ choices: [{ delta: { content: 'ok' } }] }) + SSE({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 5, completion_tokens: 2 } }) + 'data: [DONE]\n\n');
+  const s = await startServe(home, work, 0);
+  try {
+    await s.next();
+    s.send({ id: 1, cmd: 'context' });
+    const c = await s.until((f: any) => f.type === 'result' && f.id === 1, 'context');
+    const rows = c.data.system + c.data.skills + c.data.tools + c.data.history;
+    assert.ok(Math.abs(rows - c.data.total) <= 2, `rows (${rows}) must sum to total (${c.data.total})`);
+  } finally {
+    s.child.kill();
+    mock.server.close();
+    await rm(home, { recursive: true, force: true });
+    await rm(work, { recursive: true, force: true });
+  }
+});

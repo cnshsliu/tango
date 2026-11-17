@@ -39,6 +39,8 @@ pub fn display_width(s: &str) -> usize {
 struct ChatLine {
     text: String,
     tone: Tone,
+    /// wall time recorded when the line was pushed ([HH:MM] for /timestamps)
+    ts: Option<String>,
     /// full tool output or collapsed user prompt; shown in the independent viewer
     output: Option<String>,
     prompt_state: Option<PromptState>,
@@ -490,10 +492,12 @@ impl App {
     }
 
     fn push(&mut self, text: impl Into<String>, tone: Tone) {
+        let ts = self.hhmm();
         for line in text.into().split('\n') {
             self.lines.push(ChatLine {
                 text: line.to_string(),
                 tone,
+                ts: Some(ts.clone()),
                 output: None,
                 prompt_state: None,
                 source_index: usize::MAX,
@@ -505,6 +509,7 @@ impl App {
         self.lines.push(ChatLine {
             text: text.into(),
             tone,
+            ts: Some(self.hhmm()),
             output,
             prompt_state: None,
             source_index: usize::MAX,
@@ -3029,11 +3034,13 @@ impl App {
                         }
                         (Pending::AutocompactShow, true) => {
                             let v = d["autocompact"].as_f64().unwrap_or(0.75);
+                            let desc = if v <= 0.0 {
+                                "已关闭".to_string()
+                            } else {
+                                format!("上下文达窗口 {:.0}% 时触发", v * 100.0)
+                            };
                             self.push(
-                                format!(
-                                    "自动压缩：上下文达窗口 {:.0}% 时触发 · /autocompact <N%|0.N|off>",
-                                    v * 100.0
-                                ),
+                                format!("自动压缩：{desc} · /autocompact <N%|0.N|off>"),
                                 Tone::Muted,
                             );
                         }
@@ -3268,12 +3275,16 @@ impl App {
                         );
                     }
                 }
-                if self.timestamps && !text.starts_with('[') {
-                    text = format!("{} {text}", self.hhmm());
+                if self.timestamps
+                    && let Some(ts) = &line.ts
+                    && !text.starts_with('[')
+                {
+                    text = format!("{ts} {text}");
                 }
                 ChatLine {
                     text,
                     tone: line.tone,
+                    ts: line.ts.clone(),
                     output: line.output.clone(),
                     prompt_state: line.prompt_state,
                     source_index,
@@ -5122,5 +5133,29 @@ mod tests {
         let sent4: Value = serde_json::from_str(&serve.sent[3]).unwrap();
         assert_eq!(sent4["cmd"], "preset_get");
         assert_eq!(sent4["name"], "open");
+    }
+
+    #[test]
+    fn timestamps_are_recorded_at_push_time_not_render_time() {
+        let mut app = App::new();
+        app.push("old line", Tone::Muted); // timestamps OFF: recorded ts still lands on the line
+        app.timestamps = true;
+        app.push("new line", Tone::Muted);
+        let lines = app.chat_lines();
+        let old = lines.iter().find(|l| l.text.contains("old line")).unwrap();
+        let new = lines.iter().find(|l| l.text.contains("new line")).unwrap();
+        // lines pushed before enabling show their TRUE recorded push time (not render time)
+        assert!(
+            old.text.starts_with('['),
+            "recorded ts exists even if pushed while disabled"
+        );
+        assert!(
+            new.text.starts_with('['),
+            "line pushed while enabled gets a prefix"
+        );
+        // the prefix is stable across renders (recorded, not recomputed)
+        let again = app.chat_lines();
+        let new2 = again.iter().find(|l| l.text.contains("new line")).unwrap();
+        assert_eq!(new.text, new2.text);
     }
 }
