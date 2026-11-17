@@ -57,6 +57,25 @@ export const presets: ModelSpec[] = [
     maxTokens: 16384,
     cost: { input: 0.6525, output: 1.305, cacheRead: 0.005438 }
   },
+  // qwen4-tokenplan: the all-protocol token plan endpoint (chat-completions is primary).
+  // Checked 2026-11-17: reasoning_content streaming, tool calls over /compatible-mode/v1.
+  ...([
+    ['qwen/qwen4-max', 'qwen4-max', 1_000_000],
+    ['qwen/qwen4-max-1m', 'qwen4-max-1m', 1_000_000],
+    ['qwen/deepseek-v4-pro', 'deepseek-v4-pro', 128_000],
+    ['qwen/glm-5.3', 'glm-5.3', 128_000],
+    ['qwen/qwen4-flash', 'qwen4-flash', 128_000]
+  ] as const).map(([id, model, contextWindow]) => ({
+    id,
+    provider: 'qwen-tokenplan',
+    model,
+    api: 'openai-completions' as const,
+    baseUrl: 'https://token-plan.maas.qianwenaiapi.com/compatible-mode/v1',
+    apiKey: 'QWEN4_API_KEY',
+    contextWindow,
+    reasoning: true,
+    region: 'cn' as const
+  })),
   // China presets checked against official docs on 2026-11-14. CNY prices converted at 6.6849 CNY/USD.
   // DeepSeek costs are peak-hour prices; off-peak is half.
   {

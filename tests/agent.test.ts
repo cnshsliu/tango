@@ -331,3 +331,60 @@ test('installCheckpoints: a failing snapshot never vetoes the tool', async () =>
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test('T1: custom reasoningField streams thinking; T2: prompt_tokens_details cached_tokens counted', async () => {
+  const bodies: any[] = [];
+  const server = createServer((req, res) => {
+    let raw = '';
+    req.on('data', (d) => (raw += d));
+    req.on('end', () => {
+      bodies.push(JSON.parse(raw));
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write(chunk({ reasoning_content: '思考片段' }));
+      res.write(chunk({ reasoning: '别的字段不该出现' })); // wrong field → ignored
+      res.write(chunk({ content: '答案' }, 'stop'));
+      res.write(`data: ${JSON.stringify({ choices: [], usage: { prompt_tokens: 100, completion_tokens: 5, prompt_tokens_details: { cached_tokens: 80 } } })}\n\n`);
+      res.end('data: [DONE]\n\n');
+    });
+  });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  const port = (server.address() as AddressInfo).port;
+  const dir = await mkdtemp(join(tmpdir(), 'tango-rf-'));
+  try {
+    const store = await SessionStore.create(dir, dir);
+    const agent = new Agent({
+      store,
+      tools: new ToolRegistry(),
+      cwd: dir,
+      model: {
+        id: 'qwen/qwen4-max', provider: 'qwen', model: 'qwen4-max', api: 'openai-completions',
+        baseUrl: `http://127.0.0.1:${port}/v1`, apiKey: 'k', contextWindow: 1000, cost: { input: 1, output: 1, cacheRead: 0.1 }
+      }
+    });
+    const events: any[] = [];
+    const msg = await agent.prompt('hi', (ev) => { if (ev.type === 'thinking' || ev.type === 'text') events.push(ev); });
+    assert.ok(events.some((e) => e.type === 'thinking' && e.delta === '思考片段'), 'reasoning_content streams as thinking');
+    assert.ok(!events.some((e) => e.delta === '别的字段不该出现'), 'plain reasoning field ignored by default');
+    assert.equal(msg.usage?.cacheRead, 80, 'prompt_tokens_details.cached_tokens counted');
+
+    // per-model reasoningField: a vendor using `reasoning` picks it up instead
+    const store2 = await SessionStore.create(dir, dir);
+    const agent2 = new Agent({
+      store: store2,
+      tools: new ToolRegistry(),
+      cwd: dir,
+      model: {
+        id: 'x/m', provider: 'x', model: 'm', api: 'openai-completions',
+        baseUrl: `http://127.0.0.1:${port}/v1`, apiKey: 'k', contextWindow: 1000,
+        reasoningField: 'reasoning'
+      }
+    });
+    const events2: any[] = [];
+    await agent2.prompt('hi', (ev) => { if (ev.type === 'thinking') events2.push(ev); });
+    assert.ok(events2.some((e) => e.delta === '别的字段不该出现'), 'custom reasoningField honored');
+    assert.ok(!events2.some((e) => e.delta === '思考片段'), 'default field not read when overridden');
+  } finally {
+    server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});

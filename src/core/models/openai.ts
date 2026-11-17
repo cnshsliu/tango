@@ -21,7 +21,7 @@ export function parseUsage(u: any): Usage {
   return {
     input,
     output,
-    cacheRead: d.cached_tokens ?? u.prompt_cache_hit_tokens,
+    cacheRead: d.cached_tokens ?? u.prompt_cache_hit_tokens ?? u.prompt_tokens_details?.cached_tokens,
     cacheWrite: d.cache_write_tokens ?? d.cache_creation_input_tokens
   };
 }
@@ -126,9 +126,11 @@ export const openaiAdapter: ModelAdapter = {
       const choice = ev.choices?.[0];
       if (!choice) continue;
       const d = choice.delta ?? {};
-      if (d.reasoning_content) {
-        thinking += d.reasoning_content;
-        yield { type: 'thinking', delta: d.reasoning_content };
+      const rfield = spec.reasoningField ?? 'reasoning_content';
+      const rdelta = (d as Record<string, unknown>)[rfield];
+      if (typeof rdelta === 'string' && rdelta) {
+        thinking += rdelta;
+        yield { type: 'thinking', delta: rdelta };
       }
       if (d.content) {
         text += d.content;

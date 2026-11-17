@@ -89,8 +89,13 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
     })) satisfies AskFn;
 
   agent.events.on('message', ({ message }) => out({ type: 'message', message }));
+  // token-plan users watch tokens more than dollars (qwen4 plan T5)
+  const sessionTokens = { input: 0, output: 0, cacheRead: 0 };
   agent.events.on('turn_end', (e) => {
     sessionCostUsd += e.costUsd;
+    sessionTokens.input += e.usage.input;
+    sessionTokens.output += e.usage.output;
+    sessionTokens.cacheRead += e.usage.cacheRead ?? 0;
     out({
       type: 'turn_end',
       ...e,
@@ -341,8 +346,14 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
           }
           bySession.push({ id: summ.id, name: summ.name ?? '', costUsd: sessionCost, messages: summ.messages });
         }
+        const totalTokens = { input: 0, output: 0, cacheRead: 0 };
+        for (const m of byModel.values()) {
+          totalTokens.input += m.input;
+          totalTokens.output += m.output;
+        }
         const data = {
           totalCostUsd,
+          totalTokens,
           byModel: [...byModel.values()].sort((a, b) => b.costUsd - a.costUsd),
           bySession: bySession.sort((a, b) => b.costUsd - a.costUsd),
           since: undefined as string | undefined
@@ -1012,7 +1023,8 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
           totalCostUsd: sessionCostUsd,
           contextTokens: agent.contextTokenEstimate(),
           contextWindow: agent.model.contextWindow ?? 128_000,
-          autocompact: agent.compactAt
+          autocompact: agent.compactAt,
+          sessionTokens
         });
         return;
       default:

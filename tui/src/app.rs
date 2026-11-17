@@ -2837,14 +2837,27 @@ impl App {
                             Tone::Muted,
                         ),
                         (Pending::Status, true) => {
+                            let t = &d["sessionTokens"];
+                            let (tin, tout, tcache) = (
+                                t["input"].as_u64().unwrap_or(0),
+                                t["output"].as_u64().unwrap_or(0),
+                                t["cacheRead"].as_u64().unwrap_or(0),
+                            );
+                            let cache_note = if tin + tcache > 0 {
+                                format!(" · 缓存命中 {}%", tcache * 100 / (tin + tcache))
+                            } else {
+                                String::new()
+                            };
                             self.push(
                                 format!(
-                                    "session {} · {} · {} · {} msgs · ${:.4} · {}",
+                                    "session {} · {} · {} · {} msgs · ${:.4} · tokens 入{} 出{}{cache_note} · {}",
                                     d["sessionId"].as_str().unwrap_or("?"),
                                     d["model"].as_str().unwrap_or("?"),
                                     d["mode"].as_str().unwrap_or("?"),
                                     d["contextMessages"].as_u64().unwrap_or(0),
                                     d["totalCostUsd"].as_f64().unwrap_or(0.0),
+                                    tin,
+                                    tout,
                                     d["cwd"].as_str().unwrap_or("?"),
                                 ),
                                 Tone::Muted,
@@ -3164,9 +3177,12 @@ impl App {
                             self.viewer = Some(Viewer::read_only("提示队列", text));
                         }
                         (Pending::Usage, true) => {
+                            let tt = &d["totalTokens"];
                             let mut text = format!(
-                                "总花费 ${:.4}\n\n按模型：\n",
-                                d["totalCostUsd"].as_f64().unwrap_or(0.0)
+                                "总花费 ${:.4} · tokens 入 {} · 出 {}\n\n按模型：\n",
+                                d["totalCostUsd"].as_f64().unwrap_or(0.0),
+                                tt["input"].as_u64().unwrap_or(0),
+                                tt["output"].as_u64().unwrap_or(0),
                             );
                             if let Some(models) = d["byModel"].as_array() {
                                 for m in models {

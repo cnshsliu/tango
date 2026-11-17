@@ -72,6 +72,8 @@ export interface ModelSpec {
   contextWindow?: number;
   maxTokens?: number;
   reasoning?: boolean;
+  /** streaming field carrying reasoning deltas; defaults to "reasoning_content" (qwen/dashscope/deepseek style) */
+  reasoningField?: string;
   /**
    * Base prices. `tiers` (ascending) apply when the request's prompt tokens (Usage.input)
    * exceed `above`; the whole request is then billed at that tier.

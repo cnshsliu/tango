@@ -48,7 +48,9 @@ export const anthropicAdapter: ModelAdapter = {
     const body: Record<string, unknown> = {
       model: spec.model,
       max_tokens: req.maxTokens ?? spec.maxTokens ?? 8192,
-      system: req.system,
+      // cache the stable system prompt (anthropic prompt caching) — token plans
+    // bill cache reads far cheaper than fresh input
+    system: [{ type: 'text', text: req.system, cache_control: { type: 'ephemeral' } }],
       messages: toAnthropicMessages(req.messages),
       stream: true
     };
