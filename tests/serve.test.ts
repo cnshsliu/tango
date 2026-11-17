@@ -1460,3 +1460,40 @@ test('review/security-review inline the working diff into the prompt', async () 
     await rm(work, { recursive: true, force: true });
   }
 });
+
+test('remember appends to global AGENTS.md and memory returns it', async () => {
+  const mock = await startMock();
+  const home = await mkdtemp(join(tmpdir(), 'tango-serve-home-'));
+  const work = await mkdtemp(join(tmpdir(), 'tango-serve-work-'));
+  await writeFile(join(home, 'models.json'), JSON.stringify([
+    { id: 'mock/mock', provider: 'mock', model: 'm', api: 'openai-completions', baseUrl: `http://127.0.0.1:${(mock.server.address() as AddressInfo).port}/v1`, apiKey: 'MOCK_SERVE_KEY', contextWindow: 200 }
+  ]));
+  mock.setScript(() => SSE({ choices: [{ delta: { content: 'ok' } }] }) + SSE({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1 } }) + 'data: [DONE]\n\n');
+  const s = await startServe(home, work, 0);
+  try {
+    await s.next();
+    s.send({ id: 200, cmd: 'remember', text: '用户偏好中文回复' });
+    const r = await s.until((f: any) => f.type === 'result' && f.id === 200, 'remember');
+    assert.ok(r.ok);
+    s.send({ id: 201, cmd: 'memory' });
+    const m = await s.until((f: any) => f.type === 'result' && f.id === 201, 'memory');
+    assert.ok(m.ok);
+    assert.ok(m.data.text.includes('用户偏好中文回复'), 'line landed in global AGENTS.md');
+    assert.ok(m.data.path.includes('AGENTS.md'));
+    // closes the loop: a fresh buildContext in that home picks it up
+    const { buildContext } = await import('../src/core/context.js');
+    const prevHome2 = process.env.TANGO_HOME;
+    process.env.TANGO_HOME = home;
+    try {
+      const { systemPrompt } = await buildContext(work);
+      assert.ok(systemPrompt.includes('用户偏好中文回复'), 'global memory reaches new sessions');
+    } finally {
+      if (prevHome2 === undefined) delete process.env.TANGO_HOME; else process.env.TANGO_HOME = prevHome2;
+    }
+  } finally {
+    s.child.kill();
+    mock.server.close();
+    await rm(home, { recursive: true, force: true });
+    await rm(work, { recursive: true, force: true });
+  }
+});

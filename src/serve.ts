@@ -15,7 +15,7 @@ import { randomUUID } from 'node:crypto';
 import { buildContext } from './core/context.js';
 import { parseRule } from './core/permissions.js';
 import { restoreSnapshot } from './core/git-snapshot.js';
-import { hasKey, keyProblem, loadConfig, loadModels, pickModel, saveConfig, sessionsDir } from './core/config.js';
+import { hasKey, keyProblem, loadConfig, loadModels, pickModel, saveConfig, sessionsDir, tangoDir } from './core/config.js';
 import { listDrafts, promoteDraft, saveDraft } from './core/skills.js';
 import { join, resolve } from 'node:path';
 import { SessionStore } from './core/session.js';
@@ -510,6 +510,33 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
         } finally {
           await rm2(tmp, { recursive: true, force: true });
         }
+      }
+      case 'memory': {
+        const { readFile: rf5 } = await import('node:fs/promises');
+        const path = join(tangoDir(), 'AGENTS.md');
+        let text = '';
+        try {
+          text = await rf5(path, 'utf8');
+        } catch {}
+        reply(cmd, true, { text, path });
+        return;
+      }
+      case 'remember': {
+        const line = String(cmd.text ?? '').trim();
+        if (!line) return reply(cmd, false, undefined, 'remember: empty text');
+        const { appendFile: af, mkdir: mk3, writeFile: wf5, readFile: rf5 } = await import('node:fs/promises');
+        const path = join(tangoDir(), 'AGENTS.md');
+        await mk3(tangoDir(), { recursive: true });
+        let prefix = '';
+        try {
+          const prev = await rf5(path, 'utf8');
+          if (!prev.includes('# Tango memory') && !prev.endsWith('\n')) prefix = '\n';
+        } catch {
+          await wf5(path, '# Tango memory\n\n', 'utf8');
+        }
+        await af(path, `${prefix}- ${line}\n`, 'utf8');
+        reply(cmd, true, { remembered: line, path });
+        return;
       }
       case 'review':
       case 'security_review': {
@@ -1106,7 +1133,7 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
     // (e.g. "always allow" from a permission dialog), so they skip the prompt queue too
     const guarded = (p: Promise<unknown>) =>
       void p.catch((e) => out({ type: 'error', message: String(e?.message ?? e) }));
-    if (['set_mode', 'status', 'timeline', 'context', 'queue', 'usage', 'stats', 'insights', 'preset_save', 'preset_list', 'preset_get', 'permissions_list', 'permissions_add', 'permissions_remove', 'import', 'cd', 'pwd', 'add_dir', 'config_show', 'init', 'doctor', 'debug_zip', 'set_plan', 'set_effort'].includes(cmd.cmd)) {
+    if (['set_mode', 'status', 'timeline', 'context', 'queue', 'usage', 'stats', 'insights', 'preset_save', 'preset_list', 'preset_get', 'permissions_list', 'permissions_add', 'permissions_remove', 'import', 'cd', 'pwd', 'add_dir', 'config_show', 'init', 'doctor', 'debug_zip', 'set_plan', 'set_effort', 'memory', 'remember'].includes(cmd.cmd)) {
       guarded(handle(cmd));
       return;
     }

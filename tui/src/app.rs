@@ -103,6 +103,8 @@ enum Pending {
     DebugZip,
     Plan,
     Effort,
+    Memory,
+    Remember,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -270,6 +272,8 @@ const SLASH: &[(&str, &str)] = &[
     ("/interrupt", "停止当前回合"),
     ("/model <id>", "切换模型（存为默认），裸 /model 打开列表"),
     ("/mode <m>", "ask | auto | readonly"),
+    ("/memory", "查看长期记忆（全局 AGENTS.md，ctrl+e 编辑）"),
+    ("/remember <text>", "记住一条偏好 → 全局记忆，所有会话生效"),
     ("/mouse", "切换鼠标捕获 · /mouse on|off"),
     ("/multiline", "Enter 换行/发送切换（ctrl+s 始终发送）"),
     ("/new", "开新会话"),
@@ -1272,6 +1276,18 @@ impl App {
                     let id =
                         serve.command("set_effort", vec![("level", Value::String(arg.into()))]);
                     self.pending.push((id, Pending::Effort));
+                }
+            }
+            "/memory" => {
+                let id = serve.command("memory", vec![]);
+                self.pending.push((id, Pending::Memory));
+            }
+            "/remember" => {
+                if rest.is_empty() {
+                    self.push("usage: /remember <一句话>", Tone::Muted);
+                } else {
+                    let id = serve.command("remember", vec![("text", Value::String(rest.into()))]);
+                    self.pending.push((id, Pending::Remember));
                 }
             }
             "/review" | "/security-review" => {
@@ -3439,6 +3455,24 @@ impl App {
                         (Pending::Effort, true) => {
                             let e = d["effort"].as_str().unwrap_or("off");
                             self.push(format!("推理力度 → {e}"), Tone::Muted);
+                        }
+                        (Pending::Memory, true) => {
+                            let text = d["text"].as_str().unwrap_or("");
+                            let path = d["path"].as_str().unwrap_or("AGENTS.md");
+                            let body = if text.trim().is_empty() {
+                                format!(
+                                    "（空）\n\n用 /remember <一句话> 添加，或 ctrl+e 直接编辑 {path}"
+                                )
+                            } else {
+                                text.to_string()
+                            };
+                            let mut viewer = Viewer::new(format!("长期记忆 · {path}"), body);
+                            viewer.prompt_state = None;
+                            self.viewer = Some(viewer);
+                        }
+                        (Pending::Remember, true) => {
+                            let line = d["remembered"].as_str().unwrap_or("");
+                            self.push(format!("已记住：{line}（全部会话生效）"), Tone::Success);
                         }
                         (Pending::History, true) => self.load_history(d),
                         (Pending::Theme, true) => {
@@ -5699,5 +5733,26 @@ mod tests {
         app.run_slash("/security-review", &mut serve);
         let sent2: Value = serde_json::from_str(&serve.sent[1]).unwrap();
         assert_eq!(sent2["cmd"], "security_review");
+    }
+
+    #[test]
+    fn memory_and_remember_wire_up() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.run_slash("/remember 用户偏好中文", &mut serve);
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        assert_eq!(sent["cmd"], "remember");
+        assert_eq!(sent["text"], "用户偏好中文");
+        app.frame(json!({"type": "result", "id": sent["id"], "ok": true,
+            "data": {"remembered": "用户偏好中文", "path": "/h/AGENTS.md"}}));
+        assert!(app.lines.iter().any(|l| l.text.contains("已记住")));
+
+        app.run_slash("/memory", &mut serve);
+        let sent2: Value = serde_json::from_str(&serve.sent[1]).unwrap();
+        assert_eq!(sent2["cmd"], "memory");
+        app.frame(json!({"type": "result", "id": sent2["id"], "ok": true,
+            "data": {"text": "- 用户偏好中文\n", "path": "/h/AGENTS.md"}}));
+        let v = app.viewer.as_ref().unwrap();
+        assert!(v.text.contains("用户偏好中文"));
     }
 }
