@@ -1426,3 +1426,37 @@ test('plan mode: writes vetoed even when a rule allows; reads fine; off restores
     await rm(work, { recursive: true, force: true });
   }
 });
+
+test('review/security-review inline the working diff into the prompt', async () => {
+  const mock = await startMock();
+  const home = await mkdtemp(join(tmpdir(), 'tango-serve-home-'));
+  const work = await mkdtemp(join(tmpdir(), 'tango-serve-work-'));
+  await writeFile(join(home, 'models.json'), JSON.stringify([
+    { id: 'mock/mock', provider: 'mock', model: 'm', api: 'openai-completions', baseUrl: `http://127.0.0.1:${(mock.server.address() as AddressInfo).port}/v1`, apiKey: 'MOCK_SERVE_KEY', contextWindow: 8000 }
+  ]));
+  const git = (args: string[]) => spawnSync('git', args, { cwd: work, encoding: 'utf8' });
+  git(['init', '-q']); git(['config', 'user.email', 't@t']); git(['config', 'user.name', 't']);
+  await writeFile(join(work, 'seed.txt'), 'seed\n'); git(['add', '.']); git(['commit', '-q', '-m', 'i']);
+  await writeFile(join(work, 'changed.txt'), 'NEWLY ADDED REVIEWMARK\n');
+  mock.setScript(() => SSE({ choices: [{ delta: { content: 'review done' } }] }) + SSE({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 5, completion_tokens: 2 } }) + 'data: [DONE]\n\n');
+  const s = await startServe(home, work, 0);
+  try {
+    await s.next();
+    s.send({ id: 200, cmd: 'review' });
+    await s.until((f: any) => f.type === 'result' && f.id === 200 && f.ok, 'review');
+    const reviewPrompt = mock.requests.at(-1).messages.at(-1).content;
+    assert.ok(reviewPrompt.includes('REVIEWMARK'), 'diff text rides the review prompt');
+    assert.ok(reviewPrompt.includes('正确性'), 'review instructions present');
+
+    s.send({ id: 201, cmd: 'security_review' });
+    await s.until((f: any) => f.type === 'result' && f.id === 201 && f.ok, 'sec');
+    const secPrompt = mock.requests.at(-1).messages.at(-1).content;
+    assert.ok(secPrompt.includes('安全'), 'security instructions present');
+    assert.ok(secPrompt.includes('REVIEWMARK'));
+  } finally {
+    s.child.kill();
+    mock.server.close();
+    await rm(home, { recursive: true, force: true });
+    await rm(work, { recursive: true, force: true });
+  }
+});

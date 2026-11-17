@@ -511,6 +511,28 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
           await rm2(tmp, { recursive: true, force: true });
         }
       }
+      case 'review':
+      case 'security_review': {
+        const paths = Array.isArray(cmd.paths) ? cmd.paths.map(String) : ['.'];
+        const diffResult = await diffTool.execute({ paths, staged: false }, { cwd, signal: new AbortController().signal });
+        const diffText = resultText(diffResult);
+        if (diffText === '(no diff for those paths)') {
+          reply(cmd, true, { text: '工作区干净 — 没有可审查的改动', done: true, reviewed: false });
+          return;
+        }
+        const instructions =
+          cmd.cmd === 'review'
+            ? '你是资深代码评审。审查以下工作区 diff：找出正确性问题（逻辑错误、边界、错误处理）、可读性问题与测试缺口。按 严重度 排序列出发现，每条给出文件:行 与修复建议；没有实质问题就明说。用中文。'
+            : '你是安全评审专家。审查以下工作区 diff：找出注入、路径穿越、命令注入、密钥泄露、越权与不安全的依赖变更。按 严重度 排序列出，每条给出文件:行 与修复建议；没有风险就明说。用中文。';
+        const text = `${instructions}\n\n<diff>\n${diffText.slice(0, 60_000)}\n</diff>`;
+        try {
+          const msg = await agent.prompt(text, (ev) => { if (ev.type !== 'done') out({ type: 'stream', event: ev }); });
+          reply(cmd, true, { done: true, reviewed: true, stopReason: msg.stopReason ?? 'stop' });
+        } catch (e: any) {
+          reply(cmd, false, undefined, String(e?.message ?? e));
+        }
+        return;
+      }
       case 'set_effort': {
         const raw = String(cmd.level ?? 'off');
         const level = raw === 'low' || raw === 'medium' || raw === 'high' ? raw : undefined;
