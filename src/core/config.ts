@@ -34,6 +34,8 @@ export interface Config {
   autocompact?: number | 'off';
   /** Custom status bar template with {model} {mode} {cost} {ctx} {pct} {session} {tokens}; missing = default bar */
   statusline?: string;
+  /** Persistent allow rules: tool:<name> | path:<prefix> | bash:<prefix> */
+  permissions?: { allow: string[] };
 }
 
 async function readJson<T>(path: string): Promise<T | undefined> {

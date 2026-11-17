@@ -12,6 +12,7 @@
 import { createInterface } from 'node:readline';
 import { randomUUID } from 'node:crypto';
 import { buildContext } from './core/context.js';
+import { parseRule } from './core/permissions.js';
 import { restoreSnapshot } from './core/git-snapshot.js';
 import { hasKey, keyProblem, loadConfig, loadModels, pickModel, saveConfig, sessionsDir } from './core/config.js';
 import { listDrafts, promoteDraft, saveDraft } from './core/skills.js';
@@ -30,6 +31,13 @@ interface Command {
   cmd: string;
   [k: string]: unknown;
 }
+
+const ruleNote = (rule: string) =>
+  rule.startsWith('tool:')
+    ? 'always allow this tool'
+    : rule.startsWith('path:')
+      ? 'allow writes under this path'
+      : 'allow bash commands with this prefix';
 
 const resultText = (r: ToolResult) =>
   r.content
@@ -368,6 +376,33 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
         agent.compactAt = value;
         await saveConfig({ ...(await loadConfig()), autocompact: value === 0 ? 'off' : value });
         reply(cmd, true, { autocompact: value });
+        return;
+      }
+      case 'permissions_list':
+      case 'permissions_add':
+      case 'permissions_remove': {
+        const cfg0 = await loadConfig();
+        const allow = cfg0.permissions?.allow ? [...cfg0.permissions.allow] : [];
+        if (cmd.cmd === 'permissions_list') {
+          reply(cmd, true, { allow: allow.map((rule) => ({ rule, note: ruleNote(rule) })) });
+          return;
+        }
+        if (cmd.cmd === 'permissions_add') {
+          const raw = String(cmd.rule ?? '').trim();
+          const p = parseRule(raw);
+          if (!p.ok) return reply(cmd, false, undefined, p.error);
+          if (!allow.includes(raw)) allow.push(raw);
+          await saveConfig({ ...(await loadConfig()), permissions: { allow } });
+          if (perm.rules) perm.rules.allow = allow;
+          reply(cmd, true, { allow });
+          return;
+        }
+        const idx = allow.indexOf(String(cmd.rule ?? ''));
+        if (idx < 0) return reply(cmd, false, undefined, `rule not found: ${cmd.rule}`);
+        allow.splice(idx, 1);
+        await saveConfig({ ...(await loadConfig()), permissions: { allow } });
+        if (perm.rules) perm.rules.allow = allow;
+        reply(cmd, true, { allow });
         return;
       }
       case 'preset_save':
@@ -812,7 +847,7 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
     // (e.g. "always allow" from a permission dialog), so they skip the prompt queue too
     const guarded = (p: Promise<unknown>) =>
       void p.catch((e) => out({ type: 'error', message: String(e?.message ?? e) }));
-    if (['set_mode', 'status', 'timeline', 'context', 'queue', 'usage', 'stats', 'insights', 'preset_save', 'preset_list', 'preset_get'].includes(cmd.cmd)) {
+    if (['set_mode', 'status', 'timeline', 'context', 'queue', 'usage', 'stats', 'insights', 'preset_save', 'preset_list', 'preset_get', 'permissions_list', 'permissions_add', 'permissions_remove'].includes(cmd.cmd)) {
       guarded(handle(cmd));
       return;
     }

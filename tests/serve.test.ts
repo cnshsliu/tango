@@ -1149,3 +1149,61 @@ test('I4: context breakdown rows sum to the total (skills not double-counted)', 
     await rm(work, { recursive: true, force: true });
   }
 });
+
+test('permissions: add/list/remove rules take effect live', async () => {
+  const mock = await startMock();
+  const home = await mkdtemp(join(tmpdir(), 'tango-serve-home-'));
+  const work = await mkdtemp(join(tmpdir(), 'tango-serve-work-'));
+  await writeFile(join(home, 'models.json'), JSON.stringify([
+    { id: 'mock/mock', provider: 'mock', model: 'm', api: 'openai-completions', baseUrl: `http://127.0.0.1:${(mock.server.address() as AddressInfo).port}/v1`, apiKey: 'MOCK_SERVE_KEY', contextWindow: 200 }
+  ]));
+  // rm is risky: with the mock asking for it, an unanswered permission means denial
+  let n = 0;
+  mock.setScript(() => {
+    n++;
+    if (n === 1) return SSE({ choices: [{ delta: { tool_calls: [{ index: 0, id: 'r1', function: { name: 'bash', arguments: JSON.stringify({ command: 'rm -rf build/' }) } }] }, finish_reason: 'tool_calls' }] }) + 'data: [DONE]\n\n';
+    return SSE({ choices: [{ delta: { content: 'done' } }] }) + SSE({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 5, completion_tokens: 2 } }) + 'data: [DONE]\n\n';
+  });
+  const s = await startServe(home, work, 0);
+  try {
+    await s.next();
+    // 1) without a rule the risky call is blocked (permission unanswered → denied)
+    s.send({ id: 100, cmd: 'prompt', text: 'clean build' });
+    const perm1 = await s.until((f: any) => f.type === 'permission_request', 'permission ask');
+    s.send({ cmd: 'permission', request: perm1.request, allow: false });
+    await s.until((f: any) => f.type === 'result' && f.id === 100, 'turn1');
+
+    // 2) add the rule; invalid rules are refused
+    s.send({ id: 200, cmd: 'permissions_add', rule: 'garbage' });
+    const bad = await s.until((f: any) => f.type === 'result' && f.id === 200, 'bad add');
+    assert.ok(!bad.ok);
+    s.send({ id: 201, cmd: 'permissions_add', rule: 'bash:rm' });
+    const add = await s.until((f: any) => f.type === 'result' && f.id === 201, 'add');
+    assert.ok(add.ok);
+    assert.deepEqual(JSON.parse(await readFile(join(home, 'config.json'), 'utf8')).permissions.allow, ['bash:rm']);
+
+    s.send({ id: 202, cmd: 'permissions_list' });
+    const list = await s.until((f: any) => f.type === 'result' && f.id === 202, 'list');
+    assert.equal(list.data.allow.length, 1);
+    assert.equal(list.data.allow[0].rule, 'bash:rm');
+
+    // 3) same risky call now runs without asking
+    n = 0;
+    s.send({ id: 101, cmd: 'prompt', text: 'clean build again' });
+    const done = await s.until((f: any) => f.type === 'result' && f.id === 101 && f.ok, 'turn2');
+    assert.ok(done.ok);
+
+    // 4) remove the rule — asks again
+    s.send({ id: 203, cmd: 'permissions_remove', rule: 'bash:rm' });
+    await s.until((f: any) => f.type === 'result' && f.id === 203 && f.ok, 'remove');
+    n = 0;
+    s.send({ id: 102, cmd: 'prompt', text: 'clean build third' });
+    await s.until((f: any) => f.type === 'permission_request', 'asks again');
+    s.child.kill();
+  } finally {
+    if (!s.child.killed) s.child.kill();
+    mock.server.close();
+    await rm(home, { recursive: true, force: true });
+    await rm(work, { recursive: true, force: true });
+  }
+});

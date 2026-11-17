@@ -116,10 +116,10 @@ export type AskFn = (call: ToolCallBlock, reason: string) => Promise<boolean>;
 
 export function installPermissionGate(
   events: EventBus,
-  opts: { mode: () => PermissionMode; cwd: string; ask?: AskFn }
+  opts: { mode: () => PermissionMode; cwd: string; ask?: AskFn; rules?: () => AllowRule[] }
 ): () => void {
   return events.on('before_tool', async ({ call }) => {
-    const d = decide(opts.mode(), call, opts.cwd);
+    const d = decide(opts.mode(), call, opts.cwd, opts.rules?.());
     if (d.action === 'allow') return;
     if (d.action === 'deny') return { block: true, reason: d.reason };
     if (!opts.ask) return { block: true, reason: `${d.reason}; needs confirmation (rerun with --yes to allow)` };

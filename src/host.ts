@@ -8,7 +8,7 @@ import { checkpointEnabled, installCheckpoints } from './core/checkpoint.js';
 import { keyProblem, loadConfig, loadModels, pickModel, sessionsDir } from './core/config.js';
 import { installDiagnostics } from './core/diagnostics.js';
 import { EventBus } from './core/events.js';
-import { installPermissionGate, type AskFn, type PermissionMode } from './core/permissions.js';
+import { installPermissionGate, parseRule, type AllowRule, type AskFn, type PermissionMode } from './core/permissions.js';
 import { SessionStore } from './core/session.js';
 import { ToolRegistry } from './core/tools/registry.js';
 import { bashTool } from './core/tools/bash.js';
@@ -23,12 +23,6 @@ import type { ModelSpec } from './core/types.js';
 
 export const VERSION = '0.1.0';
 
-/** Live permission state a host mutates (REPL /mode, serve set_mode, tasks --mode). */
-export interface PermState {
-  mode: PermissionMode;
-  ask?: AskFn;
-}
-
 export function buildTools(): ToolRegistry {
   const tools = new ToolRegistry();
   for (const t of [readTool, writeTool, editTool, bashTool, grepTool, findTool, lsTool, webSearchTool, webFetchTool, officeReadTool, officeWriteTool, notifyTool, diffTool])
@@ -36,10 +30,25 @@ export function buildTools(): ToolRegistry {
   return tools;
 }
 
-export function makeAgent(model: ModelSpec, store: SessionStore, cwd: string, perm: PermState, cfg: { checkpoint?: string } = {}): Agent {
+/** Live permission state a host mutates (REPL /mode, serve set_mode, /permissions). */
+export interface PermState {
+  mode: PermissionMode;
+  ask?: AskFn;
+  /** live allow rules (parsed from config; /permissions mutates the array in place) */
+  rules?: { allow: string[] };
+}
+
+export function makeAgent(model: ModelSpec, store: SessionStore, cwd: string, perm: PermState, cfg: { checkpoint?: string; permissions?: { allow: string[] } } = {}): Agent {
   const events = new EventBus();
   // gate first: a vetoed call is never announced as running
-  installPermissionGate(events, { mode: () => perm.mode, cwd, ask: (c, r) => (perm.ask ? perm.ask(c, r) : Promise.resolve(false)) });
+  const rules = perm.rules ?? { allow: cfg.permissions?.allow ? [...cfg.permissions.allow] : [] };
+  perm.rules = rules;
+  const parsedRules = () =>
+    rules.allow
+      .map((r) => parseRule(r))
+      .filter((r): r is { ok: true; rule: AllowRule } => r.ok)
+      .map((r) => r.rule);
+  installPermissionGate(events, { mode: () => perm.mode, cwd, ask: (c, r) => (perm.ask ? perm.ask(c, r) : Promise.resolve(false)), rules: parsedRules });
   installDiagnostics(events, cwd);
   if (checkpointEnabled(cfg)) installCheckpoints(events, { cwd, store });
   return new Agent({ store, tools: buildTools(), model, cwd, events });
