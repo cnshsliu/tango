@@ -1579,3 +1579,34 @@ test('goal: auto-continues until achieved, respects interrupt and max rounds', a
     await rm(work, { recursive: true, force: true });
   }
 });
+
+test('loop: repeats a prompt on an interval, off and interrupt stop it', async () => {
+  const mock = await startMock();
+  const home = await mkdtemp(join(tmpdir(), 'tango-serve-home-'));
+  const work = await mkdtemp(join(tmpdir(), 'tango-serve-work-'));
+  await writeFile(join(home, 'models.json'), JSON.stringify([
+    { id: 'mock/mock', provider: 'mock', model: 'm', api: 'openai-completions', baseUrl: `http://127.0.0.1:${(mock.server.address() as AddressInfo).port}/v1`, apiKey: 'MOCK_SERVE_KEY', contextWindow: 200 }
+  ]));
+  mock.setScript(() => SSE({ choices: [{ delta: { content: 'tick' } }] }) + SSE({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1 } }) + 'data: [DONE]\n\n');
+  const s = await startServe(home, work, 0);
+  try {
+    await s.next();
+    // minInterval 10s for users; tests may pass lower via minInterval
+    s.send({ id: 200, cmd: 'loop', everySec: 0.3, prompt: 'check status', minInterval: 0 });
+    const set = await s.until((f: any) => f.type === 'result' && f.id === 200 && f.ok, 'loop set');
+    assert.ok(set.ok);
+    // wait for ~3 iterations
+    await sleep(1400);
+    s.send({ id: 201, cmd: 'loop', off: true });
+    await s.until((f: any) => f.type === 'result' && f.id === 201 && f.ok, 'loop off');
+    const countAfterOff = mock.requests.length;
+    await sleep(800);
+    assert.equal(mock.requests.length, countAfterOff, 'no more ticks after off');
+    assert.ok(countAfterOff >= 3, `ran at least 3 iterations, got ${countAfterOff}`);
+  } finally {
+    s.child.kill();
+    mock.server.close();
+    await rm(home, { recursive: true, force: true });
+    await rm(work, { recursive: true, force: true });
+  }
+});

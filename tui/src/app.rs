@@ -107,6 +107,7 @@ enum Pending {
     Remember,
     Skills,
     Goal,
+    Loop,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -282,6 +283,10 @@ const SLASH: &[(&str, &str)] = &[
     ("/memory", "查看长期记忆（全局 AGENTS.md，ctrl+e 编辑）"),
     ("/remember <text>", "记住一条偏好 → 全局记忆，所有会话生效"),
     ("/mouse", "切换鼠标捕获 · /mouse on|off"),
+    (
+        "/loop <interval> <prompt>",
+        "定间隔重复提示（如 /loop 10m 检查构建）· /loop off 停",
+    ),
     ("/multiline", "Enter 换行/发送切换（ctrl+s 始终发送）"),
     ("/new", "开新会话"),
     ("/recap", "一行总结当前对话（不写入会话）"),
@@ -1287,6 +1292,47 @@ impl App {
                     let id =
                         serve.command("set_effort", vec![("level", Value::String(arg.into()))]);
                     self.pending.push((id, Pending::Effort));
+                }
+            }
+            "/loop" => {
+                if rest.trim() == "off" {
+                    let id = serve.command("loop", vec![("off", Value::Bool(true))]);
+                    self.pending.push((id, Pending::Loop));
+                } else if let Some((interval, prompt)) = rest.split_once(' ') {
+                    let secs = match interval.trim().chars().last() {
+                        Some('m') => interval
+                            .trim()
+                            .trim_end_matches('m')
+                            .parse::<f64>()
+                            .map(|n| n * 60.0)
+                            .ok(),
+                        Some('h') => interval
+                            .trim()
+                            .trim_end_matches('h')
+                            .parse::<f64>()
+                            .map(|n| n * 3600.0)
+                            .ok(),
+                        Some('s') => interval.trim().trim_end_matches('s').parse::<f64>().ok(),
+                        _ => interval.trim().parse::<f64>().ok(),
+                    };
+                    match secs {
+                        Some(secs) if secs >= 10.0 && !prompt.trim().is_empty() => {
+                            let id = serve.command(
+                                "loop",
+                                vec![
+                                    ("everySec", Value::from(secs as u64)),
+                                    ("prompt", Value::String(prompt.trim().into())),
+                                ],
+                            );
+                            self.pending.push((id, Pending::Loop));
+                        }
+                        _ => self.push(
+                            "usage: /loop <10s|5m|1h> <prompt> · 间隔下限 10 秒",
+                            Tone::Muted,
+                        ),
+                    }
+                } else {
+                    self.push("usage: /loop <10s|5m|1h> <prompt> · /loop off", Tone::Muted);
                 }
             }
             "/goal" => {
@@ -3543,6 +3589,24 @@ impl App {
                                 self.push("goal 已清除", Tone::Muted);
                             }
                         },
+                        (Pending::Loop, true) => {
+                            if let Some(p) = d["loop"].as_str() {
+                                let every = d["everySec"].as_u64().unwrap_or(0);
+                                let nice = if every % 3600 == 0 {
+                                    format!("{}h", every / 3600)
+                                } else if every % 60 == 0 {
+                                    format!("{}m", every / 60)
+                                } else {
+                                    format!("{every}s")
+                                };
+                                self.push(
+                                    format!("● loop 每 {nice}：{p} · /loop off 停"),
+                                    Tone::Success,
+                                );
+                            } else {
+                                self.push("loop 已停止", Tone::Muted);
+                            }
+                        }
                         (Pending::History, true) => self.load_history(d),
                         (Pending::Theme, true) => {
                             self.theme = Theme::resolve(
@@ -5864,5 +5928,19 @@ mod tests {
         assert_eq!(sent2["text"], "off");
         app.frame(json!({"type": "result", "id": sent2["id"], "ok": true, "data": {"goal": null}}));
         assert!(app.goal_text.is_none());
+    }
+
+    #[test]
+    fn loop_command_parses_interval_and_prompt() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.run_slash("/loop 10m 检查构建", &mut serve);
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        assert_eq!(sent["cmd"], "loop");
+        assert_eq!(sent["everySec"], 600);
+        assert_eq!(sent["prompt"], "检查构建");
+        app.run_slash("/loop off", &mut serve);
+        let sent2: Value = serde_json::from_str(&serve.sent[1]).unwrap();
+        assert_eq!(sent2["off"], true);
     }
 }

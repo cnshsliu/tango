@@ -92,6 +92,14 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
   // /goal state: auto-continue until the model confirms the goal is done (cap: maxRounds)
   const goal = { text: null as string | null, paused: false, rounds: 0, maxRounds: 5 };
 
+  // /loop state: interval-repeated prompt; off/interrupt/EOF must stop the timer chain
+  const loop = { timer: null as NodeJS.Timeout | null, everySec: 0, prompt: '' };
+  const stopLoop = () => {
+    if (loop.timer) clearTimeout(loop.timer);
+    loop.timer = null;
+    loop.prompt = '';
+  };
+
   // token-plan users watch tokens more than dollars (qwen4 plan T5)
   const sessionTokens = { input: 0, output: 0, cacheRead: 0 };
   agent.events.on('turn_end', (e) => {
@@ -540,6 +548,33 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
         } finally {
           await rm2(tmp, { recursive: true, force: true });
         }
+      }
+      case 'loop': {
+        if (cmd.off === true) {
+          stopLoop();
+          reply(cmd, true, { loop: null });
+          return;
+        }
+        const everySec = Number(cmd.everySec ?? 0);
+        const prompt = String(cmd.prompt ?? '');
+        const min = Number(cmd.minInterval ?? 10);
+        if (!prompt.trim()) return reply(cmd, false, undefined, 'loop: empty prompt');
+        if (!Number.isFinite(everySec) || everySec < min) {
+          return reply(cmd, false, undefined, `loop: interval must be ≥ ${min}s`);
+        }
+        stopLoop();
+        loop.everySec = everySec;
+        loop.prompt = prompt;
+        const tick = () => {
+          if (!loop.prompt) return;
+          void handle({ id: undefined, cmd: 'prompt', text: loop.prompt }).catch(() => {});
+          loop.timer = setTimeout(tick, loop.everySec * 1000);
+          loop.timer.unref?.();
+        };
+        loop.timer = setTimeout(tick, 10); // first run promptly
+        loop.timer.unref?.();
+        reply(cmd, true, { loop: prompt, everySec });
+        return;
       }
       case 'goal': {
         const sub = String(cmd.text ?? cmd.op ?? '');
@@ -1188,6 +1223,7 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
       queuedTexts.length = 0;
       interruptGen++;
       goal.text = null; // interrupt stops /goal auto-continuation too
+      stopLoop(); // and /loop timers
       agent.abort();
       return;
     }
@@ -1203,7 +1239,7 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
     // (e.g. "always allow" from a permission dialog), so they skip the prompt queue too
     const guarded = (p: Promise<unknown>) =>
       void p.catch((e) => out({ type: 'error', message: String(e?.message ?? e) }));
-    if (['set_mode', 'status', 'timeline', 'context', 'queue', 'usage', 'stats', 'insights', 'preset_save', 'preset_list', 'preset_get', 'permissions_list', 'permissions_add', 'permissions_remove', 'import', 'cd', 'pwd', 'add_dir', 'config_show', 'init', 'doctor', 'debug_zip', 'set_plan', 'set_effort', 'memory', 'remember', 'skills', 'goal'].includes(cmd.cmd)) {
+    if (['set_mode', 'status', 'timeline', 'context', 'queue', 'usage', 'stats', 'insights', 'preset_save', 'preset_list', 'preset_get', 'permissions_list', 'permissions_add', 'permissions_remove', 'import', 'cd', 'pwd', 'add_dir', 'config_show', 'init', 'doctor', 'debug_zip', 'set_plan', 'set_effort', 'memory', 'remember', 'skills', 'goal', 'loop'].includes(cmd.cmd)) {
       guarded(handle(cmd));
       return;
     }
@@ -1242,6 +1278,7 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
   });
   rl.on('close', () => {
     // stdin EOF (a pipe, not a UI): finish queued work, then leave; never cut a running prompt short
+    stopLoop(); // no orphan timers
     void queue.then(() => process.exit(0));
   });
 }
