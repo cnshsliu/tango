@@ -276,6 +276,10 @@ const SLASH: &[(&str, &str)] = &[
     ("/recap", "一行总结当前对话（不写入会话）"),
     ("/rename <name>", "重命名当前会话"),
     (
+        "/review [paths]",
+        "对工作区 diff 做代码评审 · /security-review 安全评审",
+    ),
+    (
         "/preset <name>|save <name>",
         "提示模板：保存当前输入 / 填入输入框（不发送）",
     ),
@@ -1269,6 +1273,18 @@ impl App {
                         serve.command("set_effort", vec![("level", Value::String(arg.into()))]);
                     self.pending.push((id, Pending::Effort));
                 }
+            }
+            "/review" | "/security-review" => {
+                let cmd = if head == "/review" {
+                    "review"
+                } else {
+                    "security_review"
+                };
+                let id = serve.command(cmd, vec![]);
+                // the result lands like a prompt result: same busy lifecycle
+                self.prompt_id = id;
+                self.busy = true;
+                self.push("评审进行中 …", Tone::Muted);
             }
             "/plan" => {
                 let on = !self.plan_mode;
@@ -5671,5 +5687,17 @@ mod tests {
             json!({"type": "result", "id": sent["id"], "ok": true, "data": {"effort": "high"}}),
         );
         assert!(app.lines.iter().any(|l| l.text.contains("high")));
+    }
+
+    #[test]
+    fn review_commands_send() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.run_slash("/review", &mut serve);
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        assert_eq!(sent["cmd"], "review");
+        app.run_slash("/security-review", &mut serve);
+        let sent2: Value = serde_json::from_str(&serve.sent[1]).unwrap();
+        assert_eq!(sent2["cmd"], "security_review");
     }
 }
