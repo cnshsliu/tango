@@ -122,9 +122,8 @@ export class SessionStore {
   /** Copy entries[0..toIndex] into a brand-new fork session file. */
   async forkTo(dir: string, newId: string, toIndex: number, name?: string): Promise<SessionStore> {
     const meta = this.meta();
-    const prefix = this.entries
-      .slice(0, toIndex + 1)
-      .filter((e) => e.kind !== 'meta' && e.kind !== 'rewind');
+    // rewinds stay: dropping them would resurrect abandoned futures in the fork (I2)
+    const prefix = this.entries.slice(0, toIndex + 1).filter((e) => e.kind !== 'meta');
     const metaEntry: SessionEntry = {
       kind: 'meta',
       id: newId,

@@ -1767,10 +1767,15 @@ impl App {
                         let (sid, entry, cur) = (parts[0], parts[1], parts[2] == "1");
                         if cur {
                             if let Ok(e) = entry.parse::<u64>() {
-                                let id =
-                                    serve.command("rewind", vec![("entryIndex", Value::from(e))]);
+                                let id = serve.command(
+                                    "rewind",
+                                    vec![
+                                        ("entryIndex", Value::from(e)),
+                                        ("include", Value::Bool(true)),
+                                    ],
+                                );
                                 self.pending.push((id, Pending::Rewind));
-                                self.push("⟲ 回滚到命中位置 …", Tone::Muted);
+                                self.push("⟲ 恢复到命中位置 …", Tone::Muted);
                             }
                         } else {
                             self.push(format!("↻ resuming session {sid} …"), Tone::Muted);
@@ -4466,6 +4471,7 @@ mod tests {
         let rew: Value = serde_json::from_str(&serve.sent[2]).unwrap();
         assert_eq!(rew["cmd"], "rewind");
         assert_eq!(rew["entryIndex"], 3);
+        assert_eq!(rew["include"], true, "I4: find recovery is inclusive");
     }
 
     #[test]

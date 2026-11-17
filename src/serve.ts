@@ -181,10 +181,16 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
       .indexedEntries()
       .filter(({ entry }) => entry.kind === 'checkpoint')
       .map(({ entry, index }) => ({ hash: (entry as { hash: string }).hash, index }));
-    let boundaryIdx = -1;
-    for (let i = 0; i < cps.length; i++) if (cps[i].index < target.entryIndex) boundaryIdx = i;
-    if (boundaryIdx < 0) boundaryIdx = cps.findIndex((cp) => cp.index > target.entryIndex);
-    if (dropAll && boundaryIdx < cps.length - 1) boundaryIdx = cps.length - 1;
+    // boundary = the FIRST checkpoint logged at/after the cut: the snapshot taken as the
+    // dropped range began, which includes files the user made between turns (C1). When the
+    // dropped range had no writes at all, no checkpoint exists there — code is untouched.
+    let boundaryIdx = cps.findIndex((cp) => cp.index > target.entryIndex);
+    if (!dropAll && boundaryIdx < 0) {
+      // the dropped range begins with a no-write turn: fall back to the previous turn's
+      // end state; user between-turn files are outside the snapshot system and stay put
+      for (let i = 0; i < cps.length; i++) if (cps[i].index < target.entryIndex) boundaryIdx = i;
+    }
+    if (dropAll) boundaryIdx = cps.length - 1; // redo-to-latest: restore the last known state
     if (boundaryIdx >= 0) {
       const later = cps.slice(boundaryIdx + 1).map((c) => c.hash);
       code = await restoreSnapshot(cwd, cps[boundaryIdx].hash, later);
@@ -193,15 +199,33 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
     return { ok: true, data: { codeRestored: boundaryIdx >= 0, turnDropped: k, ...code } };
   }
 
-  /** index of the last turn visible in the current projection */
+  /** index of the last turn visible in the current projection (C3: set membership, not length) */
   function lastVisibleTurn(list: ReturnType<typeof turns>): number {
-    const visibleEnd = store.visibleEntries().length;
-    let last = -1;
-    for (let i = 0; i < list.length; i++) {
-      if (list[i].entryIndex < visibleEnd) last = i;
-      else break;
+    const entries = store.indexedEntries();
+    let R = -1;
+    let to = -1;
+    for (const { entry, index } of entries) {
+      if (entry.kind === 'rewind') {
+        R = index;
+        to = (entry as { to: number }).to;
+      }
     }
+    const visible = (i: number) => (R < 0 ? true : i <= to || i > R);
+    let last = -1;
+    for (let i = 0; i < list.length; i++) if (visible(list[i].entryIndex)) last = i;
     return last;
+  }
+
+  /** last raw entry index visible in the current projection (fork's default position) */
+  function lastVisibleEntry(): number {
+    const entries = store.indexedEntries();
+    for (let i = entries.length - 1; i >= 0; i--) {
+      if (entries[i].kind === 'rewind') {
+        const to = (entries[i] as { to: number }).to;
+        return Math.max(to, entries.length - 1);
+      }
+    }
+    return entries.length - 1;
   }
 
   function timeTravel(cmd: Command): Promise<void> | void {
@@ -222,7 +246,8 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
       const entryIndex = Number(cmd.entryIndex);
       const k = list.findIndex((t) => t.entryIndex === entryIndex);
       if (k < 0) return reply(cmd, false, undefined, `rewind: no turn at entry ${entryIndex}`);
-      return rewindToTurn(k).then(finish);
+      // include: true = recover that turn (e.g. an orphaned /find hit): keep it, drop after
+      return rewindToTurn(cmd.include === true ? k + 1 : k).then(finish);
     }
     if (cmd.cmd === 'undo') {
       if (last < 0) return reply(cmd, false, undefined, 'nothing to undo');
@@ -526,7 +551,7 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
         if (promptInFlight) return reply(cmd, false, undefined, 'a turn is running — interrupt it first');
         const list = turns();
         const entryIndex = cmd.entryIndex === undefined
-          ? store.visibleEntries().length - 1 // fork from the current position
+          ? lastVisibleEntry() // fork from the current (post-rewind) position
           : Number(cmd.entryIndex);
         const at = list.find((t) => t.entryIndex === entryIndex);
         const toIndex = at ? at.end : Math.max(0, Math.min(entryIndex, store.indexedEntries().length - 1));
@@ -616,19 +641,21 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
     }
     // mode flips and status reads are instant state ops: they must land mid-turn
     // (e.g. "always allow" from a permission dialog), so they skip the prompt queue too
+    const guarded = (p: Promise<unknown>) =>
+      void p.catch((e) => out({ type: 'error', message: String(e?.message ?? e) }));
     if (cmd.cmd === 'set_mode' || cmd.cmd === 'status' || cmd.cmd === 'timeline') {
-      void handle(cmd);
+      guarded(handle(cmd));
       return;
     }
     if (cmd.cmd === 'rewind' || cmd.cmd === 'undo' || cmd.cmd === 'redo') {
-      void timeTravel(cmd);
+      guarded(Promise.resolve(timeTravel(cmd)));
       return;
     }
     if (cmd.cmd === 'fork' || cmd.cmd === 'branch' || cmd.cmd === 'tree' || cmd.cmd === 'find' || cmd.cmd === 'export' || cmd.cmd === 'transcript' || cmd.cmd === 'rename') {
-      void handle(cmd);
+      guarded(handle(cmd));
       return;
     }
-    queue = queue.then(() => handle(cmd));
+    queue = queue.then(() => handle(cmd)).catch((e) => out({ type: 'error', message: String(e?.message ?? e) }));
   });
   rl.on('close', () => {
     // stdin EOF (a pipe, not a UI): finish queued work, then leave; never cut a running prompt short

@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { createInterface } from 'node:readline';
+import { SessionStore } from '../src/core/session.js';
 
 /**
  * End-to-end protocol test: real `tango serve` child process against a local
@@ -707,6 +708,89 @@ test('serve: find orphaned futures, export, transcript, rename, recap', async ()
     s.send({ id: 311, cmd: 'sessions' });
     const after = await s.until((f: any) => f.type === 'result' && f.id === 311, 'count after');
     assert.equal(after.data.sessions.find((x: any) => x.current).messages, countBefore, 'recap itself adds nothing');
+  } finally {
+    s.child.kill();
+    mock.server.close();
+    await rm(home, { recursive: true, force: true });
+    await rm(work, { recursive: true, force: true });
+  }
+});
+
+test('time-travel fixes: user files between turns survive undo; undo/fork see the visible timeline', async () => {
+  const mock = await startMock();
+  const home = await mkdtemp(join(tmpdir(), 'tango-serve-home-'));
+  const work = await mkdtemp(join(tmpdir(), 'tango-serve-work-'));
+  await writeFile(join(home, 'models.json'), JSON.stringify([
+    { id: 'mock/mock', provider: 'mock', model: 'mock-model', api: 'openai-completions', baseUrl: `http://127.0.0.1:${(mock.server.address() as AddressInfo).port}/v1`, apiKey: 'MOCK_SERVE_KEY', contextWindow: 200 }
+  ]));
+  const git = (args: string[]) => spawnSync('git', args, { cwd: work, encoding: 'utf8' });
+  git(['init', '-q']); git(['config', 'user.email', 't@t']); git(['config', 'user.name', 't']);
+  await writeFile(join(work, 'seed.txt'), 'seed\n'); git(['add', '.']); git(['commit', '-q', '-m', 'init']);
+
+  // request-indexed script: 1 write v1, 2 plain, 3 write v2+junk, 4 plain, 5+ plain
+  let n = 0;
+  mock.setScript(() => {
+    n++;
+    if (n === 1) return SSE({ choices: [{ delta: { tool_calls: [{ index: 0, id: 'w1', function: { name: 'bash', arguments: JSON.stringify({ command: 'echo v1 > work.txt' }) } }] }, finish_reason: 'tool_calls' }] }) + 'data: [DONE]\n\n';
+    if (n === 3) return SSE({ choices: [{ delta: { tool_calls: [{ index: 0, id: 'w2', function: { name: 'bash', arguments: JSON.stringify({ command: 'echo v2 > work.txt && echo junk > junk.txt' }) } }] }, finish_reason: 'tool_calls' }] }) + 'data: [DONE]\n\n';
+    return SSE({ choices: [{ delta: { content: 'ok' } }] }) + SSE({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 5, completion_tokens: 2 } }) + 'data: [DONE]\n\n';
+  });
+
+  const s = await startServe(home, work, 0);
+  try {
+    await s.next(); // hello
+    s.send({ id: 100, cmd: 'prompt', text: 'turn-one' });
+    await s.until((f: any) => f.type === 'result' && f.ok, 't1');
+
+    // the user works BETWEEN turns: a brand-new file (never snapshotted)
+    await writeFile(join(work, 'handmade.txt'), 'user data\n');
+
+    s.send({ id: 101, cmd: 'prompt', text: 'turn-two' });
+    await s.until((f: any) => f.type === 'result' && f.ok, 't2');
+
+    // after turn 2, the user edits a TRACKED file — a rewind to before turn 2 must
+    // report this clobbered edit (I3)
+    await writeFile(join(work, 'seed.txt'), 'seed\nuser edited\n');
+
+    // C1: undo must keep the user's between-turn file
+    s.send({ id: 200, cmd: 'undo' });
+    const undo = await s.until((f: any) => f.type === 'result' && f.id === 200, 'undo');
+    assert.ok(undo.ok, JSON.stringify(undo));
+    assert.equal((await readFile(join(work, 'work.txt'), 'utf8')).trim(), 'v1');
+    assert.ok(!existsSync(join(work, 'junk.txt')));
+    assert.ok(existsSync(join(work, 'handmade.txt')), 'C1: user between-turn file survives undo');
+    assert.equal(await readFile(join(work, 'handmade.txt'), 'utf8'), 'user data\n');
+    // I3: the clobbered tracked-file edit is at least reported
+    assert.ok((undo.data.overwritten ?? []).includes('seed.txt'), 'I3: overwritten files reported');
+    assert.equal(await readFile(join(work, 'seed.txt'), 'utf8'), 'seed\n', 'tracked file restored to snapshot content');
+
+    // redo: turn 2 back
+    s.send({ id: 201, cmd: 'redo' });
+    await s.until((f: any) => f.type === 'result' && f.id === 201 && f.ok, 'redo');
+    assert.equal((await readFile(join(work, 'work.txt'), 'utf8')).trim(), 'v2');
+    assert.ok(existsSync(join(work, 'junk.txt')));
+
+    // new work after a rewind exists in the log; C3: undo must drop ONLY the new turn
+    s.send({ id: 102, cmd: 'prompt', text: 'turn-three' });
+    await s.until((f: any) => f.type === 'result' && f.ok, 't3');
+    s.send({ id: 202, cmd: 'undo' });
+    const undo2 = await s.until((f: any) => f.type === 'result' && f.id === 202, 'undo2');
+    assert.ok(undo2.ok, JSON.stringify(undo2));
+    s.send({ id: 203, cmd: 'history' });
+    const h = await s.until((f: any) => f.type === 'result' && f.id === 203, 'history');
+    const txt = JSON.stringify(h.data.items);
+    assert.ok(txt.includes('turn-one'), 'turn 1 stays visible');
+    assert.ok(txt.includes('turn-two'), 'C3: turn 2 (redo-kept) stays visible');
+    assert.ok(!txt.includes('turn-three'), 'only the new turn was dropped');
+
+    // I1+I2: bare /fork lands at the CURRENT position: t1+t2, not the abandoned branch
+    s.send({ id: 204, cmd: 'fork', name: 'after-rewind' });
+    const fk = await s.until((f: any) => f.type === 'result' && f.id === 204, 'fork');
+    assert.ok(fk.ok);
+    const forkStore = await SessionStore.open(join(home, 'sessions'), fk.data.sessionId);
+    const forkTexts = JSON.stringify(forkStore.messages());
+    assert.ok(forkTexts.includes('turn-one') && forkTexts.includes('turn-two'), 'I1: fork copies the visible timeline');
+    assert.ok(!forkTexts.includes('turn-three'), 'I2: fork does not resurrect the abandoned turn');
   } finally {
     s.child.kill();
     mock.server.close();

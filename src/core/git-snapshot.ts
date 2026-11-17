@@ -45,7 +45,18 @@ export async function takeSnapshot(cwd: string, sessionId = 'adhoc'): Promise<st
         const env = { GIT_INDEX_FILE: join(tmpIndex, 'index') };
         git(root, ['add', '-A', '--'], env); // populates the temp index only
         const tree = git(root, ['write-tree'], env).trim();
-        const hash = git(root, ['commit-tree', tree, '-m', 'tango checkpoint'], env).trim();
+        // chain onto the session's ref so every snapshot stays reachable —
+        // unreachable commits would be pruned by a routine `git gc`
+        const ref = `refs/tango/checkpoints/${sessionId}`;
+        const prev = gitOk(root, ['rev-parse', '--verify', ref]);
+        const hash = git(
+          root,
+          prev
+            ? ['commit-tree', tree, '-p', prev.trim(), '-m', 'tango checkpoint']
+            : ['commit-tree', tree, '-m', 'tango checkpoint'],
+          env
+        ).trim();
+        git(root, ['update-ref', ref, hash]);
         return hash;
       } finally {
         await rm(tmpIndex, { recursive: true, force: true });
@@ -88,11 +99,14 @@ export interface RestoreReport {
   restored: number;
   deleted: string[];
   kept: string[];
+  /** tracked files whose on-disk (user-edited) content is being replaced by the snapshot */
+  overwritten: string[];
 }
 
 /** Restore a snapshot with smart-delete semantics (design spec §3.3). */
 export async function restoreSnapshot(cwd: string, target: string, later: string[]): Promise<RestoreReport> {
   const root = repoRoot(cwd) ?? cwd;
+  let overwritten: string[] = [];
   const targetFiles = await snapshotFileList(cwd, target);
   // union of files present in any LATER snapshot — the candidates for deletion
   const laterFiles = new Set<string>();
@@ -117,7 +131,13 @@ export async function restoreSnapshot(cwd: string, target: string, later: string
     const tmpIndex = await mkdtemp(join(tmpdir(), 'tango-idx-'));
     try {
       const env = { GIT_INDEX_FILE: join(tmpIndex, 'index') };
-      git(root, ['read-tree', target], env);
+      git(root, ['read-tree', target], env); // throws when the snapshot was pruned
+      // report user edits about to be clobbered: worktree files differing from the target
+      const diff = gitOk(root, ['diff', '--name-only', '--'], env);
+      overwritten = (diff ?? '')
+        .split('\n')
+        .map((l) => l.trim())
+        .filter(Boolean);
       git(root, ['checkout-index', '-a', '-f', '--'], env); // writes worktree files
     } finally {
       await rm(tmpIndex, { recursive: true, force: true });
@@ -145,5 +165,5 @@ export async function restoreSnapshot(cwd: string, target: string, later: string
     }
   }
 
-  return { restored: targetFiles.size, deleted, kept };
+  return { restored: targetFiles.size, deleted, kept, overwritten };
 }

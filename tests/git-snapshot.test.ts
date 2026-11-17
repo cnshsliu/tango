@@ -134,3 +134,29 @@ test('restoreSnapshot: tar snapshots get the same smart-delete semantics', async
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test('snapshots hang off a per-session ref chain so gc cannot prune them', async () => {
+  const repo = await freshRepo();
+  try {
+    const h1 = await takeSnapshot(repo, 'sess-a');
+    const h2 = await takeSnapshot(repo, 'sess-a');
+    assert.ok(h1 && h2 && h1 !== h2);
+    const ref = spawnSync('git', ['rev-parse', '--verify', 'refs/tango/checkpoints/sess-a'], { cwd: repo, encoding: 'utf8' });
+    assert.equal(ref.status, 0, 'ref exists');
+    assert.equal(ref.stdout.trim(), h2, 'ref points at the newest snapshot');
+    const parent = spawnSync('git', ['rev-parse', `${h2}^`], { cwd: repo, encoding: 'utf8' });
+    assert.equal(parent.status, 0);
+    assert.equal(parent.stdout.trim(), h1, 'snapshots chain: h1 is h2 parent');
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test('restoreSnapshot throws on a missing snapshot hash instead of silent no-op', async () => {
+  const repo = await freshRepo();
+  try {
+    await assert.rejects(() => restoreSnapshot(repo, '0'.repeat(40), []));
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
