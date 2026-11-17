@@ -216,6 +216,10 @@ const SLASH: &[(&str, &str)] = &[
     ("/clear", "清空屏幕（上下文保留）"),
     ("/compact", "压缩较早的上下文"),
     ("/cost", "本会话花费与上下文条数"),
+    (
+        "/density",
+        "工具详情密度 0紧凑/1默认/2完整 · /density [0|1|2]",
+    ),
     ("/diff", "只读查看工作区 diff · /diff --staged [paths]"),
     ("/exit", "退出"),
     (
@@ -245,6 +249,7 @@ const SLASH: &[(&str, &str)] = &[
     ),
     ("/status", "会话信息"),
     ("/theme", "选择并实时应用 dark/light/auto 主题"),
+    ("/timestamps", "聊天行首 [HH:MM] 时间戳开关"),
     (
         "/transcript",
         "查看完整原始 transcript（含 ⟲ 被放弃的未来）",
@@ -311,6 +316,10 @@ pub struct App {
     vim_override: Option<bool>,
     /// full texts of recent assistant replies, newest last (for /copy)
     assistant_replies: Vec<String>,
+    /// show [HH:MM] prefixes on chat lines (/timestamps)
+    timestamps: bool,
+    /// tool detail level: 0 compact / 1 default / 2 full (/density)
+    density: u8,
     pending: Vec<(u64, Pending)>,
     permission: Option<Permission>,
     model: String,
@@ -367,6 +376,8 @@ impl App {
             btw_title: None,
             vim_override: None,
             assistant_replies: Vec::new(),
+            timestamps: false,
+            density: 1,
             pending: Vec::new(),
             permission: None,
             model: "…".into(),
@@ -450,6 +461,14 @@ impl App {
         if self.scroll_back == 0 {
             self.unread_rows = 0;
         }
+    }
+
+    fn hhmm(&self) -> String {
+        let secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        format!("[{:02}:{:02}]", (secs / 3600 + 8) % 24, (secs / 60) % 60)
     }
 
     fn push(&mut self, text: impl Into<String>, tone: Tone) {
@@ -1095,6 +1114,27 @@ impl App {
             "/insights" => {
                 let id = serve.command("insights", vec![]);
                 self.pending.push((id, Pending::Insights));
+            }
+            "/timestamps" => {
+                self.timestamps = !self.timestamps;
+                self.push(
+                    format!("时间戳 {}", if self.timestamps { "开" } else { "关" }),
+                    Tone::Muted,
+                );
+            }
+            "/density" => {
+                let arg = rest.trim();
+                self.density = if arg == "0" || arg == "1" || arg == "2" {
+                    arg.parse().unwrap_or(1)
+                } else {
+                    (self.density + 1) % 3
+                };
+                let name = match self.density {
+                    0 => "0 紧凑（仅工具名）",
+                    2 => "2 完整（成功工具也显示输出）",
+                    _ => "1 默认（错误显示输出）",
+                };
+                self.push(format!("工具详情密度 → {name}"), Tone::Muted);
             }
             "/find" => {
                 if rest.is_empty() {
@@ -3045,13 +3085,17 @@ impl App {
             })
             .map(|(source_index, line)| {
                 let mut text = line.text.clone();
-                if line.tone == Tone::Error
-                    && let Some(output) = &line.output
-                {
+                // density: 0 = names only; 1 = errors show output (default); 2 = everything does
+                let show_output = match self.density {
+                    0 => false,
+                    1 => line.tone == Tone::Error,
+                    _ => true,
+                };
+                if show_output && let Some(output) = &line.output {
                     let preview = output
                         .lines()
                         .filter(|line| !line.trim().is_empty())
-                        .take(8)
+                        .take(if self.density >= 2 { 30 } else { 8 })
                         .collect::<Vec<_>>()
                         .join("\n");
                     if !preview.is_empty() {
@@ -3064,6 +3108,9 @@ impl App {
                                 .join("\n"),
                         );
                     }
+                }
+                if self.timestamps && !text.starts_with('[') {
+                    text = format!("{} {text}", self.hhmm());
                 }
                 ChatLine {
                     text,
@@ -4715,5 +4762,57 @@ mod tests {
         assert_eq!(sent2["cmd"], "insights");
         app.frame(json!({"type": "result", "id": sent2["id"], "ok": true, "data": {"path": "/tmp/ins.html"}}));
         assert!(app.lines.iter().any(|l| l.text.contains("/tmp/ins.html")));
+    }
+
+    #[test]
+    fn timestamps_toggle_prefixes_lines_and_density_controls_tool_detail() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.push_tool(
+            "⚙ bash echo hi",
+            Tone::Muted,
+            Some("line one\nline two\n".into()),
+        );
+        app.push_tool("⚙ bash bad", Tone::Error, Some("boom\ntrace".into()));
+
+        // density 1 (default): error rows show their first output lines
+        let lines = app.chat_lines();
+        assert!(
+            lines.iter().any(|l| l.text.contains("boom")),
+            "errors visible at density 1"
+        );
+
+        // density 0: compact — no output preview even for errors
+        app.run_slash("/density 0", &mut serve);
+        let lines = app.chat_lines();
+        assert!(
+            lines.iter().all(|l| !l.text.contains("boom")),
+            "density 0 hides previews"
+        );
+        assert!(
+            lines.iter().any(|l| l.text.starts_with("⚙")),
+            "tool names stay"
+        );
+
+        // density 2: full — successful tools also show output
+        app.run_slash("/density 2", &mut serve);
+        let lines = app.chat_lines();
+        assert!(
+            lines.iter().any(|l| l.text.contains("line one")),
+            "density 2 shows success output"
+        );
+
+        // back to default; timestamps off by default
+        app.run_slash("/density", &mut serve);
+        app.run_slash("/timestamps", &mut serve);
+        let lines = app.chat_lines();
+        assert!(
+            lines.iter().any(|l| {
+                let t = l.text.strip_prefix('[');
+                t.is_some_and(|rest| rest.starts_with(char::is_numeric))
+            }),
+            "timestamps prefix [HH:MM"
+        );
+        assert!(app.lines.iter().any(|l| l.text.contains("时间戳")));
     }
 }
