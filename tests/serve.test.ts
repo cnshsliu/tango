@@ -927,3 +927,49 @@ test('queue command shows the running prompt and the queued ones; interrupt clea
 });
 
 function sleep(ms: number) { return new Promise((r) => setTimeout(r, ms)); }
+
+test('usage/stats aggregate across sessions; insights writes an offline HTML report', async () => {
+  const mock = await startMock();
+  const home = await mkdtemp(join(tmpdir(), 'tango-serve-home-'));
+  const work = await mkdtemp(join(tmpdir(), 'tango-serve-work-'));
+  await writeFile(join(home, 'models.json'), JSON.stringify([
+    { id: 'mock/mock', provider: 'mock', model: 'm', api: 'openai-completions', baseUrl: `http://127.0.0.1:${(mock.server.address() as AddressInfo).port}/v1`, apiKey: 'MOCK_SERVE_KEY', contextWindow: 200, cost: { input: 1, output: 2 } }
+  ]));
+  mock.setScript(() => SSE({ choices: [{ delta: { content: 'answer' } }] }) + SSE({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 100, completion_tokens: 50 } }) + 'data: [DONE]\n\n');
+  const s = await startServe(home, work, 0);
+  try {
+    await s.next();
+    for (let i = 0; i < 2; i++) {
+      s.send({ id: 100 + i, cmd: 'prompt', text: `q ${i}` });
+      await s.until((f: any) => f.type === 'result' && f.ok, 'turn');
+    }
+    s.send({ id: 200, cmd: 'usage' });
+    const u = await s.until((f: any) => f.type === 'result' && f.id === 200, 'usage');
+    assert.ok(u.ok);
+    assert.ok(u.data.totalCostUsd > 0, 'cost computed from priced usage');
+    assert.equal(u.data.byModel.length, 1);
+    assert.equal(u.data.byModel[0].model, 'mock/mock');
+    assert.equal(u.data.byModel[0].requests, 2, 'both requests counted');
+    assert.ok(u.data.bySession.length >= 1);
+    assert.ok(u.data.bySession.some((x: any) => x.costUsd > 0));
+
+    // stats is the same data
+    s.send({ id: 201, cmd: 'stats' });
+    const st = await s.until((f: any) => f.type === 'result' && f.id === 201, 'stats');
+    assert.ok(st.ok && st.data.byModel);
+
+    s.send({ id: 202, cmd: 'insights' });
+    const ins = await s.until((f: any) => f.type === 'result' && f.id === 202, 'insights');
+    assert.ok(ins.ok);
+    assert.ok(existsSync(ins.data.path));
+    const html = await readFile(ins.data.path, 'utf8');
+    assert.ok(html.includes('mock/mock'));
+    assert.ok(!/src=["']https?:|href=["']https?:/.test(html), 'offline readable');
+    assert.ok(html.includes('$'), 'costs shown');
+  } finally {
+    s.child.kill();
+    mock.server.close();
+    await rm(home, { recursive: true, force: true });
+    await rm(work, { recursive: true, force: true });
+  }
+});

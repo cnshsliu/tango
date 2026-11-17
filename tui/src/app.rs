@@ -81,6 +81,8 @@ enum Pending {
     Recap,
     Context,
     Queue,
+    Usage,
+    Insights,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -222,9 +224,11 @@ const SLASH: &[(&str, &str)] = &[
     ),
     ("/find <text>", "全库搜索对话（含被放弃的分支），可跳转"),
     ("/focus", "安静模式：隐藏成功工具与思考，保留错误"),
+    ("/usage /stats", "跨会话聚合：按模型/会话的请求与花费"),
     ("/fork <name>", "从当前（或 /rewind 选中）位置复制出新会话"),
     ("/rewind", "打开时间轴：代码+对话+上下文整体回滚"),
     ("/help", "命令列表"),
+    ("/insights", "生成 HTML 使用报告（离线可读）"),
     ("/interrupt", "停止当前回合"),
     ("/model <id>", "切换模型（存为默认），裸 /model 打开列表"),
     ("/mode <m>", "ask | auto | readonly"),
@@ -1083,6 +1087,14 @@ impl App {
             "/queue" => {
                 let id = serve.command("queue", vec![]);
                 self.pending.push((id, Pending::Queue));
+            }
+            "/usage" | "/stats" => {
+                let id = serve.command("usage", vec![]);
+                self.pending.push((id, Pending::Usage));
+            }
+            "/insights" => {
+                let id = serve.command("insights", vec![]);
+                self.pending.push((id, Pending::Insights));
             }
             "/find" => {
                 if rest.is_empty() {
@@ -2852,6 +2864,47 @@ impl App {
                                 )
                             };
                             self.viewer = Some(Viewer::read_only("提示队列", text));
+                        }
+                        (Pending::Usage, true) => {
+                            let mut text = format!(
+                                "总花费 ${:.4}\n\n按模型：\n",
+                                d["totalCostUsd"].as_f64().unwrap_or(0.0)
+                            );
+                            if let Some(models) = d["byModel"].as_array() {
+                                for m in models {
+                                    text.push_str(&format!(
+                                        "  {:<24} 请求 {:>4} · 输入 {:>7} · 输出 {:>6} · ${:.4}\n",
+                                        m["model"].as_str().unwrap_or("?"),
+                                        m["requests"].as_u64().unwrap_or(0),
+                                        m["input"].as_u64().unwrap_or(0),
+                                        m["output"].as_u64().unwrap_or(0),
+                                        m["costUsd"].as_f64().unwrap_or(0.0)
+                                    ));
+                                }
+                            }
+                            text.push_str("\n按会话：\n");
+                            if let Some(sessions) = d["bySession"].as_array() {
+                                for x in sessions {
+                                    let name = x["name"].as_str().unwrap_or("");
+                                    text.push_str(&format!(
+                                        "  {} {} · 消息 {:>4} · ${:.4}\n",
+                                        x["id"]
+                                            .as_str()
+                                            .unwrap_or("?")
+                                            .chars()
+                                            .take(8)
+                                            .collect::<String>(),
+                                        if name.is_empty() { "" } else { name },
+                                        x["messages"].as_u64().unwrap_or(0),
+                                        x["costUsd"].as_f64().unwrap_or(0.0)
+                                    ));
+                                }
+                            }
+                            self.viewer = Some(Viewer::read_only("使用统计", text));
+                        }
+                        (Pending::Insights, true) => {
+                            let path = d["path"].as_str().unwrap_or("?");
+                            self.push(format!("insights → {path}"), Tone::Success);
                         }
                         (Pending::History, true) => self.load_history(d),
                         (Pending::Theme, true) => {
@@ -4634,5 +4687,33 @@ mod tests {
             "data": {"running": null, "queued": []}
         }));
         assert!(app.viewer.as_ref().unwrap().text.contains("空闲"));
+    }
+
+    #[test]
+    fn usage_opens_a_report_viewer_and_insights_reports_path() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.run_slash("/usage", &mut serve);
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        assert_eq!(sent["cmd"], "usage");
+        app.frame(json!({
+            "type": "result", "id": sent["id"], "ok": true,
+            "data": {"totalCostUsd": 0.1234, "byModel": [
+                {"model": "mock/mock", "requests": 7, "input": 1000, "output": 400, "costUsd": 0.12}
+            ], "bySession": [
+                {"id": "abcdef12", "name": "demo", "costUsd": 0.12, "messages": 9}
+            ]}
+        }));
+        let viewer = app.viewer.as_ref().unwrap();
+        assert!(viewer.read_only);
+        assert!(viewer.text.contains("mock/mock"));
+        assert!(viewer.text.contains("7"));
+        assert!(viewer.text.contains("0.1234"));
+
+        app.run_slash("/insights", &mut serve);
+        let sent2: Value = serde_json::from_str(&serve.sent[1]).unwrap();
+        assert_eq!(sent2["cmd"], "insights");
+        app.frame(json!({"type": "result", "id": sent2["id"], "ok": true, "data": {"path": "/tmp/ins.html"}}));
+        assert!(app.lines.iter().any(|l| l.text.contains("/tmp/ins.html")));
     }
 }

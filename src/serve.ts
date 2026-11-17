@@ -301,6 +301,53 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
         }
         return;
       }
+      case 'usage':
+      case 'stats':
+      case 'insights': {
+        // aggregate over every session log in TANGO_HOME (the log is the truth)
+        const byModel = new Map<string, { model: string; requests: number; input: number; output: number; costUsd: number }>();
+        const bySession: { id: string; name: string; costUsd: number; messages: number }[] = [];
+        let totalCostUsd = 0;
+        for (const summ of await SessionStore.list(sessionsDir())) {
+          const st = await SessionStore.open(sessionsDir(), summ.id);
+          let sessionCost = 0;
+          for (const m of st.allMessages()) {
+            if (m.role !== 'assistant' || !m.usage) continue;
+            const model = pricedModels.find((p) => p.id === m.model) ?? agent.model;
+            const cost = costUsd(model, m.usage);
+            sessionCost += cost;
+            totalCostUsd += cost;
+            const row = byModel.get(m.model ?? model.id) ?? { model: m.model ?? model.id, requests: 0, input: 0, output: 0, costUsd: 0 };
+            row.requests++;
+            row.input += m.usage.input;
+            row.output += m.usage.output;
+            row.costUsd += cost;
+            byModel.set(row.model, row);
+          }
+          bySession.push({ id: summ.id, name: summ.name ?? '', costUsd: sessionCost, messages: summ.messages });
+        }
+        const data = {
+          totalCostUsd,
+          byModel: [...byModel.values()].sort((a, b) => b.costUsd - a.costUsd),
+          bySession: bySession.sort((a, b) => b.costUsd - a.costUsd),
+          since: undefined as string | undefined
+        };
+        if (cmd.cmd === 'insights') {
+          const maxCost = Math.max(...data.bySession.map((x) => x.costUsd), 1);
+          const rows = (title: string, rowsHtml: string) => `<h2>${title}</h2><table>${rowsHtml}</table>`;
+          const html = `<!doctype html><meta charset="utf-8"><title>tango insights</title><style>body{font-family:ui-sans-serif,system-ui;margin:2em auto;max-width:52em;padding:0 1em;line-height:1.5}h1,h2{color:#333}table{border-collapse:collapse;width:100%;margin-bottom:1.5em}td,th{border-bottom:1px solid #ddd;padding:6px 10px;text-align:left}td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}.bar{background:#6b8dd6;height:10px}</style>
+<h1>tango 使用报告</h1><p>总花费 <b>$${totalCostUsd.toFixed(4)}</b> · 会话数 ${data.bySession.length}</p>
+${rows('按模型', '<tr><th>模型</th><th class=num>请求</th><th class=num>输入 tok</th><th class=num>输出 tok</th><th class=num>花费</th></tr>' + data.byModel.map((m) => `<tr><td>${m.model}</td><td class=num>${m.requests}</td><td class=num>${m.input}</td><td class=num>${m.output}</td><td class=num>$${m.costUsd.toFixed(4)}</td></tr>`).join(''))}
+${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th><th class=num>花费</th><th></th></tr>' + data.bySession.map((x) => `<tr><td>${x.id.slice(0, 8)}</td><td>${x.name || ''}</td><td class=num>${x.messages}</td><td class=num>$${x.costUsd.toFixed(4)}</td><td><div class=bar style="width:${Math.round((x.costUsd / maxCost) * 100)}px"></div></td></tr>`).join(''))}`;
+          const { writeFile: wf } = await import('node:fs/promises');
+          const path = join(cwd, `tango-insights-${new Date().toISOString().slice(0, 10)}.html`);
+          await wf(path, html, 'utf8');
+          reply(cmd, true, { path });
+          return;
+        }
+        reply(cmd, true, data);
+        return;
+      }
       case 'queue': {
         reply(cmd, true, {
           running: runningText,
@@ -697,7 +744,7 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
     // (e.g. "always allow" from a permission dialog), so they skip the prompt queue too
     const guarded = (p: Promise<unknown>) =>
       void p.catch((e) => out({ type: 'error', message: String(e?.message ?? e) }));
-    if (['set_mode', 'status', 'timeline', 'context', 'queue'].includes(cmd.cmd)) {
+    if (['set_mode', 'status', 'timeline', 'context', 'queue', 'usage', 'stats', 'insights'].includes(cmd.cmd)) {
       guarded(handle(cmd));
       return;
     }
