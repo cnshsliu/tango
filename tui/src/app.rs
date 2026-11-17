@@ -2230,6 +2230,15 @@ impl App {
                         Tone::Muted,
                     );
                 }
+                PickerKind::Worktree => {
+                    self.push(
+                        format!(
+                            "/worktree merge {} 合并 · /worktree rm {} 删除",
+                            item.id, item.id
+                        ),
+                        Tone::Muted,
+                    );
+                }
                 PickerKind::Permissions => {
                     // selecting a rule shows how to remove it; no accidental action
                     self.push(
