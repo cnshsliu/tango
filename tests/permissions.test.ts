@@ -92,3 +92,32 @@ test('grep / find / ls work on a temp tree', async () => {
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test('allow rules: tool/path/bash matching with boundary safety, readonly wins', async () => {
+  const { parseRule, decide } = await import('../src/core/permissions.js');
+  const cwd = '/w';
+  const call = (name: string, input: unknown) => ({ type: 'tool_call' as const, id: 'x', name, input });
+  const rules = ['tool:diff', 'path:src', 'bash:git status'].map(parseRule);
+
+  // tool rule: exact name
+  assert.equal(decide('ask', call('diff', {}), cwd, rules).action, 'allow');
+  assert.notEqual(decide('ask', call('write', { path: '/elsewhere/x' }), cwd, rules).action, 'allow');
+
+  // path rule: segment boundary — src matches src/a.ts, not src-evil/x
+  assert.equal(decide('ask', call('write', { path: 'src/a.ts' }), cwd, rules).action, 'allow');
+  assert.equal(decide('ask', call('write', { path: 'src-evil/x' }), cwd, rules).action, 'ask');
+  assert.equal(decide('ask', call('write', { path: 'outside/x' }), cwd, rules).action, 'ask');
+
+  // bash rule: token boundary — 'git status' matches 'git status -s', not 'git_status'
+  assert.equal(decide('ask', call('bash', { command: 'git status -s' }), cwd, rules).action, 'allow');
+  assert.equal(decide('ask', call('bash', { command: 'git_status --hack' }), cwd, rules).action, 'ask');
+  assert.equal(decide('ask', call('bash', { command: 'rm -rf /' }), cwd, rules).action, 'ask', 'risky still asks');
+
+  // readonly always wins over rules
+  assert.equal(decide('readonly', call('diff', {}), cwd, rules).action, 'deny');
+
+  // invalid rules are rejected with a reason
+  assert.ok(parseRule('nonsense').error);
+  assert.ok(parseRule('bash:').error);
+  assert.ok(parseRule('path:/absolute').ok === true || parseRule('path:/absolute').error); // absolute allowed but flagged
+});

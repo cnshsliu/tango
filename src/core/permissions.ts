@@ -36,8 +36,60 @@ export function inside(cwd: string, path: string): boolean {
   return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
 }
 
-export function decide(mode: PermissionMode, call: ToolCallBlock, cwd: string): Decision {
+// ---------- persistent allow rules (/permissions, design decision #6) ----------
+
+/** A parsed allow rule: tool:<name> | path:<prefix> | bash:<prefix> */
+export type AllowRule =
+  | { kind: 'tool'; value: string }
+  | { kind: 'path'; value: string }
+  | { kind: 'bash'; value: string };
+
+export type ParseResult = { ok: true; rule: AllowRule } | { ok: false; error: string };
+
+export function parseRule(str: string): ParseResult {
+  const s = str.trim();
+  const m = /^(tool|path|bash):(.*)$/.exec(s);
+  if (!m) return { ok: false, error: `rule must be tool:/path:/bash: — got "${s}"` };
+  const value = m[2].trim();
+  if (!value) return { ok: false, error: `empty prefix in "${s}"` };
+  if (m[1] === 'tool') return { ok: true, rule: { kind: 'tool', value } };
+  if (m[1] === 'bash') return { ok: true, rule: { kind: 'bash', value } };
+  if (value.includes('..')) return { ok: false, error: `path rule must not traverse upwards: "${s}"` };
+  return { ok: true, rule: { kind: 'path', value: value.replace(/\/$/, '') } };
+}
+
+/** Does one rule allow this call? Path and bash match on segment/token boundaries. */
+export function ruleMatches(rule: AllowRule, call: ToolCallBlock, cwd: string): boolean {
+  const input = (call.input ?? {}) as Record<string, unknown>;
+  if (rule.kind === 'tool') return call.name === rule.value;
+  if (rule.kind === 'path') {
+    if (!WRITE_TOOLS.has(call.name)) return false;
+    const rel = relative(resolve(cwd), resolve(cwd, String(input.path ?? ''))).replaceAll('\\', '/');
+    if (rel.startsWith('..') || isAbsolute(rel)) return false;
+    if (rule.value === '') return true;
+    return rel === rule.value || rel.startsWith(rule.value + '/');
+  }
+  // bash: match the leading command tokens before ; && || |
+  if (call.name !== 'bash') return false;
+  const first = String(input.command ?? '').split(/[;|&]/)[0].trim();
+  const prefix = rule.value;
+  return first === prefix || first.startsWith(prefix + ' ');
+}
+
+export function decide(mode: PermissionMode, call: ToolCallBlock, cwd: string, rules?: AllowRule[]): Decision {
+  if (mode === 'readonly') return readonlyDecision(call);
   if (mode === 'auto' || READ_TOOLS.has(call.name)) return { action: 'allow' };
+  // persistent allow rules never override readonly (checked above), but beat ask
+  if (rules?.some((r) => ruleMatches(r, call, cwd))) return { action: 'allow' };
+  return decideBase(mode, call, cwd);
+}
+
+function readonlyDecision(call: ToolCallBlock): Decision {
+  if (READ_TOOLS.has(call.name)) return { action: 'allow' };
+  return { action: 'deny', reason: 'read-only mode' };
+}
+
+function decideBase(mode: PermissionMode, call: ToolCallBlock, cwd: string): Decision {
   const input = (call.input ?? {}) as Record<string, unknown>;
 
   if (WRITE_TOOLS.has(call.name)) {
