@@ -366,6 +366,38 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
         reply(cmd, true, { autocompact: value });
         return;
       }
+      case 'preset_save':
+      case 'preset_list':
+      case 'preset_get': {
+        // prompt templates live in TANGO_HOME/presets.json as {name: text}
+        const { readFile: rf, writeFile: wf } = await import('node:fs/promises');
+        const file = join(sessionsDir(), '..', 'presets.json');
+        let presets: Record<string, string> = {};
+        try {
+          presets = JSON.parse(await rf(file, 'utf8'));
+        } catch {}
+        if (cmd.cmd === 'preset_save') {
+          const name = String(cmd.name ?? '').trim();
+          const text = String(cmd.text ?? '');
+          if (!name || !text.trim()) return reply(cmd, false, undefined, 'preset_save: need name and text');
+          presets[name] = text;
+          await wf(file, JSON.stringify(presets, null, 2), 'utf8');
+          reply(cmd, true, { name, overwritten: true });
+          return;
+        }
+        if (cmd.cmd === 'preset_list') {
+          reply(cmd, true, {
+            presets: Object.entries(presets)
+              .sort((a, b) => a[0].localeCompare(b[0]))
+              .map(([name, text]) => ({ name, preview: text.split('\n')[0].slice(0, 60) }))
+          });
+          return;
+        }
+        const text = presets[String(cmd.name ?? '')];
+        if (text === undefined) return reply(cmd, false, undefined, `preset not found: ${cmd.name}`);
+        reply(cmd, true, { text });
+        return;
+      }
       case 'set_statusline': {
         const template = cmd.template === null ? null : String(cmd.template ?? '');
         if (template !== null && !template.includes('{')) {
@@ -772,7 +804,7 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
     // (e.g. "always allow" from a permission dialog), so they skip the prompt queue too
     const guarded = (p: Promise<unknown>) =>
       void p.catch((e) => out({ type: 'error', message: String(e?.message ?? e) }));
-    if (['set_mode', 'status', 'timeline', 'context', 'queue', 'usage', 'stats', 'insights'].includes(cmd.cmd)) {
+    if (['set_mode', 'status', 'timeline', 'context', 'queue', 'usage', 'stats', 'insights', 'preset_save', 'preset_list', 'preset_get'].includes(cmd.cmd)) {
       guarded(handle(cmd));
       return;
     }

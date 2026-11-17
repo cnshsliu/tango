@@ -1018,3 +1018,44 @@ test('autocompact: set/persist/off and threshold actually compacts', async () =>
     await rm(work, { recursive: true, force: true });
   }
 });
+
+test('presets: save/list/get round-trip in TANGO_HOME', async () => {
+  const mock = await startMock();
+  const home = await mkdtemp(join(tmpdir(), 'tango-serve-home-'));
+  const work = await mkdtemp(join(tmpdir(), 'tango-serve-work-'));
+  await writeFile(join(home, 'models.json'), JSON.stringify([
+    { id: 'mock/mock', provider: 'mock', model: 'm', api: 'openai-completions', baseUrl: `http://127.0.0.1:${(mock.server.address() as AddressInfo).port}/v1`, apiKey: 'MOCK_SERVE_KEY', contextWindow: 200 }
+  ]));
+  mock.setScript(() => SSE({ choices: [{ delta: { content: 'ok' } }] }) + SSE({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1 } }) + 'data: [DONE]\n\n');
+  const s = await startServe(home, work, 0);
+  try {
+    await s.next();
+    s.send({ id: 200, cmd: 'preset_save', name: 'review', text: 'review this PR carefully' });
+    const sv = await s.until((f: any) => f.type === 'result' && f.id === 200, 'save');
+    assert.ok(sv.ok);
+    // overwrite same name
+    s.send({ id: 201, cmd: 'preset_save', name: 'review', text: 'review v2' });
+    await s.until((f: any) => f.type === 'result' && f.id === 201, 'save2');
+    s.send({ id: 202, cmd: 'preset_save', name: 'daily', text: 'standup notes' });
+    await s.until((f: any) => f.type === 'result' && f.id === 202, 'save3');
+    assert.ok(existsSync(join(home, 'presets.json')));
+
+    s.send({ id: 203, cmd: 'preset_list' });
+    const list = await s.until((f: any) => f.type === 'result' && f.id === 203, 'list');
+    assert.equal(list.data.presets.length, 2);
+    assert.ok(list.data.presets.some((p: any) => p.name === 'review' && p.preview.includes('v2')));
+
+    s.send({ id: 204, cmd: 'preset_get', name: 'review' });
+    const got = await s.until((f: any) => f.type === 'result' && f.id === 204, 'get');
+    assert.equal(got.data.text, 'review v2');
+
+    s.send({ id: 205, cmd: 'preset_get', name: 'nope' });
+    const miss = await s.until((f: any) => f.type === 'result' && f.id === 205, 'miss');
+    assert.ok(!miss.ok);
+  } finally {
+    s.child.kill();
+    mock.server.close();
+    await rm(home, { recursive: true, force: true });
+    await rm(work, { recursive: true, force: true });
+  }
+});

@@ -86,6 +86,9 @@ enum Pending {
     AutocompactShow,
     AutocompactSet,
     Statusline,
+    PresetSave,
+    PresetList,
+    PresetGet,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -99,6 +102,7 @@ enum PickerKind {
     EditResolution,
     Timeline,
     Find,
+    Preset,
 }
 
 #[derive(Clone)]
@@ -243,6 +247,10 @@ const SLASH: &[(&str, &str)] = &[
     ("/new", "开新会话"),
     ("/recap", "一行总结当前对话（不写入会话）"),
     ("/rename <name>", "重命名当前会话"),
+    (
+        "/preset <name>|save <name>",
+        "提示模板：保存当前输入 / 填入输入框（不发送）",
+    ),
     ("/nvim", "用外部 Neovim 编辑草稿 · ctrl+e 编辑当前草稿"),
     ("/quit", "退出"),
     ("/resume", "切换到历史会话，打开列表"),
@@ -1125,6 +1133,32 @@ impl App {
                 let id = serve.command("insights", vec![]);
                 self.pending.push((id, Pending::Insights));
             }
+            "/preset" => {
+                let arg = rest.trim();
+                if let Some(name) = arg.strip_prefix("save ") {
+                    let text: String = self.input.iter().collect();
+                    if text.trim().is_empty() {
+                        self.push("输入框为空 — 先写好再 /preset save", Tone::Muted);
+                    } else {
+                        let id = serve.command(
+                            "preset_save",
+                            vec![
+                                ("name", Value::String(name.trim().into())),
+                                ("text", Value::String(text)),
+                            ],
+                        );
+                        self.pending.push((id, Pending::PresetSave));
+                        self.input.clear();
+                        self.cursor = 0;
+                    }
+                } else if arg.is_empty() {
+                    let id = serve.command("preset_list", vec![]);
+                    self.pending.push((id, Pending::PresetList));
+                } else {
+                    let id = serve.command("preset_get", vec![("name", Value::String(arg.into()))]);
+                    self.pending.push((id, Pending::PresetGet));
+                }
+            }
             "/statusline" => {
                 if rest.is_empty() {
                     let cur = self.statusline.clone().unwrap_or_else(|| "（默认）".into());
@@ -1867,6 +1901,10 @@ impl App {
                         self.pending.push((id, Pending::Rewind));
                         self.push("⟲ 回滚中 …", Tone::Muted);
                     }
+                }
+                PickerKind::Preset => {
+                    let id = serve.command("preset_get", vec![("name", Value::String(item.id))]);
+                    self.pending.push((id, Pending::PresetGet));
                 }
                 PickerKind::Find => {
                     // item.id carries "sessionId:entryIndex:current-orphan"
@@ -3019,6 +3057,54 @@ impl App {
                                 self.push("状态栏已恢复默认", Tone::Muted);
                             }
                         }
+                        (Pending::PresetSave, true) => {
+                            self.push(
+                                format!(
+                                    "模板已保存（输入框已清空）· /preset {} 可取回",
+                                    d["name"].as_str().unwrap_or("")
+                                ),
+                                Tone::Success,
+                            );
+                        }
+                        (Pending::PresetList, true) => {
+                            let items: Vec<PickItem> = d["presets"]
+                                .as_array()
+                                .map(|a| {
+                                    a.iter()
+                                        .filter_map(|p| {
+                                            Some(PickItem {
+                                                label: p["name"].as_str()?.to_string(),
+                                                note: p["preview"]
+                                                    .as_str()
+                                                    .unwrap_or("")
+                                                    .to_string(),
+                                                warn: false,
+                                                current: false,
+                                                id: p["name"].as_str()?.to_string(),
+                                            })
+                                        })
+                                        .collect()
+                                })
+                                .unwrap_or_default();
+                            if items.is_empty() {
+                                self.push(
+                                    "暂无模板 · /preset save <name> 保存当前输入",
+                                    Tone::Muted,
+                                );
+                            } else {
+                                self.picker = Some(Picker::new(PickerKind::Preset, items));
+                            }
+                        }
+                        (Pending::PresetGet, true) => {
+                            if let Some(text) = d["text"].as_str() {
+                                self.input = text.chars().collect();
+                                self.cursor = self.input.len();
+                                self.push(
+                                    "模板已填入（未发送）· 检查后 ctrl+s 发送",
+                                    Tone::Success,
+                                );
+                            }
+                        }
                         (Pending::History, true) => self.load_history(d),
                         (Pending::Theme, true) => {
                             self.theme = Theme::resolve(
@@ -3370,6 +3456,7 @@ impl App {
                 PickerKind::Session => "选择会话",
                 PickerKind::Timeline => "时间轴 · 选中即回滚到该回合之前",
                 PickerKind::Find => "搜索命中 · 本会话=回滚到该处 · 他会话=切换过去",
+                PickerKind::Preset => "提示模板 · 选中填入输入框（不发送）",
                 PickerKind::Command => "命令面板",
                 PickerKind::History => "搜索 prompt 历史",
                 PickerKind::Theme => "选择主题",
@@ -4157,7 +4244,7 @@ mod tests {
         assert!(picker.items.iter().any(|item| item.id == "/model"));
         assert!(picker.items.iter().any(|item| item.id == "/resume"));
 
-        for c in "res".chars() {
+        for c in "resu".chars() {
             app.key(
                 crossterm::event::KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE),
                 &mut serve,
@@ -4992,5 +5079,48 @@ mod tests {
                 .iter()
                 .any(|l| l.text.contains("{model}") && l.text.contains("{ctx}"))
         );
+    }
+
+    #[test]
+    fn preset_save_uses_current_input_and_picker_fills_without_sending() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.input = "固定开场白文本".chars().collect();
+        app.cursor = app.input.len();
+        app.run_slash("/preset save open", &mut serve);
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        assert_eq!(sent["cmd"], "preset_save");
+        assert_eq!(sent["name"], "open");
+        assert_eq!(sent["text"], "固定开场白文本");
+        // input is cleared after saving as a confirmation
+        assert!(app.input.is_empty());
+
+        // bare /preset opens a picker from preset_list
+        app.run_slash("/preset", &mut serve);
+        let sent2: Value = serde_json::from_str(&serve.sent[1]).unwrap();
+        assert_eq!(sent2["cmd"], "preset_list");
+        app.frame(json!({
+            "type": "result", "id": sent2["id"], "ok": true,
+            "data": {"presets": [{"name": "open", "preview": "固定开场白文本"}]}
+        }));
+        assert!(app.picker.as_ref().unwrap().kind == PickerKind::Preset);
+        app.key(
+            crossterm::event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut serve,
+        );
+        let get: Value = serde_json::from_str(&serve.sent[2]).unwrap();
+        assert_eq!(get["cmd"], "preset_get");
+        app.frame(json!({
+            "type": "result", "id": get["id"], "ok": true, "data": {"text": "固定开场白文本"}
+        }));
+        // the preset fills the input but nothing is sent
+        assert_eq!(app.input.iter().collect::<String>(), "固定开场白文本");
+        assert_eq!(serve.sent.len(), 3);
+
+        // /preset <name> fills directly
+        app.run_slash("/preset open", &mut serve);
+        let sent4: Value = serde_json::from_str(&serve.sent[3]).unwrap();
+        assert_eq!(sent4["cmd"], "preset_get");
+        assert_eq!(sent4["name"], "open");
     }
 }
