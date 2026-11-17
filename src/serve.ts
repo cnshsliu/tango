@@ -171,21 +171,25 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
    */
   async function rewindToTurn(k: number): Promise<{ ok: true; data: Record<string, unknown> } | { ok: false; error: string }> {
     const list = turns();
-    if (k < 0 || k >= list.length) return { ok: false, error: 'nothing to rewind/redo' };
-    const target = list[k];
+    // k == list.length is the redo-to-latest case: drop nothing, keep every turn
+    if (k < 0 || k > list.length || list.length === 0) return { ok: false, error: 'nothing to rewind/redo' };
+    const dropAll = k === list.length;
+    const target = list[dropAll ? list.length - 1 : k];
+    const cutEntry = dropAll ? target.end : target.entryIndex - 1;
     let code: { restored?: number; deleted?: string[]; kept?: string[] } = {};
     const cps = store
       .indexedEntries()
       .filter(({ entry }) => entry.kind === 'checkpoint')
       .map(({ entry, index }) => ({ hash: (entry as { hash: string }).hash, index }));
     let boundaryIdx = -1;
-    for (const cp of cps) if (cp.index < target.entryIndex) boundaryIdx = Math.max(boundaryIdx, cps.indexOf(cp));
+    for (let i = 0; i < cps.length; i++) if (cps[i].index < target.entryIndex) boundaryIdx = i;
     if (boundaryIdx < 0) boundaryIdx = cps.findIndex((cp) => cp.index > target.entryIndex);
+    if (dropAll && boundaryIdx < cps.length - 1) boundaryIdx = cps.length - 1;
     if (boundaryIdx >= 0) {
       const later = cps.slice(boundaryIdx + 1).map((c) => c.hash);
       code = await restoreSnapshot(cwd, cps[boundaryIdx].hash, later);
     }
-    await store.rewindTo(target.entryIndex - 1);
+    await store.rewindTo(cutEntry);
     return { ok: true, data: { codeRestored: boundaryIdx >= 0, turnDropped: k, ...code } };
   }
 
@@ -225,7 +229,8 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
       return rewindToTurn(last).then(finish);
     }
     if (cmd.cmd === 'redo') {
-      if (last >= list.length - 1) return reply(cmd, false, undefined, 'nothing to redo');
+      // last + 2 == list.length means "restore everything" — a valid redo
+      if (last + 2 > list.length) return reply(cmd, false, undefined, 'nothing to redo');
       return rewindToTurn(last + 2).then(finish);
     }
   }
