@@ -160,3 +160,62 @@ test('restoreSnapshot throws on a missing snapshot hash instead of silent no-op'
     await rm(repo, { recursive: true, force: true });
   }
 });
+
+test('M4: tar fallback honors .gitignore, keeps exec bits, prunes old snapshots', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'tango-tar3-'));
+  try {
+    await writeFile(join(dir, 'keep.txt'), 'a\n');
+    await writeFile(join(dir, '.gitignore'), 'ignored.txt\n');
+    await writeFile(join(dir, 'ignored.txt'), 'x\n');
+    await writeFile(join(dir, 'run.sh'), '#!/bin/sh\necho hi\n');
+    spawnSync('chmod', ['+x', join(dir, 'run.sh')]);
+
+    const t1 = await takeSnapshot(dir, 'sess-tar');
+    assert.ok(t1?.startsWith('tar:'));
+    const files = await snapshotFileList(dir, t1!);
+    assert.ok(files.has('keep.txt'));
+    assert.ok(files.has('run.sh'));
+    assert.ok(!files.has('ignored.txt'), 'M4: tar respects .gitignore when present');
+
+    // cleanup policy: only the newest snapshots survive (keep-last-N)
+    for (let i = 0; i < 60; i++) await takeSnapshot(dir, 'sess-tar');
+    const snapDir = join(process.env.TANGO_HOME ?? '', 'snapshots', 'sess-tar');
+    if (!snapDir.includes('snapshots')) throw new Error('setup: set TANGO_HOME');
+    const { readdirSync, statSync } = await import('node:fs');
+    const remaining = readdirSync(snapDir).filter((f) => f.endsWith('.tar.gz'));
+    assert.ok(remaining.length <= 50, `M4: snapshot cleanup keeps ≤50, got ${remaining.length}`);
+
+    // restore preserves the executable bit
+    await spawnSync('rm', [join(dir, 'run.sh')]);
+    const latest = remaining.sort().at(-1)!;
+    await restoreSnapshot(dir, `tar:${join(snapDir, latest)}`, []);
+    assert.ok(existsSync(join(dir, 'run.sh')));
+    const mode = (statSync(join(dir, 'run.sh')).mode & 0o111) !== 0;
+    assert.ok(mode, 'M4: restored script keeps its exec bit');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('M5+M6: kept list is bounded; gitlink submodules are reported', async () => {
+  const repo = await freshRepo();
+  try {
+    // a fake submodule: gitlink entry pointing at a commit that exists in a child repo
+    const sub = join(repo, 'sub');
+    const g = (args: string[], cwd = repo) => spawnSync('git', args, { cwd, encoding: 'utf8' });
+    g(['init', '-q', sub]); g(['config', 'user.email', 't@t'], sub); g(['config', 'user.name', 't'], sub);
+    await writeFile(join(sub, 'x.txt'), 'x\n');
+    g(['add', '.'], sub); g(['commit', '-q', '-m', 's'], sub);
+    const subHead = g(['rev-parse', 'HEAD'], sub).stdout.trim();
+    g(['add', 'sub']); // stages a gitlink
+    // fake an agent change on top
+    await writeFile(join(repo, 'top.txt'), 't\n');
+    const h1 = await takeSnapshot(repo, 'sess-m56');
+    assert.ok(h1);
+    const report = await restoreSnapshot(repo, h1!, []);
+    assert.ok((report.submodules ?? 0) >= 1, 'M6: gitlink count reported');
+    assert.ok(report.kept.length <= 200, 'M5: kept list bounded');
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});

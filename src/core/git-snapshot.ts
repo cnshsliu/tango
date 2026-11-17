@@ -11,13 +11,13 @@ import { dirname, join, relative } from 'node:path';
 import { homedir } from 'node:os';
 
 function git(cwd: string, args: string[], env: NodeJS.ProcessEnv = {}): string {
-  const r = spawnSync('git', args, { cwd, encoding: 'utf8', env: { ...process.env, ...env } });
+  const r = spawnSync('git', args, { cwd, encoding: 'utf8', env: { ...process.env, ...env }, timeout: 10_000 });
   if (r.status !== 0) throw new Error(`git ${args[0]}: ${(r.stderr || r.stdout).trim()}`);
   return r.stdout;
 }
 
 function gitOk(cwd: string, args: string[], env: NodeJS.ProcessEnv = {}): string | null {
-  const r = spawnSync('git', args, { cwd, encoding: 'utf8', env: { ...process.env, ...env } });
+  const r = spawnSync('git', args, { cwd, encoding: 'utf8', env: { ...process.env, ...env }, timeout: 10_000 });
   return r.status === 0 ? r.stdout : null;
 }
 
@@ -70,8 +70,25 @@ export async function takeSnapshot(cwd: string, sessionId = 'adhoc'): Promise<st
     const dir = join(tarDir(), sessionId);
     await mkdir(dir, { recursive: true });
     const path = join(dir, `${Date.now()}-${tarSeq++}.tar.gz`);
-    const r = spawnSync('tar', ['-czf', path, '-C', cwd, '.'], { encoding: 'utf8' });
+    // honor a .gitignore when one exists (best-effort: globs, no negation support)
+    const args = ['-czf', path];
+    const ignoreFile = join(cwd, '.gitignore');
+    if (existsSync(ignoreFile)) {
+      for (const line of (await readFile(ignoreFile, 'utf8')).split('\n')) {
+        const pat = line.trim().replace(/\/$/, '');
+        if (pat && !pat.startsWith('#') && !pat.startsWith('!')) args.push(`--exclude=${pat}`);
+      }
+    }
+    args.push('-C', cwd, '.');
+    const r = spawnSync('tar', args, { encoding: 'utf8', timeout: 60_000 });
     if (r.status !== 0) return null;
+    // cleanup policy: keep the newest 50 snapshots per session
+    const { readdirSync, statSync } = await import('node:fs');
+    const tars = readdirSync(dir)
+      .filter((f) => f.endsWith('.tar.gz'))
+      .map((f) => ({ f, m: statSync(join(dir, f)).mtimeMs }))
+      .sort((a, b) => b.m - a.m);
+    for (const old of tars.slice(50)) await rm(join(dir, old.f), { force: true });
     return `tar:${path}`;
   } catch {
     return null;
@@ -81,7 +98,7 @@ export async function takeSnapshot(cwd: string, sessionId = 'adhoc'): Promise<st
 /** Files inside a snapshot, repo/workspace-relative posix paths. */
 export async function snapshotFileList(cwd: string, snap: string): Promise<Set<string>> {
   if (snap.startsWith('tar:')) {
-    const r = spawnSync('tar', ['-tzf', snap.slice(4)], { encoding: 'utf8' });
+    const r = spawnSync('tar', ['-tzf', snap.slice(4)], { encoding: 'utf8', timeout: 10_000 });
     if (r.status !== 0) return new Set();
     return new Set(
       r.stdout
@@ -101,6 +118,8 @@ export interface RestoreReport {
   kept: string[];
   /** tracked files whose on-disk (user-edited) content is being replaced by the snapshot */
   overwritten: string[];
+  /** gitlink (submodule) entries in the snapshot — restored as pointers, contents not snapshotted */
+  submodules: number;
 }
 
 /** Restore a snapshot with smart-delete semantics (design spec §3.3). */
@@ -116,13 +135,16 @@ export async function restoreSnapshot(cwd: string, target: string, later: string
   if (target.startsWith('tar:')) {
     const tmp = await mkdtemp(join(tmpdir(), 'tango-restore-'));
     try {
-      spawnSync('tar', ['-xzf', target.slice(4), '-C', tmp], { encoding: 'utf8' });
+      const ex = spawnSync('tar', ['-xzf', target.slice(4), '-C', tmp], { encoding: 'utf8', timeout: 60_000 });
+      if (ex.status !== 0) throw new Error(`tar extract failed: ${(ex.stderr || '').trim()}`);
+      // cp -p keeps executable bits and mtimes
       for (const f of targetFiles) {
         const src = join(tmp, f);
         if (!existsSync(src)) continue;
         const dest = join(root, f);
         await mkdir(dirname(dest), { recursive: true });
-        await writeFile(dest, await readFile(src));
+        const cp = spawnSync('cp', ['-p', src, dest], { encoding: 'utf8', timeout: 10_000 });
+        if (cp.status !== 0) throw new Error(`cp failed for ${f}: ${(cp.stderr || '').trim()}`);
       }
     } finally {
       await rm(tmp, { recursive: true, force: true });
@@ -157,13 +179,21 @@ export async function restoreSnapshot(cwd: string, target: string, later: string
   // 3. report files on disk that no snapshot knows about (the user's own work) — untouched
   const kept: string[] = [];
   const known = new Set([...targetFiles, ...laterFiles]);
-  const listing = spawnSync('find', [root, '-type', 'f', '-not', '-path', '*/.git/*'], { encoding: 'utf8' });
+  const listing = spawnSync('find', [root, '-type', 'f', '-not', '-path', '*/.git/*'], { encoding: 'utf8', timeout: 30_000 });
   if (listing.status === 0) {
     for (const abs of listing.stdout.split('\n').filter(Boolean)) {
       const rel = relative(root, abs);
       if (!known.has(rel)) kept.push(rel);
+      if (kept.length >= 200) break; // big repos would flood the result frame
     }
   }
 
-  return { restored: targetFiles.size, deleted, kept, overwritten };
+  // 4. gitlink (submodule) entries snapshot as pointers only — surface that
+  let submodules = 0;
+  if (!target.startsWith('tar:')) {
+    const full = gitOk(root, ['ls-tree', '-r', target], { }) ?? '';
+    for (const line of full.split('\n')) if (line.startsWith('160000')) submodules++;
+  }
+
+  return { restored: targetFiles.size, deleted, kept, overwritten, submodules };
 }

@@ -798,3 +798,56 @@ test('time-travel fixes: user files between turns survive undo; undo/fork see th
     await rm(work, { recursive: true, force: true });
   }
 });
+
+test('M2+M3: timeline hasSnapshot is per-turn and abandoned turns are marked', async () => {
+  const mock = await startMock();
+  const home = await mkdtemp(join(tmpdir(), 'tango-serve-home-'));
+  const work = await mkdtemp(join(tmpdir(), 'tango-serve-work-'));
+  await writeFile(join(home, 'models.json'), JSON.stringify([
+    { id: 'mock/mock', provider: 'mock', model: 'mock-model', api: 'openai-completions', baseUrl: `http://127.0.0.1:${(mock.server.address() as AddressInfo).port}/v1`, apiKey: 'MOCK_SERVE_KEY', contextWindow: 200 }
+  ]));
+  const git = (args: string[]) => spawnSync('git', args, { cwd: work, encoding: 'utf8' });
+  git(['init', '-q']); git(['config', 'user.email', 't@t']); git(['config', 'user.name', 't']);
+  await writeFile(join(work, 'seed.txt'), 'seed\n'); git(['add', '.']); git(['commit', '-q', '-m', 'init']);
+
+  // request-indexed: 1 write, 2 plain, 3 plain (turn2 writes, turn3 plain)
+  let n = 0;
+  mock.setScript(() => {
+    n++;
+    if (n === 1) return SSE({ choices: [{ delta: { tool_calls: [{ index: 0, id: 'w1', function: { name: 'bash', arguments: JSON.stringify({ command: 'echo a > a.txt' }) } }] }, finish_reason: 'tool_calls' }] }) + 'data: [DONE]\n\n';
+    return SSE({ choices: [{ delta: { content: 'ok' } }] }) + SSE({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 5, completion_tokens: 2 } }) + 'data: [DONE]\n\n';
+  });
+
+  const s = await startServe(home, work, 0);
+  try {
+    await s.next();
+    for (const [i, t] of ['t-one', 't-two', 't-three'].entries()) {
+      s.send({ id: 100 + i, cmd: 'prompt', text: t });
+      await s.until((f: any) => f.type === 'result' && f.ok, t);
+    }
+    // drop the last turn; the timeline must show it as orphaned
+    s.send({ id: 200, cmd: 'undo' });
+    await s.until((f: any) => f.type === 'result' && f.id === 200 && f.ok, 'undo');
+    s.send({ id: 201, cmd: 'timeline' });
+    const tl = await s.until((f: any) => f.type === 'result' && f.id === 201, 'timeline');
+    const nodes = tl.data.nodes;
+    assert.equal(nodes.length, 3);
+    assert.equal(nodes[0].hasSnapshot, true, 'M2: writing turn flagged');
+    assert.equal(nodes[1].hasSnapshot, false, 'M2: plain turn NOT flagged');
+    assert.equal(nodes[2].hasSnapshot, false);
+    assert.equal(nodes[2].orphaned, true, 'M3: abandoned turn marked');
+    assert.equal(nodes[0].orphaned, false);
+
+    // M1: rename shows in tree
+    s.send({ id: 202, cmd: 'rename', name: 'renamed-1' });
+    await s.until((f: any) => f.type === 'result' && f.id === 202 && f.ok, 'rename');
+    s.send({ id: 203, cmd: 'tree' });
+    const tree = await s.until((f: any) => f.type === 'result' && f.id === 203, 'tree');
+    assert.ok(tree.data.nodes.some((x: any) => x.name === 'renamed-1'), 'M1: tree shows the new name');
+  } finally {
+    s.child.kill();
+    mock.server.close();
+    await rm(home, { recursive: true, force: true });
+    await rm(work, { recursive: true, force: true });
+  }
+});

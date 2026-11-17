@@ -190,3 +190,18 @@ test('forkTo copies a prefix into a new session with forkOf lineage', async () =
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test('meta() reflects the latest rename (list/meta/fork all agree)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'tango-test-'));
+  try {
+    const store = await SessionStore.create(dir, '/work', 'old-name');
+    await store.append({ kind: 'meta', id: store.id, createdAt: new Date().toISOString(), cwd: '/work', name: 'new-name' });
+    assert.equal(store.meta()?.name, 'new-name', 'M1: meta() returns the last meta entry');
+    const [listed] = await SessionStore.list(dir);
+    assert.equal(listed.name, 'new-name');
+    const fork = await store.forkTo(dir, 'fork-x', store.indexedEntries().length - 1);
+    assert.equal(fork.meta()?.name, 'new-name', 'M1: forks inherit the current name');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

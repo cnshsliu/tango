@@ -170,7 +170,10 @@ export class SessionStore {
   }
 
   meta(): SessionMeta | undefined {
-    return this.entries.find((e) => e.kind === 'meta');
+    // the LAST meta wins: /rename appends a new one and list()/tree must agree
+    let meta: SessionMeta | undefined;
+    for (const e of this.entries) if (e.kind === 'meta') meta = e;
+    return meta;
   }
 
   /** Most recent explicit model switch, if any. */

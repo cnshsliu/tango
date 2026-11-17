@@ -220,8 +220,9 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
   function lastVisibleEntry(): number {
     const entries = store.indexedEntries();
     for (let i = entries.length - 1; i >= 0; i--) {
-      if (entries[i].kind === 'rewind') {
-        const to = (entries[i] as { to: number }).to;
+      const { entry } = entries[i];
+      if (entry.kind === 'rewind') {
+        const to = (entry as { to: number }).to;
         return Math.max(to, entries.length - 1);
       }
     }
@@ -231,10 +232,23 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
   function timeTravel(cmd: Command): Promise<void> | void {
     if (promptInFlight) return reply(cmd, false, undefined, 'a turn is running — interrupt it first');
     const list = turns();
+    // visibility predicate shared by timeline flags and lastVisibleTurn (rewind-aware)
+    const visibleFn = (() => {
+      let R = -1;
+      let to = -1;
+      for (const { entry, index } of store.indexedEntries()) {
+        if (entry.kind === 'rewind') {
+          R = index;
+          to = (entry as { to: number }).to;
+        }
+      }
+      return (i: number) => (R < 0 ? true : i <= to || i > R);
+    })();
     if (cmd.cmd === 'timeline') {
       reply(cmd, true, {
         nodes: list.map((t) => ({
-          entryIndex: t.entryIndex, ts: t.ts, firstLine: t.firstLine, hasSnapshot: !!t.hash
+          entryIndex: t.entryIndex, ts: t.ts, firstLine: t.firstLine, hasSnapshot: !!t.hash,
+          orphaned: !visibleFn(t.entryIndex)
         }))
       });
       return;
