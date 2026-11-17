@@ -98,6 +98,8 @@ enum Pending {
     Pwd,
     Cd,
     AddDir,
+    Init,
+    Doctor,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -253,6 +255,8 @@ const SLASH: &[(&str, &str)] = &[
     ("/fork <name>", "从当前（或 /rewind 选中）位置复制出新会话"),
     ("/rewind", "打开时间轴：代码+对话+上下文整体回滚"),
     ("/add_dir <dir>", "添加 cwd 之外的额外可写目录（持久化）"),
+    ("/init", "生成 AGENTS.md 项目说明脚手架（--force 追加）"),
+    ("/doctor", "环境体检：git/key/目录/版本"),
     ("/help", "命令列表"),
     ("/insights", "生成 HTML 使用报告（离线可读）"),
     (
@@ -1187,6 +1191,19 @@ impl App {
             "/insights" => {
                 let id = serve.command("insights", vec![]);
                 self.pending.push((id, Pending::Insights));
+            }
+            "/init" => {
+                let force = rest.split_whitespace().any(|p| p == "--force");
+                let mut extra = vec![];
+                if force {
+                    extra.push(("force", Value::Bool(true)));
+                }
+                let id = serve.command("init", extra);
+                self.pending.push((id, Pending::Init));
+            }
+            "/doctor" => {
+                let id = serve.command("doctor", vec![]);
+                self.pending.push((id, Pending::Doctor));
             }
             "/config" => {
                 let id = serve.command("config_show", vec![]);
@@ -3302,6 +3319,23 @@ impl App {
                         (Pending::AddDir, true) => {
                             let n = d["extraDirs"].as_array().map(|a| a.len()).unwrap_or(0);
                             self.push(format!("额外可写目录已保存（共 {n} 个）"), Tone::Success);
+                        }
+                        (Pending::Init, true) => {
+                            let path = d["path"].as_str().unwrap_or("AGENTS.md");
+                            self.push(format!("已生成 {path} · 编辑补全后自动生效"), Tone::Success);
+                        }
+                        (Pending::Doctor, true) => {
+                            let mut text = String::from("环境体检：\n\n");
+                            if let Some(checks) = d["checks"].as_array() {
+                                for c in checks {
+                                    let ok = c["ok"].as_bool().unwrap_or(false);
+                                    let mark = if ok { "✓" } else { "✗" };
+                                    let name = c["name"].as_str().unwrap_or("?");
+                                    let detail = c["detail"].as_str().unwrap_or("");
+                                    text.push_str(&format!("  {mark} {name}  {detail}\n"));
+                                }
+                            }
+                            self.viewer = Some(Viewer::read_only("doctor", text));
                         }
                         (Pending::History, true) => self.load_history(d),
                         (Pending::Theme, true) => {
@@ -5456,5 +5490,29 @@ mod tests {
         let sent4: Value = serde_json::from_str(&serve.sent[2]).unwrap();
         assert_eq!(sent4["cmd"], "cd");
         assert_eq!(sent4["dir"], "sub");
+    }
+
+    #[test]
+    fn init_and_doctor_wire_up() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.run_slash("/init", &mut serve);
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        assert_eq!(sent["cmd"], "init");
+        app.frame(json!({"type": "result", "id": sent["id"], "ok": true, "data": {"path": "/w/AGENTS.md"}}));
+        assert!(app.lines.iter().any(|l| l.text.contains("AGENTS.md")));
+
+        app.run_slash("/doctor", &mut serve);
+        let sent2: Value = serde_json::from_str(&serve.sent[1]).unwrap();
+        assert_eq!(sent2["cmd"], "doctor");
+        app.frame(json!({"type": "result", "id": sent2["id"], "ok": true,
+        "data": {"checks": [
+            {"name": "git", "ok": true, "detail": "repo detected"},
+            {"name": "model key", "ok": false, "detail": "no key"}
+        ]}}));
+        let v = app.viewer.as_ref().unwrap();
+        assert!(v.text.contains("✓"));
+        assert!(v.text.contains("✗"));
+        assert!(v.text.contains("no key"));
     }
 }

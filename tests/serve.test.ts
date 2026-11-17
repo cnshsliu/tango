@@ -1315,3 +1315,40 @@ test('cd/pwd/add_dir/config_show: cwd moves live and extra dirs allow writes', a
     await rm(extra, { recursive: true, force: true });
   }
 });
+
+test('init generates AGENTS.md once; doctor runs its checks', async () => {
+  const mock = await startMock();
+  const home = await mkdtemp(join(tmpdir(), 'tango-serve-home-'));
+  const work = await mkdtemp(join(tmpdir(), 'tango-serve-work-'));
+  await writeFile(join(home, 'models.json'), JSON.stringify([
+    { id: 'mock/mock', provider: 'mock', model: 'm', api: 'openai-completions', baseUrl: `http://127.0.0.1:${(mock.server.address() as AddressInfo).port}/v1`, apiKey: 'MOCK_SERVE_KEY', contextWindow: 200 }
+  ]));
+  mock.setScript(() => SSE({ choices: [{ delta: { content: 'ok' } }] }) + SSE({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1 } }) + 'data: [DONE]\n\n');
+  await writeFile(join(work, 'package.json'), JSON.stringify({ name: 'demo', scripts: { test: 'node --test' } }));
+  const s = await startServe(home, work, 0);
+  try {
+    await s.next();
+    s.send({ id: 200, cmd: 'init' });
+    const init = await s.until((f: any) => f.type === 'result' && f.id === 200, 'init');
+    assert.ok(init.ok);
+    const agents = await readFile(join(work, 'AGENTS.md'), 'utf8');
+    assert.ok(agents.includes('demo'), 'project name detected');
+    assert.ok(agents.includes('package.json') || agents.includes('node'), 'toolchain detected');
+    // second init refuses to overwrite
+    s.send({ id: 201, cmd: 'init' });
+    const again = await s.until((f: any) => f.type === 'result' && f.id === 201, 'init2');
+    assert.ok(!again.ok);
+
+    s.send({ id: 202, cmd: 'doctor' });
+    const doc = await s.until((f: any) => f.type === 'result' && f.id === 202, 'doctor');
+    assert.ok(doc.ok);
+    const names = doc.data.checks.map((c: any) => c.name);
+    for (const want of ['git', 'TANGO_HOME writable', 'model key', 'sessions dir']) assert.ok(names.includes(want), want);
+    assert.ok(doc.data.checks.every((c: any) => typeof c.ok === 'boolean'));
+  } finally {
+    s.child.kill();
+    mock.server.close();
+    await rm(home, { recursive: true, force: true });
+    await rm(work, { recursive: true, force: true });
+  }
+});

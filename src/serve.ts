@@ -379,6 +379,87 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
         reply(cmd, true, { autocompact: value });
         return;
       }
+      case 'init': {
+        const { readFile: rf3, writeFile: wf3, readdir: rd3 } = await import('node:fs/promises');
+        const agentsPath = join(cwd, 'AGENTS.md');
+        try {
+          await rf3(agentsPath);
+          if (cmd.force !== true) return reply(cmd, false, undefined, 'AGENTS.md already exists — /init --force to append a tango section');
+        } catch {}
+        // toolchain detection from marker files
+        const markers: [string, string][] = [
+          ['package.json', 'Node/TypeScript (npm)'],
+          ['Cargo.toml', 'Rust (cargo)'],
+          ['pyproject.toml', 'Python (uv/pip)'],
+          ['go.mod', 'Go'],
+          ['pom.xml', 'Java (Maven)'],
+          ['requirements.txt', 'Python (pip)']
+        ];
+        const found: string[] = [];
+        let pkgName = '';
+        for (const [file, label] of markers) {
+          try {
+            await rf3(join(cwd, file));
+            found.push(label);
+            if (file === 'package.json') {
+              try {
+                pkgName = JSON.parse(await rf3(join(cwd, file), 'utf8')).name ?? '';
+              } catch {}
+            }
+          } catch {}
+        }
+        // shallow directory tree (depth 2, max 40 entries)
+        const tree: string[] = [];
+        const walk = async (dir: string, depth: number) => {
+          if (depth > 2 || tree.length > 40) return;
+          let entries: string[] = [];
+          try {
+            entries = (await rd3(dir)).filter((e) => !e.startsWith('.') && e !== 'node_modules' && e !== 'target').sort();
+          } catch { return; }
+          for (const e of entries.slice(0, 20)) {
+            tree.push(`${'  '.repeat(depth)}- ${e}`);
+            await walk(join(dir, e), depth + 1);
+          }
+        };
+        await walk(cwd, 0);
+        const body = `# AGENTS.md${pkgName ? ` — ${pkgName}` : ''}\n\n> 由 /init 生成 — 请按项目实际情况补全。tango 每次请求自动读取本文件。\n\n## 项目结构\n\n${tree.join('\n') || '（空目录）'}\n\n## 工具链\n\n${found.map((f) => `- ${f}`).join('\n') || '- 未识别（手工补充）'}\n\n## 约定\n\n- （构建/测试命令，例如 npm test）\n- （代码风格、目录约定）\n- （禁区：不要改的文件/目录）\n`;
+        if (cmd.force === true) {
+          const prev = await rf3(agentsPath, 'utf8');
+          await wf3(agentsPath, prev + '\n' + body, 'utf8');
+        } else {
+          await wf3(agentsPath, body, 'utf8');
+        }
+        reply(cmd, true, { path: agentsPath });
+        return;
+      }
+      case 'doctor': {
+        const { accessSync, constants } = await import('node:fs');
+        const checks: { name: string; ok: boolean; detail: string }[] = [];
+        const add = (name: string, ok: boolean, detail = '') => checks.push({ name, ok, detail });
+        const gitOkDoctor = (() => {
+          try {
+            accessSync(join(cwd, '.git'), constants.F_OK);
+            return true;
+          } catch { return false; }
+        })();
+        add('git', gitOkDoctor, gitOkDoctor ? 'repo detected — time travel checkpoints active' : 'not a git repo — tar fallback snapshots');
+        let homeWritable = false;
+        try {
+          const { mkdtemp: mk } = await import('node:fs/promises');
+          const d = await mk(join(sessionsDir(), 'doctor-'));
+          const { rm: rmx } = await import('node:fs/promises');
+          await rmx(d, { recursive: true, force: true });
+          homeWritable = true;
+        } catch {}
+        add('TANGO_HOME writable', homeWritable);
+        add('sessions dir', homeWritable, sessionsDir());
+        const hasKey = !keyProblem(agent.model);
+        add('model key', hasKey, hasKey ? `${agent.model.id} ready` : `${agent.model.id}: no api key configured`);
+        const nodeV = process.version;
+        add('node', true, nodeV);
+        reply(cmd, true, { checks });
+        return;
+      }
       case 'cd': {
         const dir = String(cmd.dir ?? '').trim();
         const target = resolve(cwd, dir);
@@ -935,7 +1016,7 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
     // (e.g. "always allow" from a permission dialog), so they skip the prompt queue too
     const guarded = (p: Promise<unknown>) =>
       void p.catch((e) => out({ type: 'error', message: String(e?.message ?? e) }));
-    if (['set_mode', 'status', 'timeline', 'context', 'queue', 'usage', 'stats', 'insights', 'preset_save', 'preset_list', 'preset_get', 'permissions_list', 'permissions_add', 'permissions_remove', 'import', 'cd', 'pwd', 'add_dir', 'config_show'].includes(cmd.cmd)) {
+    if (['set_mode', 'status', 'timeline', 'context', 'queue', 'usage', 'stats', 'insights', 'preset_save', 'preset_list', 'preset_get', 'permissions_list', 'permissions_add', 'permissions_remove', 'import', 'cd', 'pwd', 'add_dir', 'config_show', 'init', 'doctor'].includes(cmd.cmd)) {
       guarded(handle(cmd));
       return;
     }
