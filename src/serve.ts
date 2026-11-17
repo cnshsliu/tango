@@ -89,6 +89,9 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
     })) satisfies AskFn;
 
   agent.events.on('message', ({ message }) => out({ type: 'message', message }));
+  // /goal state: auto-continue until the model confirms the goal is done (cap: maxRounds)
+  const goal = { text: null as string | null, paused: false, rounds: 0, maxRounds: 5 };
+
   // token-plan users watch tokens more than dollars (qwen4 plan T5)
   const sessionTokens = { input: 0, output: 0, cacheRead: 0 };
   agent.events.on('turn_end', (e) => {
@@ -141,6 +144,32 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
     statusline: config.statusline,
     tools: buildTools().schemas().map(({ name, description }) => ({ name, description }))
   });
+
+  /** /goal auto-continuation: ask (no tools) whether the goal is done; continue or clear. */
+  async function maybeContinueGoal(): Promise<void> {
+    if (!goal.text || goal.paused) return;
+    if (goal.rounds >= goal.maxRounds) {
+      out({ type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: `目标未在 ${goal.maxRounds} 轮内完成，已停止自动继续（/goal max N 调整）` }] } as never });
+      goal.text = null;
+      goal.rounds = 0;
+      return;
+    }
+    try {
+      const check = await agent.ask(`目标是否已达成？目标：${goal.text}\n只回答 YES 或 NO。`);
+      const ans = check.content.filter((b: any) => b.type === 'text').map((b: any) => b.text).join('');
+      if (/\bYES\b/.test(ans.toUpperCase())) {
+        out({ type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: `✓ 目标完成：${goal.text}` }] } as never });
+        goal.text = null;
+        goal.rounds = 0;
+        return;
+      }
+    } catch {
+      return; // ask failed (aborted/no key): stop auto-continuing
+    }
+    goal.rounds++;
+    out({ type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: `● goal 自动继续（第 ${goal.rounds}/${goal.maxRounds} 轮）：${goal.text}` }] } as never });
+    await handle({ id: undefined, cmd: 'prompt', text: `继续推进目标：${goal.text}。完成后明确说明。` });
+  }
 
   const reply = (cmd: Command, ok: boolean, data?: unknown, error?: string) => {
     if (cmd.id === undefined) return;
@@ -320,6 +349,7 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
             promptInFlight = false;
           }
         }
+        if (goal.text) void maybeContinueGoal();
         return;
       }
       case 'usage':
@@ -510,6 +540,32 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
         } finally {
           await rm2(tmp, { recursive: true, force: true });
         }
+      }
+      case 'goal': {
+        const sub = String(cmd.text ?? cmd.op ?? '');
+        if (sub === 'off' || sub === 'pause' || sub === 'resume') {
+          if (sub === 'off') goal.text = null;
+          if (sub === 'resume') goal.paused = false;
+          if (sub === 'pause') goal.paused = true;
+          reply(cmd, true, { goal: goal.text, paused: goal.paused, maxRounds: goal.maxRounds });
+          return;
+        }
+        if (sub.startsWith('max ')) {
+          const n = parseInt(sub.slice(4), 10);
+          if (!Number.isFinite(n) || n < 1 || n > 50) return reply(cmd, false, undefined, 'goal max: 1-50');
+          goal.maxRounds = n;
+          reply(cmd, true, { goal: goal.text, maxRounds: n });
+          return;
+        }
+        if (!sub.trim()) {
+          reply(cmd, true, { goal: goal.text, paused: goal.paused, rounds: goal.rounds, maxRounds: goal.maxRounds });
+          return;
+        }
+        goal.text = sub.trim();
+        goal.rounds = 0;
+        goal.paused = false;
+        reply(cmd, true, { goal: goal.text, maxRounds: goal.maxRounds });
+        return;
       }
       case 'skills': {
         const { discoverSkills } = await import('./core/context.js');
@@ -1131,6 +1187,7 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
       denyPending();
       queuedTexts.length = 0;
       interruptGen++;
+      goal.text = null; // interrupt stops /goal auto-continuation too
       agent.abort();
       return;
     }
@@ -1146,7 +1203,7 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
     // (e.g. "always allow" from a permission dialog), so they skip the prompt queue too
     const guarded = (p: Promise<unknown>) =>
       void p.catch((e) => out({ type: 'error', message: String(e?.message ?? e) }));
-    if (['set_mode', 'status', 'timeline', 'context', 'queue', 'usage', 'stats', 'insights', 'preset_save', 'preset_list', 'preset_get', 'permissions_list', 'permissions_add', 'permissions_remove', 'import', 'cd', 'pwd', 'add_dir', 'config_show', 'init', 'doctor', 'debug_zip', 'set_plan', 'set_effort', 'memory', 'remember', 'skills'].includes(cmd.cmd)) {
+    if (['set_mode', 'status', 'timeline', 'context', 'queue', 'usage', 'stats', 'insights', 'preset_save', 'preset_list', 'preset_get', 'permissions_list', 'permissions_add', 'permissions_remove', 'import', 'cd', 'pwd', 'add_dir', 'config_show', 'init', 'doctor', 'debug_zip', 'set_plan', 'set_effort', 'memory', 'remember', 'skills', 'goal'].includes(cmd.cmd)) {
       guarded(handle(cmd));
       return;
     }

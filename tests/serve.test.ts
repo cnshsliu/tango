@@ -1531,3 +1531,51 @@ test('skills command lists global and project skills with sources', async () => 
     await rm(work, { recursive: true, force: true });
   }
 });
+
+test('goal: auto-continues until achieved, respects interrupt and max rounds', async () => {
+  const mock = await startMock();
+  const home = await mkdtemp(join(tmpdir(), 'tango-serve-home-'));
+  const work = await mkdtemp(join(tmpdir(), 'tango-serve-work-'));
+  await writeFile(join(home, 'models.json'), JSON.stringify([
+    { id: 'mock/mock', provider: 'mock', model: 'm', api: 'openai-completions', baseUrl: `http://127.0.0.1:${(mock.server.address() as AddressInfo).port}/v1`, apiKey: 'MOCK_SERVE_KEY', contextWindow: 8000 }
+  ]));
+  // ask() responses (goal checks) alternate NO / YES; prompt responses are plain
+  let asks = 0;
+  let prompts = 0;
+  mock.setScript(() => {
+    const body = JSON.parse(JSON.stringify({})); // marker unused
+    const last = mock.requests.at(-1);
+    const isAsk = last && Array.isArray(last.messages) && JSON.stringify(last.messages).includes('目标是否已达成');
+    if (isAsk) {
+      asks++;
+      const ans = asks === 1 ? 'NO' : 'YES';
+      return SSE({ choices: [{ delta: { content: ans } }] }) + SSE({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 5, completion_tokens: 2 } }) + 'data: [DONE]\n\n';
+    }
+    prompts++;
+    return SSE({ choices: [{ delta: { content: `work ${prompts}` } }] }) + SSE({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 5, completion_tokens: 2 } }) + 'data: [DONE]\n\n';
+  });
+  const s = await startServe(home, work, 0);
+  try {
+    await s.next();
+    s.send({ id: 200, cmd: 'goal', text: '把示例写完' });
+    await s.until((f: any) => f.type === 'result' && f.id === 200 && f.ok, 'goal set');
+    s.send({ id: 100, cmd: 'prompt', text: '开始' });
+    await s.until((f: any) => f.type === 'result' && f.id === 100, 'turn1');
+    // goal check says NO → one auto continuation happens, then YES → goal clears
+    const done = await s.until((f: any) => f.type === 'message' && JSON.stringify(f).includes('目标完成'), 'goal done notice');
+    assert.ok(done);
+    assert.equal(prompts, 2, 'exactly one auto continuation: ' + prompts);
+    assert.equal(asks, 2);
+    // goal cleared: a further prompt does not auto-continue
+    const p0 = prompts;
+    s.send({ id: 101, cmd: 'prompt', text: 'another' });
+    await s.until((f: any) => f.type === 'result' && f.id === 101, 'turn2');
+    await sleep(600);
+    assert.equal(prompts, p0 + 1, 'no more auto-continuation after the goal cleared');
+  } finally {
+    s.child.kill();
+    mock.server.close();
+    await rm(home, { recursive: true, force: true });
+    await rm(work, { recursive: true, force: true });
+  }
+});

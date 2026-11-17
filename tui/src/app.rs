@@ -106,6 +106,7 @@ enum Pending {
     Memory,
     Remember,
     Skills,
+    Goal,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -261,6 +262,10 @@ const SLASH: &[(&str, &str)] = &[
     ("/focus", "安静模式：隐藏成功工具与思考，保留错误"),
     ("/usage /stats", "跨会话聚合：按模型/会话的请求与花费"),
     ("/fork <name>", "从当前（或 /rewind 选中）位置复制出新会话"),
+    (
+        "/goal <text>|off|max N",
+        "持续目标：每轮自动判断达成与否并续跑（上限轮数可调）",
+    ),
     ("/rewind", "打开时间轴：代码+对话+上下文整体回滚"),
     ("/add_dir <dir>", "添加 cwd 之外的额外可写目录（持久化）"),
     ("/init", "生成 AGENTS.md 项目说明脚手架（--force 追加）"),
@@ -380,6 +385,8 @@ pub struct App {
     serve_cwd: Option<std::path::PathBuf>,
     /// plan mode badge (/plan)
     plan_mode: bool,
+    /// active /goal text (badge)
+    goal_text: Option<String>,
     /// tool detail level: 0 compact / 1 default / 2 full (/density)
     density: u8,
     pending: Vec<(u64, Pending)>,
@@ -444,6 +451,7 @@ impl App {
             multiline_enter: false,
             serve_cwd: None,
             plan_mode: false,
+            goal_text: None,
             pending: Vec::new(),
             permission: None,
             model: "…".into(),
@@ -1280,6 +1288,10 @@ impl App {
                         serve.command("set_effort", vec![("level", Value::String(arg.into()))]);
                     self.pending.push((id, Pending::Effort));
                 }
+            }
+            "/goal" => {
+                let id = serve.command("goal", vec![("text", Value::String(rest.trim().into()))]);
+                self.pending.push((id, Pending::Goal));
             }
             "/skills" => {
                 let id = serve.command("skills", vec![]);
@@ -3517,6 +3529,20 @@ impl App {
                                 self.picker = Some(Picker::new(PickerKind::Skills, items));
                             }
                         }
+                        (Pending::Goal, true) => match d["goal"].as_str() {
+                            Some(g) if !g.is_empty() => {
+                                self.goal_text = Some(g.to_string());
+                                let max = d["maxRounds"].as_u64().unwrap_or(5);
+                                self.push(
+                                    format!("● goal：{g} · 自动继续上限 {max} 轮 · /goal off 停止"),
+                                    Tone::Success,
+                                );
+                            }
+                            _ => {
+                                self.goal_text = None;
+                                self.push("goal 已清除", Tone::Muted);
+                            }
+                        },
                         (Pending::History, true) => self.load_history(d),
                         (Pending::Theme, true) => {
                             self.theme = Theme::resolve(
@@ -4118,6 +4144,9 @@ impl App {
         }
         if self.plan_mode {
             spans.push(Span::styled(" PLAN ", self.theme.style(Tone::Warning)));
+        }
+        if self.goal_text.is_some() {
+            spans.push(Span::styled(" ●goal ", self.theme.style(Tone::Badge)));
         }
         if self.vim {
             let mode = if self.vim_command.is_some() {
@@ -5814,5 +5843,26 @@ mod tests {
             ]}}));
         assert!(app.picker.as_ref().unwrap().kind == PickerKind::Skills);
         assert!(app.picker.as_ref().unwrap().items.len() == 2);
+    }
+
+    #[test]
+    fn goal_commands_wire_up() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.run_slash("/goal 完成示例", &mut serve);
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        assert_eq!(sent["cmd"], "goal");
+        assert_eq!(sent["text"], "完成示例");
+        app.frame(json!({"type": "result", "id": sent["id"], "ok": true,
+            "data": {"goal": "完成示例", "maxRounds": 5}}));
+        assert!(app.goal_text.is_some());
+        let spans = app.status_spans();
+        let text: String = spans.iter().map(|s| s.content.to_string()).collect();
+        assert!(text.contains("goal"), "badge shows: {text}");
+        app.run_slash("/goal off", &mut serve);
+        let sent2: Value = serde_json::from_str(&serve.sent[1]).unwrap();
+        assert_eq!(sent2["text"], "off");
+        app.frame(json!({"type": "result", "id": sent2["id"], "ok": true, "data": {"goal": null}}));
+        assert!(app.goal_text.is_none());
     }
 }
