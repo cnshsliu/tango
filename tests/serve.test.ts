@@ -1444,13 +1444,13 @@ test('review/security-review inline the working diff into the prompt', async () 
     await s.next();
     s.send({ id: 200, cmd: 'review' });
     await s.until((f: any) => f.type === 'result' && f.id === 200 && f.ok, 'review');
-    const reviewPrompt = mock.requests.at(-1).messages.at(-1).content;
+    const reviewPrompt = JSON.stringify(mock.requests.at(-1).messages.at(-1));
     assert.ok(reviewPrompt.includes('REVIEWMARK'), 'diff text rides the review prompt');
     assert.ok(reviewPrompt.includes('正确性'), 'review instructions present');
 
     s.send({ id: 201, cmd: 'security_review' });
     await s.until((f: any) => f.type === 'result' && f.id === 201 && f.ok, 'sec');
-    const secPrompt = mock.requests.at(-1).messages.at(-1).content;
+    const secPrompt = JSON.stringify(mock.requests.at(-1).messages.at(-1));
     assert.ok(secPrompt.includes('安全'), 'security instructions present');
     assert.ok(secPrompt.includes('REVIEWMARK'));
   } finally {
