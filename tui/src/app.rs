@@ -74,6 +74,11 @@ enum Pending {
     Fork,
     Branch,
     Tree,
+    Find,
+    Export,
+    Transcript,
+    Rename,
+    Recap,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -86,6 +91,7 @@ enum PickerKind {
     NvimBackend,
     EditResolution,
     Timeline,
+    Find,
 }
 
 #[derive(Clone)]
@@ -208,6 +214,11 @@ const SLASH: &[(&str, &str)] = &[
     ("/cost", "本会话花费与上下文条数"),
     ("/diff", "只读查看工作区 diff · /diff --staged [paths]"),
     ("/exit", "退出"),
+    (
+        "/export [md|html]",
+        "导出完整会话（含被回滚的未来）为本地文件",
+    ),
+    ("/find <text>", "全库搜索对话（含被放弃的分支），可跳转"),
     ("/focus", "安静模式：隐藏成功工具与思考，保留错误"),
     ("/fork <name>", "从当前（或 /rewind 选中）位置复制出新会话"),
     ("/rewind", "打开时间轴：代码+对话+上下文整体回滚"),
@@ -217,6 +228,8 @@ const SLASH: &[(&str, &str)] = &[
     ("/mode <m>", "ask | auto | readonly"),
     ("/mouse", "切换鼠标捕获 · /mouse on|off"),
     ("/new", "开新会话"),
+    ("/recap", "一行总结当前对话（不写入会话）"),
+    ("/rename <name>", "重命名当前会话"),
     ("/nvim", "用外部 Neovim 编辑草稿 · ctrl+e 编辑当前草稿"),
     ("/quit", "退出"),
     ("/resume", "切换到历史会话，打开列表"),
@@ -226,6 +239,11 @@ const SLASH: &[(&str, &str)] = &[
     ),
     ("/status", "会话信息"),
     ("/theme", "选择并实时应用 dark/light/auto 主题"),
+    (
+        "/transcript",
+        "查看完整原始 transcript（含 ⟲ 被放弃的未来）",
+    ),
+    ("/copy [N]", "复制最近（或倒数第 N 个）助手回复"),
     ("/tree", "查看会话分叉树"),
     ("/undo", "回退一个回合（/redo 前进一步）"),
     ("/vim", "切换 Vim 编辑 · ctrl+s 发送 · :wq/:wqa 发送"),
@@ -281,6 +299,8 @@ pub struct App {
     btw_id: Option<u64>,
     btw_title: Option<String>,
     vim_override: Option<bool>,
+    /// full texts of recent assistant replies, newest last (for /copy)
+    assistant_replies: Vec<String>,
     pending: Vec<(u64, Pending)>,
     permission: Option<Permission>,
     model: String,
@@ -336,6 +356,7 @@ impl App {
             btw_id: None,
             btw_title: None,
             vim_override: None,
+            assistant_replies: Vec::new(),
             pending: Vec::new(),
             permission: None,
             model: "…".into(),
@@ -680,6 +701,10 @@ impl App {
             return;
         }
         let s = std::mem::take(&mut self.stream);
+        self.assistant_replies.push(s.trim_end().to_string());
+        if self.assistant_replies.len() > 20 {
+            self.assistant_replies.remove(0);
+        }
         let mut in_fence = false;
         let lines: Vec<&str> = s.trim_end().split('\n').collect();
         let mut i = 0;
@@ -1044,6 +1069,57 @@ impl App {
             "/tree" => {
                 let id = serve.command("tree", vec![]);
                 self.pending.push((id, Pending::Tree));
+            }
+            "/find" => {
+                if rest.is_empty() {
+                    self.push("usage: /find <text>", Tone::Muted);
+                } else {
+                    let id = serve.command("find", vec![("text", Value::String(rest.into()))]);
+                    self.pending.push((id, Pending::Find));
+                }
+            }
+            "/export" => {
+                let format = if rest.trim() == "html" { "html" } else { "md" };
+                let id = serve.command("export", vec![("format", Value::String(format.into()))]);
+                self.pending.push((id, Pending::Export));
+            }
+            "/transcript" => {
+                let id = serve.command("transcript", vec![]);
+                self.pending.push((id, Pending::Transcript));
+            }
+            "/rename" => {
+                if rest.is_empty() {
+                    self.push("usage: /rename <name>", Tone::Muted);
+                } else {
+                    let id = serve.command("rename", vec![("name", Value::String(rest.into()))]);
+                    self.pending.push((id, Pending::Rename));
+                }
+            }
+            "/recap" => {
+                let id = serve.command("recap", vec![]);
+                self.pending.push((id, Pending::Recap));
+                self.btw_id = Some(id);
+                let title = "一行总结".to_string();
+                self.btw_title = Some(title.clone());
+                self.viewer = Some(Viewer::read_only(title, ""));
+            }
+            "/copy" => {
+                let n: usize = rest.trim().parse().unwrap_or(1);
+                let want = n.saturating_sub(1);
+                let pick = self
+                    .assistant_replies
+                    .len()
+                    .checked_sub(want)
+                    .filter(|left| *left > 0)
+                    .and_then(|left| self.assistant_replies.get(left - 1));
+                if let Some(text) = pick {
+                    match crate::clipboard::copy(text) {
+                        Ok(()) => self.push(format!("已复制助手回复（{n}）",), Tone::Success),
+                        Err(error) => self.push(format!("复制失败：{error}"), Tone::Error),
+                    }
+                } else {
+                    self.push("没有可复制的助手回复", Tone::Muted);
+                }
             }
             "/cost" => {
                 let id = serve.command("status", vec![]);
@@ -1682,6 +1758,24 @@ impl App {
                         let id = serve.command("rewind", vec![("entryIndex", Value::from(entry))]);
                         self.pending.push((id, Pending::Rewind));
                         self.push("⟲ 回滚中 …", Tone::Muted);
+                    }
+                }
+                PickerKind::Find => {
+                    // item.id carries "sessionId:entryIndex:current-orphan"
+                    let parts: Vec<&str> = item.id.split(':').collect();
+                    if parts.len() == 3 {
+                        let (sid, entry, cur) = (parts[0], parts[1], parts[2] == "1");
+                        if cur {
+                            if let Ok(e) = entry.parse::<u64>() {
+                                let id =
+                                    serve.command("rewind", vec![("entryIndex", Value::from(e))]);
+                                self.pending.push((id, Pending::Rewind));
+                                self.push("⟲ 回滚到命中位置 …", Tone::Muted);
+                            }
+                        } else {
+                            self.push(format!("↻ resuming session {sid} …"), Tone::Muted);
+                            self.switch_session(Some(sid.to_string()));
+                        }
                     }
                 }
                 PickerKind::Command => self.run_slash(&item.id, serve),
@@ -2592,6 +2686,82 @@ impl App {
                             }
                             self.viewer = Some(Viewer::read_only("会话分叉树", text));
                         }
+                        (Pending::Find, true) => {
+                            let cur = self.session.clone();
+                            let items: Vec<PickItem> = d["hits"]
+                                .as_array()
+                                .map(|a| {
+                                    a.iter()
+                                        .filter_map(|h| {
+                                            let sid = h["sessionId"].as_str()?;
+                                            let entry = h["entryIndex"].as_u64()?;
+                                            let orphaned = h["orphaned"].as_bool().unwrap_or(false);
+                                            let is_current = sid == cur;
+                                            let first: String = h["firstLine"]
+                                                .as_str()
+                                                .unwrap_or("")
+                                                .chars()
+                                                .take(48)
+                                                .collect();
+                                            let snippet: String = h["snippet"]
+                                                .as_str()
+                                                .unwrap_or("")
+                                                .chars()
+                                                .take(60)
+                                                .collect();
+                                            let tag = if orphaned { "⟲被放弃 " } else { "" };
+                                            let which =
+                                                if is_current { "本会话" } else { "他会话" };
+                                            Some(PickItem {
+                                                label: format!("[{which}] {tag}{first}"),
+                                                note: snippet,
+                                                warn: false,
+                                                current: false,
+                                                id: format!(
+                                                    "{sid}:{entry}:{}",
+                                                    if is_current { 1 } else { 0 }
+                                                ),
+                                            })
+                                        })
+                                        .collect()
+                                })
+                                .unwrap_or_default();
+                            if items.is_empty() {
+                                self.push("find: 无命中", Tone::Muted);
+                            } else {
+                                self.picker = Some(Picker::new(PickerKind::Find, items));
+                            }
+                        }
+                        (Pending::Export, true) => {
+                            let path = d["path"].as_str().unwrap_or("?");
+                            let format = d["format"].as_str().unwrap_or("md");
+                            self.push(format!("已导出 {format} → {path}"), Tone::Success);
+                        }
+                        (Pending::Transcript, true) => {
+                            let text = d["text"].as_str().unwrap_or("").to_string();
+                            self.viewer =
+                                Some(Viewer::read_only("完整 transcript · ⟲=被放弃的未来", text));
+                        }
+                        (Pending::Rename, true) => {
+                            let name = d["name"].as_str().unwrap_or("").to_string();
+                            self.session = name;
+                            self.push("会话已重命名", Tone::Success);
+                        }
+                        (Pending::Recap, true) => {
+                            self.btw_id = None;
+                            self.busy = false;
+                            let title = self.btw_title.take().unwrap_or_else(|| "一行总结".into());
+                            let text = d["text"].as_str().unwrap_or("");
+                            if !text.is_empty() {
+                                if let Some(viewer) = self.viewer.as_mut()
+                                    && viewer.title == title
+                                {
+                                    viewer.text = text.into();
+                                } else {
+                                    self.viewer = Some(Viewer::read_only(title, text));
+                                }
+                            }
+                        }
                         (Pending::History, true) => self.load_history(d),
                         (Pending::Theme, true) => {
                             self.theme = Theme::resolve(
@@ -2613,6 +2783,15 @@ impl App {
                         (Pending::NvimViewer, true) => {
                             self.nvim_preference = d["nvimViewer"].as_str().unwrap_or("ask").into();
                             self.push("Neovim 只读偏好已保存", Tone::Muted);
+                        }
+                        (Pending::Recap, false) => {
+                            self.btw_id = None;
+                            self.btw_title = None;
+                            self.busy = false;
+                            self.push(
+                                format!("recap error: {}", v["error"].as_str().unwrap_or("?")),
+                                Tone::Error,
+                            );
                         }
                         (Pending::Btw, false) => {
                             self.btw_id = None;
@@ -2975,6 +3154,7 @@ impl App {
                 PickerKind::Model => "选择模型",
                 PickerKind::Session => "选择会话",
                 PickerKind::Timeline => "时间轴 · 选中即回滚到该回合之前",
+                PickerKind::Find => "搜索命中 · 本会话=回滚到该处 · 他会话=切换过去",
                 PickerKind::Command => "命令面板",
                 PickerKind::History => "搜索 prompt 历史",
                 PickerKind::Theme => "选择主题",
@@ -4239,5 +4419,83 @@ mod tests {
         assert!(viewer.title.contains("分叉"));
         assert!(viewer.text.contains("root-1"));
         assert!(viewer.text.contains("fork-9"));
+    }
+
+    #[test]
+    fn find_opens_a_picker_and_acts_by_session() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.run_slash("/find MAGIC", &mut serve);
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        assert_eq!(sent["cmd"], "find");
+        assert_eq!(sent["text"], "MAGIC");
+        app.frame(json!({
+            "type": "result", "id": sent["id"], "ok": true,
+            "data": {"hits": [
+                {"sessionId": "current-id", "entryIndex": 3, "ts": "2026-11-16T10:00:00Z", "firstLine": "MAGIC here", "snippet": "…MAGIC here…", "orphaned": false},
+                {"sessionId": "other-id", "entryIndex": 7, "ts": "2026-11-16T11:00:00Z", "firstLine": "MAGIC there", "snippet": "…MAGIC there…", "orphaned": true}
+            ]}
+        }));
+        assert!(app.picker.as_ref().unwrap().kind == PickerKind::Find);
+        // pick the OTHER session → respawn-resume it, no rewind sent
+        app.key(
+            crossterm::event::KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+            &mut serve,
+        );
+        app.key(
+            crossterm::event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut serve,
+        );
+        assert_eq!(app.respawn, Some(Some("other-id".into())));
+        // pick the CURRENT session → rewind to that entry
+        app.respawn = None;
+        app.picker = None;
+        app.session = "current-id".into();
+        app.run_slash("/find MAGIC", &mut serve);
+        let sent2: Value = serde_json::from_str(&serve.sent[1]).unwrap();
+        app.frame(json!({
+            "type": "result", "id": sent2["id"], "ok": true,
+            "data": {"hits": [
+                {"sessionId": "current-id", "entryIndex": 3, "ts": "t", "firstLine": "MAGIC", "snippet": "s", "orphaned": false}
+            ]}
+        }));
+        app.key(
+            crossterm::event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut serve,
+        );
+        let rew: Value = serde_json::from_str(&serve.sent[2]).unwrap();
+        assert_eq!(rew["cmd"], "rewind");
+        assert_eq!(rew["entryIndex"], 3);
+    }
+
+    #[test]
+    fn transcript_export_copy_rename_recap_wire_up() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        // transcript → read-only viewer with orphan markers
+        app.run_slash("/transcript", &mut serve);
+        let t1: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        assert_eq!(t1["cmd"], "transcript");
+        app.frame(json!({"type": "result", "id": t1["id"], "ok": true, "data": {"text": "⟲ user: lost future"}}));
+        assert!(app.viewer.as_ref().unwrap().read_only);
+        assert!(app.viewer.as_ref().unwrap().text.contains("lost future"));
+        // export → chat line with the path
+        app.run_slash("/export md", &mut serve);
+        let t2: Value = serde_json::from_str(&serve.sent[1]).unwrap();
+        assert_eq!(t2["cmd"], "export");
+        app.frame(json!({"type": "result", "id": t2["id"], "ok": true, "data": {"path": "/tmp/x.md", "format": "md"}}));
+        assert!(app.lines.iter().any(|l| l.text.contains("/tmp/x.md")));
+        // rename → command sent
+        app.run_slash("/rename my-session", &mut serve);
+        let t3: Value = serde_json::from_str(&serve.sent[2]).unwrap();
+        assert_eq!(t3["cmd"], "rename");
+        assert_eq!(t3["name"], "my-session");
+        // recap → uses the btw streaming dialog
+        app.run_slash("/recap", &mut serve);
+        let t4: Value = serde_json::from_str(&serve.sent[3]).unwrap();
+        assert_eq!(t4["cmd"], "recap");
+        // copy with no assistant replies yet: no panic, nothing sent
+        app.run_slash("/copy", &mut serve);
+        assert_eq!(serve.sent.len(), 4);
     }
 }
