@@ -13,6 +13,7 @@ import { spawnSync } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { randomUUID } from 'node:crypto';
 import { buildContext } from './core/context.js';
+import { reconcileTasks, startBgTask, stopTask } from './core/bgtask.js';
 import { worktreeCreate, worktreeList, worktreeMerge, worktreeRemove } from './core/worktrees.js';
 import { parseRule } from './core/permissions.js';
 import { restoreSnapshot } from './core/git-snapshot.js';
@@ -554,6 +555,46 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
         } finally {
           await rm2(tmp, { recursive: true, force: true });
         }
+      }
+      case 'bg': {
+        const prompt = String(cmd.prompt ?? '');
+        if (!prompt.trim()) return reply(cmd, false, undefined, 'bg: empty prompt');
+        try {
+          const roles = (await loadConfig()).roles;
+          const roleModel = cmd.long === true ? roles?.longContext : roles?.subagent;
+          const task = await startBgTask({
+            prompt,
+            name: String(cmd.name ?? ''),
+            roleModel,
+            mainCwd: cwd,
+            currentModel: agent.model.id
+          });
+          reply(cmd, true, { task });
+        } catch (e: any) {
+          reply(cmd, false, undefined, String(e?.message ?? e));
+        }
+        return;
+      }
+      case 'tasks': {
+        const tasks = await reconcileTasks();
+        reply(cmd, true, {
+          tasks: tasks.map((t) => ({
+            id: t.id, name: t.name, status: t.status, model: t.model,
+            prompt: t.prompt.length > 60 ? t.prompt.slice(0, 60) + '…' : t.prompt,
+            worktree: t.worktree, sessionId: t.sessionId,
+            startedAt: t.startedAt, endedAt: t.endedAt
+          }))
+        });
+        return;
+      }
+      case 'stop_task': {
+        try {
+          const t = await stopTask(String(cmd.id ?? ''), cwd);
+          reply(cmd, true, { task: { id: t.id, status: t.status } });
+        } catch (e: any) {
+          reply(cmd, false, undefined, String(e?.message ?? e));
+        }
+        return;
       }
       case 'worktree_create': {
         try {
@@ -1292,7 +1333,7 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
     // (e.g. "always allow" from a permission dialog), so they skip the prompt queue too
     const guarded = (p: Promise<unknown>) =>
       void p.catch((e) => out({ type: 'error', message: String(e?.message ?? e) }));
-    if (['set_mode', 'status', 'timeline', 'context', 'queue', 'usage', 'stats', 'insights', 'preset_save', 'preset_list', 'preset_get', 'permissions_list', 'permissions_add', 'permissions_remove', 'import', 'cd', 'pwd', 'add_dir', 'config_show', 'init', 'doctor', 'debug_zip', 'set_plan', 'set_effort', 'memory', 'remember', 'skills', 'goal', 'loop', 'worktree_create', 'worktree_list', 'worktree_remove', 'worktree_merge'].includes(cmd.cmd)) {
+    if (['set_mode', 'status', 'timeline', 'context', 'queue', 'usage', 'stats', 'insights', 'preset_save', 'preset_list', 'preset_get', 'permissions_list', 'permissions_add', 'permissions_remove', 'import', 'cd', 'pwd', 'add_dir', 'config_show', 'init', 'doctor', 'debug_zip', 'set_plan', 'set_effort', 'memory', 'remember', 'skills', 'goal', 'loop', 'worktree_create', 'worktree_list', 'worktree_remove', 'worktree_merge', 'bg', 'tasks', 'stop_task'].includes(cmd.cmd)) {
       guarded(handle(cmd));
       return;
     }

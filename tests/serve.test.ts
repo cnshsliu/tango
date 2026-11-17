@@ -1809,3 +1809,45 @@ test('worktree: create/list/merge/remove with safety gates', async () => {
     await rm(work, { recursive: true, force: true });
   }
 });
+
+test('bg/tasks/stop: real child runs in a worktree, session resumable', async () => {
+  const mock = await startMock();
+  const home = await mkdtemp(join(tmpdir(), 'tango-serve-home-'));
+  const work = await mkdtemp(join(tmpdir(), 'tango-serve-work-'));
+  await writeFile(join(home, 'models.json'), JSON.stringify([
+    { id: 'mock/mock', provider: 'mock', model: 'm', api: 'openai-completions', baseUrl: `http://127.0.0.1:${(mock.server.address() as AddressInfo).port}/v1`, apiKey: 'MOCK_SERVE_KEY', contextWindow: 2000 }
+  ]));
+  mock.setScript(() => SSE({ choices: [{ delta: { content: 'BGDONE-' + Date.now() } }] }) + SSE({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 10, completion_tokens: 5 } }) + 'data: [DONE]\n\n');
+  const git = (args: string[]) => spawnSync('git', args, { cwd: work, encoding: 'utf8' });
+  git(['init', '-q']); git(['config', 'user.email', 't@t']); git(['config', 'user.name', 't']);
+  await writeFile(join(work, 'seed.txt'), 'seed\n'); git(['add', '.']); git(['commit', '-q', '-m', 'i']);
+
+  const s = await startServe(home, work, 0);
+  try {
+    await s.next();
+    s.send({ id: 200, cmd: 'bg', prompt: '后台任务：报告完成', name: 'bg-test-1' });
+    const bg = await s.until((f: any) => f.type === 'result' && f.id === 200, 'bg');
+    assert.ok(bg.ok, JSON.stringify(bg));
+    assert.ok(existsSync(bg.data.task.worktree), 'worktree created');
+    // the child takes a moment; poll tasks until done
+    let done: any = null;
+    for (let i = 0; i < 40 && !done; i++) {
+      await sleep(500);
+      s.send({ id: 201, cmd: 'tasks' });
+      const t = await s.until((f: any) => f.type === 'result' && f.id === 201, 'tasks');
+      const found = t.data.tasks.find((x: any) => x.id === bg.data.task.id);
+      if (found?.status === 'done') done = found;
+    }
+    assert.ok(done, 'background task finished');
+    assert.ok(done.sessionId, 'session id captured');
+    const store = await SessionStore.open(join(home, 'sessions'), done.sessionId);
+    assert.ok(store.allMessages().some((m: any) => JSON.stringify(m).includes('后台任务')), 'prompt landed in its session');
+    assert.equal(store.meta()?.cwd, bg.data.task.worktree, 'child cwd was the worktree');
+  } finally {
+    s.child.kill();
+    spawnSync('git', ['worktree', 'prune'], { cwd: work });
+    mock.server.close();
+    await rm(home, { recursive: true, force: true });
+    await rm(work, { recursive: true, force: true });
+  }
+});

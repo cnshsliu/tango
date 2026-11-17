@@ -40,6 +40,8 @@ export interface Config {
   extraDirs?: string[];
   /** Tool-call hooks: sh -c <cmd>, the call JSON arrives on stdin; failures never block */
   hooks?: { beforeTool?: string; afterTool?: string };
+  /** Role-based model routing (/agents): driver / subagent / longContext */
+  roles?: { driver?: string; subagent?: string; longContext?: string };
 }
 
 async function readJson<T>(path: string): Promise<T | undefined> {
