@@ -1207,3 +1207,45 @@ test('permissions: add/list/remove rules take effect live', async () => {
     await rm(work, { recursive: true, force: true });
   }
 });
+
+test('import: maps Claude Code allowed-tools into rules, skips unmappable entries', async () => {
+  const mock = await startMock();
+  const home = await mkdtemp(join(tmpdir(), 'tango-serve-home-'));
+  const work = await mkdtemp(join(tmpdir(), 'tango-serve-work-'));
+  await writeFile(join(home, 'models.json'), JSON.stringify([
+    { id: 'mock/mock', provider: 'mock', model: 'm', api: 'openai-completions', baseUrl: `http://127.0.0.1:${(mock.server.address() as AddressInfo).port}/v1`, apiKey: 'MOCK_SERVE_KEY', contextWindow: 200 }
+  ]));
+  mock.setScript(() => SSE({ choices: [{ delta: { content: 'ok' } }] }) + SSE({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1 } }) + 'data: [DONE]\n\n');
+  await writeFile(join(work, '.claude', 'settings.json'), JSON.stringify({
+    permissions: { allow: ['Bash(git status:*)', 'Write(src/**)', 'WebFetch', 'Dangerous(*)'] }
+  }), { flag: 'wx' }).catch(() => {});
+  const { mkdir } = await import('node:fs/promises');
+  await mkdir(join(work, '.claude'), { recursive: true });
+  await writeFile(join(work, '.claude', 'settings.json'), JSON.stringify({
+    permissions: { allow: ['Bash(git status:*)', 'Write(src/**)', 'WebFetch', 'Dangerous(*)'] }
+  }));
+
+  const s = await startServe(home, work, 0);
+  try {
+    await s.next();
+    s.send({ id: 200, cmd: 'import', source: 'claude-code' });
+    const imp = await s.until((f: any) => f.type === 'result' && f.id === 200, 'import');
+    assert.ok(imp.ok, JSON.stringify(imp));
+    assert.ok(imp.data.imported.includes('bash:git status'), JSON.stringify(imp.data));
+    assert.ok(imp.data.imported.includes('path:src'));
+    assert.ok(imp.data.imported.includes('tool:web_fetch'));
+    assert.ok(imp.data.skipped.some((x: any) => String(x.raw).startsWith('Dangerous')), 'unmappable reported, not silent');
+    const cfg = JSON.parse(await readFile(join(home, 'config.json'), 'utf8'));
+    assert.deepEqual(cfg.permissions.allow, imp.data.imported);
+
+    // missing source file → readable error
+    s.send({ id: 201, cmd: 'import', source: 'grok' });
+    const miss = await s.until((f: any) => f.type === 'result' && f.id === 201, 'grok miss');
+    assert.ok(!miss.ok);
+  } finally {
+    s.child.kill();
+    mock.server.close();
+    await rm(home, { recursive: true, force: true });
+    await rm(work, { recursive: true, force: true });
+  }
+});

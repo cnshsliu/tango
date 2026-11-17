@@ -378,6 +378,53 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
         reply(cmd, true, { autocompact: value });
         return;
       }
+      case 'import': {
+        // map other agents' allowed-tools into our rule grammar; unmappable → reported
+        const source = String(cmd.source ?? '');
+        const rawEntries: { raw: string }[] = [];
+        const { readFile: rf2 } = await import('node:fs/promises');
+        const { homedir } = await import('node:os');
+        let rawJson = '';
+        try {
+          if (source === 'claude-code') rawJson = await rf2(join(cwd, '.claude', 'settings.json'), 'utf8');
+          else if (source === 'grok') rawJson = await rf2(join(homedir(), '.grok', 'settings.json'), 'utf8');
+          else return reply(cmd, false, undefined, `import: unknown source "${source}" (claude-code | grok | codex)`);
+          const parsed = JSON.parse(rawJson);
+          for (const e of parsed?.permissions?.allow ?? []) rawEntries.push({ raw: String(e) });
+        } catch (e: any) {
+          return reply(cmd, false, undefined, `import ${source}: ${e?.message ?? e}`);
+        }
+        const imported: string[] = [];
+        const skipped: { raw: string; reason: string }[] = [];
+        for (const { raw } of rawEntries) {
+          // Tool(Args) and bare Tool forms
+          const m = /^(\w+)\((.*)\)$/.exec(raw);
+          const tool = m ? m[1] : raw;
+          const arg = m ? m[2] : '';
+          const snake = tool.replace(/(?<=[a-z0-9])([A-Z])/g, '_$1').toLowerCase();
+          if (m && (tool === 'Bash' || tool === 'bash')) {
+            const cmdPrefix = arg.replace(/:?\*$/, '').split(':')[0].trim();
+            if (cmdPrefix) imported.push(`bash:${cmdPrefix}`);
+            else skipped.push({ raw, reason: 'no command prefix' });
+          } else if (m && ['Write', 'Edit', 'write', 'edit'].includes(tool)) {
+            const p = arg.replace(/[*]+$/, '').split('**')[0].replace(/[/]+$/, '');
+            if (p && !p.includes('*')) imported.push(`path:${p}`);
+            else skipped.push({ raw, reason: 'wildcard path not representable' });
+          } else if (!m || !arg) {
+            // bare tool name → tool rule if we have that tool
+            if (buildTools().get(snake)) imported.push(`tool:${snake}`);
+            else skipped.push({ raw, reason: `no matching tool "${snake}"` });
+          } else {
+            skipped.push({ raw, reason: 'unsupported shape' });
+          }
+        }
+        const cfg0 = await loadConfig();
+        const allow = [...new Set([...(cfg0.permissions?.allow ?? []), ...imported])];
+        await saveConfig({ ...cfg0, permissions: { allow } });
+        if (perm.rules) perm.rules.allow = allow;
+        reply(cmd, true, { imported, skipped });
+        return;
+      }
       case 'permissions_list':
       case 'permissions_add':
       case 'permissions_remove': {
@@ -847,7 +894,7 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
     // (e.g. "always allow" from a permission dialog), so they skip the prompt queue too
     const guarded = (p: Promise<unknown>) =>
       void p.catch((e) => out({ type: 'error', message: String(e?.message ?? e) }));
-    if (['set_mode', 'status', 'timeline', 'context', 'queue', 'usage', 'stats', 'insights', 'preset_save', 'preset_list', 'preset_get', 'permissions_list', 'permissions_add', 'permissions_remove'].includes(cmd.cmd)) {
+    if (['set_mode', 'status', 'timeline', 'context', 'queue', 'usage', 'stats', 'insights', 'preset_save', 'preset_list', 'preset_get', 'permissions_list', 'permissions_add', 'permissions_remove', 'import'].includes(cmd.cmd)) {
       guarded(handle(cmd));
       return;
     }
