@@ -104,3 +104,12 @@ test('apiKey: UPPER_SNAKE reads that env var, anything else is literal, "$X" is 
     delete process.env.TANGO_TEST_KEY_1;
   }
 });
+
+test('write-effect tools are marked for checkpointing', async () => {
+  const { buildTools } = await import('../src/host.js');
+  const tools = buildTools();
+  for (const name of ['write', 'edit', 'bash', 'office_write'])
+    assert.equal(tools.get(name)?.writeEffect, true, name);
+  for (const name of ['read', 'grep', 'find', 'ls', 'diff', 'notify'])
+    assert.notEqual(tools.get(name)?.writeEffect, true, name);
+});

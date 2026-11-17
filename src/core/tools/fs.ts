@@ -45,6 +45,7 @@ export const readTool: Tool<{ path: string; offset?: number; limit?: number }> =
 
 export const writeTool: Tool<{ path: string; content: string }> = {
   name: 'write',
+  writeEffect: true,
   description: 'Create or overwrite a file with the given content. Creates parent directories.',
   input: {
     type: 'object',
@@ -68,6 +69,7 @@ export const writeTool: Tool<{ path: string; content: string }> = {
 
 export const editTool: Tool<{ path: string; old: string; new: string }> = {
   name: 'edit',
+  writeEffect: true,
   description:
     'Replace exactly one occurrence of `old` with `new` in a file. `old` must match exactly once; include enough context to be unique.',
   input: {

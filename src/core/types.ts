@@ -122,6 +122,8 @@ export interface ToolResult {
 
 export interface Tool<TInput = unknown> extends ToolSchema {
   execute(input: TInput, ctx: ToolContext): Promise<ToolResult>;
+  /** true when a call can change the workspace; checkpoints key off this */
+  writeEffect?: boolean;
 }
 
 // ---------- Session ----------

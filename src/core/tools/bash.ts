@@ -4,6 +4,7 @@ import { text, truncate } from './registry.js';
 
 export const bashTool: Tool<{ command: string; timeout?: number }> = {
   name: 'bash',
+  writeEffect: true,
   description:
     'Run a shell command in cwd and return stdout+stderr. Use for ls, grep, find, git, tests, etc. Long output is truncated.',
   input: {

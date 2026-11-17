@@ -175,6 +175,7 @@ function toSheets(content: string | Sheet[]): Sheet[] {
 
 export const officeWriteTool: Tool<WriteInput> = {
   name: 'office_write',
+  writeEffect: true,
   description:
     'Create a Word .docx or Excel .xlsx file. For .docx, content is markdown-ish text (# headings, - lists, | tables |, **bold**). ' +
     'For .xlsx, content is tab-separated rows (one sheet), or an array of {name, rows} objects for several sheets. ' +
