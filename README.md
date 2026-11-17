@@ -72,12 +72,24 @@ tango --models         list models   tango --sessions   list sessions   --cwd <d
 tango repl             line-mode REPL — dev fallback, not the product
 ```
 
-TUI commands: `/model`, `/resume`, `/new`, `/rename`, `/mode`, `/vim`, `/nvim`, `/btw`, `/diff`,
-`/focus`, `/density`, `/mouse`, `/theme`, `/compact`, `/autocompact`, `/skill`, `/cost`, `/usage`,
-`/stats`, `/insights`, `/context`, `/queue`, `/timestamps`, `/statusline`, `/preset`, `/status`,
-`/clear`, `/rewind`, `/undo`, `/redo`, `/fork`, `/branch`, `/tree`, `/find`, `/export`,
-`/transcript`, `/copy`, `/recap`, `/help`, `/exit`. `/model <id>` also saves the choice as the
-default for new sessions.
+TUI commands: `/model`, `/resume`, `/new`, `/rename`, `/mode`, `/vim`, `/nvim`, `/editor`,
+`/multiline`, `/btw`, `/diff`, `/focus`, `/density`, `/mouse`, `/theme`, `/compact`,
+`/autocompact`, `/skill`, `/cost`, `/usage`, `/stats`, `/insights`, `/context`, `/queue`,
+`/timestamps`, `/statusline`, `/preset`, `/permissions`, `/import`, `/cd`, `/pwd`, `/add_dir`,
+`/config`, `/keymap`, `/init`, `/doctor`, `/debug-zip`, `/status`, `/clear`, `/rewind`, `/undo`,
+`/redo`, `/fork`, `/branch`, `/tree`, `/find`, `/export`, `/transcript`, `/copy`, `/recap`,
+`/help`, `/exit`. `/model <id>` also saves the choice as the default for new sessions.
+
+## Permissions rules
+
+Three rule kinds, persisted in config.json (`permissions.allow`) and live via `/permissions`:
+`tool:<name>` (always allow that tool), `path:<prefix>` (allow writes under a path — relative to
+cwd or absolute, segment-boundary matched so `src` never matches `src-evil/`), `bash:<prefix>`
+(first command tokens, so `bash:git status` matches `git status -s` but not `git_status`).
+Rules never override readonly mode; they only turn "ask" into "allow".
+`/import claude-code|grok` maps another agent's allowed-tools into these rules and reports
+every entry it could not represent. `/cd <dir>` moves the session working directory (agent,
+tools and checkpoints follow live); `/add_dir <dir>` registers an extra writable root.
 
 ## Observability
 
