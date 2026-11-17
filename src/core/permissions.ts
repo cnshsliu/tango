@@ -117,10 +117,14 @@ export type AskFn = (call: ToolCallBlock, reason: string) => Promise<boolean>;
 
 export function installPermissionGate(
   events: EventBus,
-  opts: { mode: () => PermissionMode; cwd: string | (() => string); ask?: AskFn; rules?: () => AllowRule[]; extraDirs?: () => string[] }
+  opts: { mode: () => PermissionMode; cwd: string | (() => string); ask?: AskFn; rules?: () => AllowRule[]; extraDirs?: () => string[]; plan?: () => boolean }
 ): () => void {
   const cwdNow = () => (typeof opts.cwd === 'function' ? opts.cwd() : opts.cwd);
-  return events.on('before_tool', async ({ call }) => {
+  return events.on('before_tool', async ({ call, tool }) => {
+    // plan mode vetoes ALL write-effect tools before rules can widen anything
+    if (opts.plan?.() && tool.writeEffect) {
+      return { block: true, reason: 'plan mode — research only; /plan off to execute' };
+    }
     const d = decide(opts.mode(), call, cwdNow(), opts.rules?.(), opts.extraDirs?.());
     if (d.action === 'allow') return;
     if (d.action === 'deny') return { block: true, reason: d.reason };

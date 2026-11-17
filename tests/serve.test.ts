@@ -1387,3 +1387,42 @@ test('debug-zip packages diagnostics without secrets', async () => {
     await rm(work, { recursive: true, force: true });
   }
 });
+
+test('plan mode: writes vetoed even when a rule allows; reads fine; off restores', async () => {
+  const mock = await startMock();
+  const home = await mkdtemp(join(tmpdir(), 'tango-serve-home-'));
+  const work = await mkdtemp(join(tmpdir(), 'tango-serve-work-'));
+  await writeFile(join(home, 'models.json'), JSON.stringify([
+    { id: 'mock/mock', provider: 'mock', model: 'm', api: 'openai-completions', baseUrl: `http://127.0.0.1:${(mock.server.address() as AddressInfo).port}/v1`, apiKey: 'MOCK_SERVE_KEY', contextWindow: 200 }
+  ]));
+  await writeFile(join(home, 'config.json'), JSON.stringify({ permissions: { allow: ['bash:echo'] } }));
+  let n = 0;
+  mock.setScript(() => {
+    n++;
+    if (n % 2 === 1) return SSE({ choices: [{ delta: { tool_calls: [{ index: 0, id: 'w' + n, function: { name: 'bash', arguments: JSON.stringify({ command: 'echo plan-write > f.txt' }) } }] }, finish_reason: 'tool_calls' }] }) + 'data: [DONE]\n\n';
+    return SSE({ choices: [{ delta: { content: 'done' } }] }) + SSE({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 5, completion_tokens: 2 } }) + 'data: [DONE]\n\n';
+  });
+  const s = await startServe(home, work, 0);
+  try {
+    await s.next();
+    s.send({ id: 200, cmd: 'set_plan', on: true });
+    await s.until((f: any) => f.type === 'result' && f.id === 200 && f.ok, 'plan on');
+    s.send({ id: 100, cmd: 'prompt', text: 'write something' });
+    await s.until((f: any) => f.type === 'result' && f.id === 100 && f.ok, 'turn');
+    assert.ok(!existsSync(join(work, 'f.txt')), 'plan mode vetoes writes even with an allow rule');
+    // the blocked tool result is visible to the model
+    assert.ok(mock.requests.some((r: any) => JSON.stringify(r).includes('plan mode')));
+
+    s.send({ id: 201, cmd: 'set_plan', on: false });
+    await s.until((f: any) => f.type === 'result' && f.id === 201 && f.ok, 'plan off');
+    n = 0;
+    s.send({ id: 101, cmd: 'prompt', text: 'write again' });
+    await s.until((f: any) => f.type === 'result' && f.id === 101 && f.ok, 'turn2');
+    assert.ok(existsSync(join(work, 'f.txt')), 'off restores writes');
+  } finally {
+    s.child.kill();
+    mock.server.close();
+    await rm(home, { recursive: true, force: true });
+    await rm(work, { recursive: true, force: true });
+  }
+});

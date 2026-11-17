@@ -38,6 +38,8 @@ export interface PermState {
   rules?: { allow: string[] };
   /** live extra write roots (/add_dir; inside() also accepts these) */
   extraDirs?: { dirs: string[] };
+  /** plan mode: write-effect tools are vetoed (/plan) */
+  plan?: { on: boolean };
 }
 
 export function makeAgent(model: ModelSpec, store: SessionStore, cwd: string, perm: PermState, cfg: { checkpoint?: string; permissions?: { allow: string[] }; extraDirs?: string[] } = {}): Agent {
@@ -47,6 +49,8 @@ export function makeAgent(model: ModelSpec, store: SessionStore, cwd: string, pe
   perm.rules = rules;
   const extraDirs = perm.extraDirs ?? { dirs: cfg.extraDirs ? [...cfg.extraDirs] : [] };
   perm.extraDirs = extraDirs;
+  const plan = perm.plan ?? { on: false };
+  perm.plan = plan;
   const parsedRules = () =>
     rules.allow
       .map((r) => parseRule(r))
@@ -58,7 +62,8 @@ export function makeAgent(model: ModelSpec, store: SessionStore, cwd: string, pe
     cwd: () => agent.cwd,
     ask: (c, r) => (perm.ask ? perm.ask(c, r) : Promise.resolve(false)),
     rules: parsedRules,
-    extraDirs: () => extraDirs.dirs
+    extraDirs: () => extraDirs.dirs,
+    plan: () => plan.on
   });
   installDiagnostics(events, cwd);
   if (checkpointEnabled(cfg)) installCheckpoints(events, { cwd: () => agent.cwd, store });

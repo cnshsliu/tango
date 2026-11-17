@@ -301,8 +301,9 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
   async function handle(cmd: Command): Promise<void> {
     switch (cmd.cmd) {
       case 'prompt': {
-        const text = String(cmd.text ?? '');
+        let text = String(cmd.text ?? '');
         if (!text.trim()) return reply(cmd, false, undefined, 'prompt: empty text');
+        if (perm.plan?.on) text = `[plan mode] 先只做研究和计划，不要尝试写入或执行修改。产出一份清晰的执行计划，等用户批准后 /plan off 再执行。\n\n${text}`;
         try {
           const msg = await agent.prompt(text, (ev) => {
             if (ev.type !== 'done') out({ type: 'stream', event: ev });
@@ -509,6 +510,12 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
         } finally {
           await rm2(tmp, { recursive: true, force: true });
         }
+      }
+      case 'set_plan': {
+        perm.plan = perm.plan ?? { on: false };
+        perm.plan.on = cmd.on === true;
+        reply(cmd, true, { plan: perm.plan.on });
+        return;
       }
       case 'cd': {
         const dir = String(cmd.dir ?? '').trim();
@@ -1068,7 +1075,7 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
     // (e.g. "always allow" from a permission dialog), so they skip the prompt queue too
     const guarded = (p: Promise<unknown>) =>
       void p.catch((e) => out({ type: 'error', message: String(e?.message ?? e) }));
-    if (['set_mode', 'status', 'timeline', 'context', 'queue', 'usage', 'stats', 'insights', 'preset_save', 'preset_list', 'preset_get', 'permissions_list', 'permissions_add', 'permissions_remove', 'import', 'cd', 'pwd', 'add_dir', 'config_show', 'init', 'doctor', 'debug_zip'].includes(cmd.cmd)) {
+    if (['set_mode', 'status', 'timeline', 'context', 'queue', 'usage', 'stats', 'insights', 'preset_save', 'preset_list', 'preset_get', 'permissions_list', 'permissions_add', 'permissions_remove', 'import', 'cd', 'pwd', 'add_dir', 'config_show', 'init', 'doctor', 'debug_zip', 'set_plan'].includes(cmd.cmd)) {
       guarded(handle(cmd));
       return;
     }

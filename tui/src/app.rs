@@ -101,6 +101,7 @@ enum Pending {
     Init,
     Doctor,
     DebugZip,
+    Plan,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -364,6 +365,8 @@ pub struct App {
     multiline_enter: bool,
     /// serve-side working directory (/cd moves it); @file resolves against it
     serve_cwd: Option<std::path::PathBuf>,
+    /// plan mode badge (/plan)
+    plan_mode: bool,
     /// tool detail level: 0 compact / 1 default / 2 full (/density)
     density: u8,
     pending: Vec<(u64, Pending)>,
@@ -427,6 +430,7 @@ impl App {
             statusline: None,
             multiline_enter: false,
             serve_cwd: None,
+            plan_mode: false,
             pending: Vec::new(),
             permission: None,
             model: "…".into(),
@@ -1252,6 +1256,11 @@ impl App {
                         serve.command("add_dir", vec![("dir", Value::String(rest.trim().into()))]);
                     self.pending.push((id, Pending::AddDir));
                 }
+            }
+            "/plan" => {
+                let on = !self.plan_mode;
+                let id = serve.command("set_plan", vec![("on", Value::Bool(on))]);
+                self.pending.push((id, Pending::Plan));
             }
             "/permissions" => {
                 let arg = rest.trim();
@@ -3383,6 +3392,21 @@ impl App {
                             let path = d["path"].as_str().unwrap_or("?");
                             self.push(format!("诊断包 → {path}（不含密钥）"), Tone::Success);
                         }
+                        (Pending::Plan, true) => {
+                            self.plan_mode = d["plan"].as_bool().unwrap_or(false);
+                            self.push(
+                                if self.plan_mode {
+                                    "PLAN 模式开启 · 只读研究，写操作将被拒绝 · /plan 恢复"
+                                } else {
+                                    "PLAN 模式关闭 · 可以执行修改了"
+                                },
+                                if self.plan_mode {
+                                    Tone::Badge
+                                } else {
+                                    Tone::Muted
+                                },
+                            );
+                        }
                         (Pending::History, true) => self.load_history(d),
                         (Pending::Theme, true) => {
                             self.theme = Theme::resolve(
@@ -3980,6 +4004,9 @@ impl App {
         }
         if self.focus {
             spans.push(Span::styled(" focus ", self.theme.style(Tone::Badge)));
+        }
+        if self.plan_mode {
+            spans.push(Span::styled(" PLAN ", self.theme.style(Tone::Warning)));
         }
         if self.vim {
             let mode = if self.vim_command.is_some() {
@@ -5595,5 +5622,23 @@ mod tests {
             sent["text"]
         );
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn plan_command_toggles_and_shows_badge() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.run_slash("/plan", &mut serve);
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        assert_eq!(sent["cmd"], "set_plan");
+        assert_eq!(sent["on"], true);
+        app.frame(json!({"type": "result", "id": sent["id"], "ok": true, "data": {"plan": true}}));
+        assert!(app.plan_mode);
+        let spans = app.status_spans();
+        let text: String = spans.iter().map(|s| s.content.to_string()).collect();
+        assert!(text.contains("PLAN"), "status bar shows PLAN badge: {text}");
+        app.run_slash("/plan", &mut serve);
+        let sent2: Value = serde_json::from_str(&serve.sent[1]).unwrap();
+        assert_eq!(sent2["on"], false);
     }
 }
