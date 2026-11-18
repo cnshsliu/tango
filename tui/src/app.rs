@@ -577,6 +577,8 @@ pub struct App {
     /// the user prompt currently being worked on — pinned in the status bar so
     /// switching between many agents never loses track of "which ask is this"
     current_prompt: Option<String>,
+    /// prompts entered while a turn runs: sent locally in order when it finishes
+    local_queue: Vec<String>,
     /// plan mode badge (/plan)
     plan_mode: bool,
     /// active /goal text (badge)
@@ -652,6 +654,7 @@ impl App {
             sel_anchor_pos: None,
             sel_end_pos: None,
             current_prompt: None,
+            local_queue: Vec::new(),
             plan_mode: false,
             goal_text: None,
             pending: Vec::new(),
@@ -2612,7 +2615,7 @@ impl App {
                     let id = serve.command("history", vec![]);
                     self.pending.push((id, Pending::History));
                 }
-                self.frame(v)
+                self.frame(v, serve)
             }
         }
         false
@@ -2892,6 +2895,13 @@ impl App {
             if self.busy && self.keys.matches(Action::Interrupt, k) {
                 serve.notify(json!({ "cmd": "interrupt" }));
                 self.goal_text = None; // serve clears the goal; mirror it immediately
+                if !self.local_queue.is_empty() {
+                    self.push(
+                        format!("已清空 {} 条排队提示", self.local_queue.len()),
+                        Tone::Muted,
+                    );
+                    self.local_queue.clear();
+                }
                 self.push("[interrupt requested]", Tone::Muted);
                 return;
             }
@@ -3004,8 +3014,20 @@ impl App {
             return;
         }
         if ctrl && k.code == KeyCode::Char('s') && self.picker.is_none() && self.popup.is_none() {
-            if self.busy {
-                self.push("[queued — ctrl+c interrupts]", Tone::Muted);
+            if self.busy && !self.input.is_empty() {
+                let text: String = self.input.iter().collect();
+                self.clear_input();
+                self.local_queue.push(text.clone());
+                let head: String = text.lines().next().unwrap_or("").chars().take(40).collect();
+                self.push(
+                    format!(
+                        "📋 已排队 {}（当前回合结束后自动发送 · ctrl+c 中断并清空）：{head}",
+                        self.local_queue.len()
+                    ),
+                    Tone::Muted,
+                );
+            } else if self.busy {
+                self.push("输入为空 — 没有可排队的内容", Tone::Muted);
             } else {
                 self.send_prompt(serve);
             }
@@ -3035,6 +3057,13 @@ impl App {
         if self.busy && (self.keys.matches(Action::Interrupt, k) || k.code == KeyCode::Esc) {
             serve.notify(json!({ "cmd": "interrupt" }));
             self.goal_text = None;
+            if !self.local_queue.is_empty() {
+                self.push(
+                    format!("已清空 {} 条排队提示", self.local_queue.len()),
+                    Tone::Muted,
+                );
+                self.local_queue.clear();
+            }
             self.push("[interrupt requested]", Tone::Muted);
             return;
         }
@@ -3159,9 +3188,22 @@ impl App {
                 self.refresh_popup();
             }
             KeyCode::Enter if !self.busy => self.send_prompt(serve),
-            KeyCode::Enter => {
-                self.push("[queued — ctrl+c interrupts]", Tone::Muted);
+            KeyCode::Enter if !self.input.is_empty() => {
+                // actually queue it: sent in order when the running turn finishes;
+                // ctrl+c interrupts the turn AND drops the queue
+                let text: String = self.input.iter().collect();
+                self.clear_input();
+                self.local_queue.push(text.clone());
+                let head: String = text.lines().next().unwrap_or("").chars().take(40).collect();
+                self.push(
+                    format!(
+                        "📋 已排队 {}（当前回合结束后自动发送 · ctrl+c 中断并清空）：{head}",
+                        self.local_queue.len()
+                    ),
+                    Tone::Muted,
+                );
             }
+            KeyCode::Enter => {}
             KeyCode::Char(c) if !ctrl && (!self.vim || self.edit_mode == EditMode::Insert) => {
                 self.insert_char(c);
                 self.refresh_popup();
@@ -3226,7 +3268,7 @@ impl App {
         }
     }
 
-    fn frame(&mut self, v: Value) {
+    fn frame(&mut self, v: Value, serve: &mut Serve) {
         let t = v.get("type").and_then(Value::as_str).unwrap_or("");
         match t {
             "hello" => {
@@ -3340,6 +3382,11 @@ impl App {
                 if id == self.prompt_id {
                     self.busy = false;
                     self.current_prompt = None; // the pin retires with the turn
+                    // the local queue drains in order: the next ask goes out now
+                    if let Some(next) = self.local_queue.first().cloned() {
+                        self.local_queue.remove(0);
+                        self.submit_text(serve, next);
+                    }
                     // auto recap: first line of the answer, so a glance reconstructs
                     // what this long turn actually produced
                     if let Some(last) = self.assistant_replies.last() {
@@ -5011,10 +5058,14 @@ mod tests {
     #[test]
     fn hello_resolves_theme() {
         let mut app = App::new();
-        app.frame(json!({
-            "type": "hello", "sessionId": "12345678", "model": "mock/mock",
-            "mode": "ask", "theme": "light", "tools": []
-        }));
+        let mut serve = Serve::mock();
+        app.frame(
+            json!({
+                "type": "hello", "sessionId": "12345678", "model": "mock/mock",
+                "mode": "ask", "theme": "light", "tools": []
+            }),
+            &mut serve,
+        );
         assert!(app.theme.light);
     }
 
@@ -5130,10 +5181,14 @@ mod tests {
     #[test]
     fn hello_configures_custom_keys_and_vim() {
         let mut app = App::new();
-        app.frame(json!({
-            "type": "hello", "sessionId": "12345678", "model": "mock/mock",
-            "mode": "ask", "editor": "vim", "keys": { "expandTools": "ctrl+u" }, "tools": []
-        }));
+        let mut serve = Serve::mock();
+        app.frame(
+            json!({
+                "type": "hello", "sessionId": "12345678", "model": "mock/mock",
+                "mode": "ask", "editor": "vim", "keys": { "expandTools": "ctrl+u" }, "tools": []
+            }),
+            &mut serve,
+        );
         assert!(app.keys.matches(
             Action::ExpandTools,
             crossterm::event::KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL)
@@ -5221,14 +5276,18 @@ mod tests {
     #[test]
     fn hello_restores_session_cost() {
         let mut app = App::new();
-        app.frame(json!({
-            "type": "hello",
-            "sessionId": "12345678-abcd",
-            "model": "mock/mock",
-            "mode": "ask",
-            "totalCostUsd": 1.25,
-            "tools": []
-        }));
+        let mut serve = Serve::mock();
+        app.frame(
+            json!({
+                "type": "hello",
+                "sessionId": "12345678-abcd",
+                "model": "mock/mock",
+                "mode": "ask",
+                "totalCostUsd": 1.25,
+                "tools": []
+            }),
+            &mut serve,
+        );
         assert_eq!(app.cost, 1.25);
     }
 
@@ -5712,14 +5771,20 @@ mod tests {
     fn focus_and_tool_errors_keep_failures_auditable() {
         let mut app = App::new();
         let mut serve = Serve::mock();
-        app.frame(json!({
-            "type": "tool_result", "call": {"name": "bash", "input": {"command": "fail"}},
-            "isError": true, "ms": 3, "output": "first failure\nsecond failure"
-        }));
-        app.frame(json!({
-            "type": "tool_result", "call": {"name": "bash", "input": {"command": "ok"}},
-            "isError": false, "ms": 1, "output": "successful output"
-        }));
+        app.frame(
+            json!({
+                "type": "tool_result", "call": {"name": "bash", "input": {"command": "fail"}},
+                "isError": true, "ms": 3, "output": "first failure\nsecond failure"
+            }),
+            &mut serve,
+        );
+        app.frame(
+            json!({
+                "type": "tool_result", "call": {"name": "bash", "input": {"command": "ok"}},
+                "isError": false, "ms": 1, "output": "successful output"
+            }),
+            &mut serve,
+        );
         let rendered = app.chat_lines();
         assert!(
             rendered
@@ -5766,15 +5831,22 @@ mod tests {
         use ratatui::{Terminal, backend::TestBackend};
 
         let mut app = App::new();
-        app.frame(json!({
-            "type": "hello", "sessionId": "12345678", "model": "mock/mock", "mode": "ask",
-            "contextWindow": 200, "contextTokens": 40, "tools": []
-        }));
+        let mut serve = Serve::mock();
+        app.frame(
+            json!({
+                "type": "hello", "sessionId": "12345678", "model": "mock/mock", "mode": "ask",
+                "contextWindow": 200, "contextTokens": 40, "tools": []
+            }),
+            &mut serve,
+        );
         assert_eq!(app.context_tone(), Tone::Success);
-        app.frame(json!({
-            "type": "turn_end", "usage": {"input": 160, "output": 2},
-            "contextWindow": 200, "contextTokens": 160
-        }));
+        app.frame(
+            json!({
+                "type": "turn_end", "usage": {"input": 160, "output": 2},
+                "contextWindow": 200, "contextTokens": 160
+            }),
+            &mut serve,
+        );
         assert_eq!(app.context_tone(), Tone::Error);
         let mut terminal = Terminal::new(TestBackend::new(100, 8)).unwrap();
         terminal.draw(|f| app.draw(f)).unwrap();
@@ -5798,6 +5870,7 @@ mod tests {
         assert_eq!(sent["theme"], "light");
         app.frame(
             json!({"type": "result", "id": sent["id"], "ok": true, "data": {"theme": "light"}}),
+            &mut serve,
         );
         assert!(app.theme.light);
     }
@@ -5813,6 +5886,7 @@ mod tests {
         assert_eq!(app.mouse_capture, Some(false));
         app.frame(
             json!({"type": "result", "id": sent["id"], "ok": true, "data": {"mouse": false}}),
+            &mut serve,
         );
         assert!(!app.mouse);
     }
@@ -5826,10 +5900,13 @@ mod tests {
         let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
         assert_eq!(sent["cmd"], "diff");
         assert_eq!(sent["staged"], false);
-        app.frame(json!({
-            "type": "result", "id": sent["id"], "ok": true,
-            "data": {"diff": "@@ -1 +1,2 @@\n old\n+new", "staged": false}
-        }));
+        app.frame(
+            json!({
+                "type": "result", "id": sent["id"], "ok": true,
+                "data": {"diff": "@@ -1 +1,2 @@\n old\n+new", "staged": false}
+            }),
+            &mut serve,
+        );
         let viewer = app.viewer.as_ref().unwrap();
         assert!(viewer.read_only);
         assert!(viewer.text.contains("+new"));
@@ -5847,16 +5924,22 @@ mod tests {
         assert!(app.viewer.as_ref().unwrap().read_only);
         assert!(app.lines.is_empty());
 
-        app.frame(json!({
-            "type": "btw_stream", "id": sent["id"],
-            "event": {"type": "text", "delta": "side answer"}
-        }));
+        app.frame(
+            json!({
+                "type": "btw_stream", "id": sent["id"],
+                "event": {"type": "text", "delta": "side answer"}
+            }),
+            &mut serve,
+        );
         assert_eq!(app.viewer.as_ref().unwrap().text, "side answer");
         assert!(app.lines.is_empty());
-        app.frame(json!({
-            "type": "result", "id": sent["id"], "ok": true,
-            "data": {"text": "complete side answer"}
-        }));
+        app.frame(
+            json!({
+                "type": "result", "id": sent["id"], "ok": true,
+                "data": {"text": "complete side answer"}
+            }),
+            &mut serve,
+        );
         assert_eq!(app.viewer.as_ref().unwrap().text, "complete side answer");
         assert!(app.lines.is_empty());
     }
@@ -5895,7 +5978,10 @@ mod tests {
         let id: u64 = serve.sent[0].parse::<Value>().unwrap()["id"]
             .as_u64()
             .unwrap();
-        app.frame(json!({ "type": "result", "id": id, "ok": false, "error": "aborted" }));
+        app.frame(
+            json!({ "type": "result", "id": id, "ok": false, "error": "aborted" }),
+            &mut serve,
+        );
         assert!(!app.busy);
     }
 
@@ -5908,10 +5994,13 @@ mod tests {
             .as_u64()
             .unwrap();
         app.viewer = None; // closed while the answer was still streaming
-        app.frame(json!({
-            "type": "result", "id": id, "ok": true,
-            "data": {"text": "the answer"}
-        }));
+        app.frame(
+            json!({
+                "type": "result", "id": id, "ok": true,
+                "data": {"text": "the answer"}
+            }),
+            &mut serve,
+        );
         let viewer = app.viewer.expect("the answer must not be dropped");
         assert!(viewer.read_only);
         assert_eq!(viewer.text, "the answer");
@@ -5977,10 +6066,13 @@ mod tests {
         let mut serve = Serve::mock();
         app.run_slash("/vim on", &mut serve);
         assert!(app.vim);
-        app.frame(json!({
-            "type": "hello", "sessionId": "12345678", "model": "mock/mock",
-            "mode": "ask", "editor": "default", "tools": []
-        }));
+        app.frame(
+            json!({
+                "type": "hello", "sessionId": "12345678", "model": "mock/mock",
+                "mode": "ask", "editor": "default", "tools": []
+            }),
+            &mut serve,
+        );
         assert!(app.vim);
     }
 
@@ -5999,7 +6091,7 @@ mod tests {
                 {"entryIndex": 1, "ts": "2026-11-16T10:00:00Z", "firstLine": "fix the bug", "hasSnapshot": true},
                 {"entryIndex": 9, "ts": "2026-11-16T11:00:00Z", "firstLine": "refactor it", "hasSnapshot": false}
             ]}
-        }));
+        }), &mut serve);
         assert!(app.picker.as_ref().unwrap().kind == PickerKind::Timeline);
         let picker = app.picker.as_ref().unwrap();
         assert_eq!(picker.items.len(), 2);
@@ -6028,7 +6120,7 @@ mod tests {
         app.frame(json!({
             "type": "result", "id": id, "ok": true,
             "data": {"codeRestored": true, "restored": 12, "deleted": ["x.ts"], "kept": ["handmade.txt"]}
-        }));
+        }), &mut serve);
         assert!(
             app.lines
                 .iter()
@@ -6053,10 +6145,13 @@ mod tests {
         assert_eq!(sent["cmd"], "fork");
         assert_eq!(sent["name"], "alt");
         let id = sent["id"].as_u64().unwrap();
-        app.frame(json!({
-            "type": "result", "id": id, "ok": true,
-            "data": {"sessionId": "forked-123", "name": "alt"}
-        }));
+        app.frame(
+            json!({
+                "type": "result", "id": id, "ok": true,
+                "data": {"sessionId": "forked-123", "name": "alt"}
+            }),
+            &mut serve,
+        );
         // a respawn is requested with the fork's session id, like /resume switching
         assert_eq!(app.respawn, Some(Some("forked-123".into())));
     }
@@ -6075,7 +6170,7 @@ mod tests {
                 {"sessionId": "fork-9", "name": "alt", "createdAt": "2026-11-16T10:00:00Z",
                  "forkOf": {"sessionId": "root-1", "entryIndex": 4}}
             ]}
-        }));
+        }), &mut serve);
         let viewer = app.viewer.as_ref().unwrap();
         assert!(viewer.read_only);
         assert!(viewer.title.contains("分叉"));
@@ -6097,7 +6192,7 @@ mod tests {
                 {"sessionId": "current-id", "entryIndex": 3, "ts": "2026-11-16T10:00:00Z", "firstLine": "MAGIC here", "snippet": "…MAGIC here…", "orphaned": false},
                 {"sessionId": "other-id", "entryIndex": 7, "ts": "2026-11-16T11:00:00Z", "firstLine": "MAGIC there", "snippet": "…MAGIC there…", "orphaned": true}
             ]}
-        }));
+        }), &mut serve);
         assert!(app.picker.as_ref().unwrap().kind == PickerKind::Find);
         // pick the OTHER session → respawn-resume it, no rewind sent
         app.key(
@@ -6120,7 +6215,7 @@ mod tests {
             "data": {"hits": [
                 {"sessionId": "current-id", "entryIndex": 3, "ts": "t", "firstLine": "MAGIC", "snippet": "s", "orphaned": false}
             ]}
-        }));
+        }), &mut serve);
         app.key(
             crossterm::event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
             &mut serve,
@@ -6139,14 +6234,14 @@ mod tests {
         app.run_slash("/transcript", &mut serve);
         let t1: Value = serde_json::from_str(&serve.sent[0]).unwrap();
         assert_eq!(t1["cmd"], "transcript");
-        app.frame(json!({"type": "result", "id": t1["id"], "ok": true, "data": {"text": "⟲ user: lost future"}}));
+        app.frame(json!({"type": "result", "id": t1["id"], "ok": true, "data": {"text": "⟲ user: lost future"}}), &mut serve);
         assert!(app.viewer.as_ref().unwrap().read_only);
         assert!(app.viewer.as_ref().unwrap().text.contains("lost future"));
         // export → chat line with the path
         app.run_slash("/export md", &mut serve);
         let t2: Value = serde_json::from_str(&serve.sent[1]).unwrap();
         assert_eq!(t2["cmd"], "export");
-        app.frame(json!({"type": "result", "id": t2["id"], "ok": true, "data": {"path": "/tmp/x.md", "format": "md"}}));
+        app.frame(json!({"type": "result", "id": t2["id"], "ok": true, "data": {"path": "/tmp/x.md", "format": "md"}}), &mut serve);
         assert!(app.lines.iter().any(|l| l.text.contains("/tmp/x.md")));
         // rename → command sent
         app.run_slash("/rename my-session", &mut serve);
@@ -6172,7 +6267,7 @@ mod tests {
         app.frame(json!({
             "type": "result", "id": sent["id"], "ok": true,
             "data": {"system": 900, "skills": 120, "tools": 1500, "history": 3000, "total": 5520, "window": 20000, "pct": 27}
-        }));
+        }), &mut serve);
         let viewer = app.viewer.as_ref().unwrap();
         assert!(viewer.read_only);
         assert!(viewer.text.contains("system"));
@@ -6191,7 +6286,7 @@ mod tests {
         app.frame(json!({
             "type": "result", "id": sent["id"], "ok": true,
             "data": {"running": "first prompt", "queued": [{"text": "second prompt", "waitedMs": 4200}]}
-        }));
+        }), &mut serve);
         let viewer = app.viewer.as_ref().unwrap();
         assert!(viewer.read_only);
         assert!(viewer.text.contains("first prompt"));
@@ -6200,10 +6295,13 @@ mod tests {
         // empty state
         app.run_slash("/queue", &mut serve);
         let sent2: Value = serde_json::from_str(&serve.sent[1]).unwrap();
-        app.frame(json!({
-            "type": "result", "id": sent2["id"], "ok": true,
-            "data": {"running": null, "queued": []}
-        }));
+        app.frame(
+            json!({
+                "type": "result", "id": sent2["id"], "ok": true,
+                "data": {"running": null, "queued": []}
+            }),
+            &mut serve,
+        );
         assert!(app.viewer.as_ref().unwrap().text.contains("空闲"));
     }
 
@@ -6221,7 +6319,7 @@ mod tests {
             ], "bySession": [
                 {"id": "abcdef12", "name": "demo", "costUsd": 0.12, "messages": 9}
             ]}
-        }));
+        }), &mut serve);
         let viewer = app.viewer.as_ref().unwrap();
         assert!(viewer.read_only);
         assert!(viewer.text.contains("mock/mock"));
@@ -6231,7 +6329,7 @@ mod tests {
         app.run_slash("/insights", &mut serve);
         let sent2: Value = serde_json::from_str(&serve.sent[1]).unwrap();
         assert_eq!(sent2["cmd"], "insights");
-        app.frame(json!({"type": "result", "id": sent2["id"], "ok": true, "data": {"path": "/tmp/ins.html"}}));
+        app.frame(json!({"type": "result", "id": sent2["id"], "ok": true, "data": {"path": "/tmp/ins.html"}}), &mut serve);
         assert!(app.lines.iter().any(|l| l.text.contains("/tmp/ins.html")));
     }
 
@@ -6297,6 +6395,7 @@ mod tests {
         assert_eq!(sent["cmd"], "status");
         app.frame(
             json!({"type": "result", "id": sent["id"], "ok": true, "data": {"autocompact": 0.5}}),
+            &mut serve,
         );
         assert!(app.lines.iter().any(|l| l.text.contains("50%")));
 
@@ -6306,6 +6405,7 @@ mod tests {
         assert_eq!(sent2["value"], "60%");
         app.frame(
             json!({"type": "result", "id": sent2["id"], "ok": true, "data": {"autocompact": 0.6}}),
+            &mut serve,
         );
         assert!(app.lines.iter().any(|l| l.text.contains("60")));
 
@@ -6366,10 +6466,13 @@ mod tests {
         app.run_slash("/preset", &mut serve);
         let sent2: Value = serde_json::from_str(&serve.sent[1]).unwrap();
         assert_eq!(sent2["cmd"], "preset_list");
-        app.frame(json!({
-            "type": "result", "id": sent2["id"], "ok": true,
-            "data": {"presets": [{"name": "open", "preview": "固定开场白文本"}]}
-        }));
+        app.frame(
+            json!({
+                "type": "result", "id": sent2["id"], "ok": true,
+                "data": {"presets": [{"name": "open", "preview": "固定开场白文本"}]}
+            }),
+            &mut serve,
+        );
         assert!(app.picker.as_ref().unwrap().kind == PickerKind::Preset);
         app.key(
             crossterm::event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
@@ -6377,9 +6480,12 @@ mod tests {
         );
         let get: Value = serde_json::from_str(&serve.sent[2]).unwrap();
         assert_eq!(get["cmd"], "preset_get");
-        app.frame(json!({
-            "type": "result", "id": get["id"], "ok": true, "data": {"text": "固定开场白文本"}
-        }));
+        app.frame(
+            json!({
+                "type": "result", "id": get["id"], "ok": true, "data": {"text": "固定开场白文本"}
+            }),
+            &mut serve,
+        );
         // the preset fills the input but nothing is sent
         assert_eq!(app.input.iter().collect::<String>(), "固定开场白文本");
         assert_eq!(serve.sent.len(), 3);
@@ -6425,7 +6531,7 @@ mod tests {
         app.frame(json!({
             "type": "result", "id": sent["id"], "ok": true,
             "data": {"allow": [{"rule": "bash:rm", "note": "allow bash commands with this prefix"}]}
-        }));
+        }), &mut serve);
         assert!(app.picker.as_ref().unwrap().kind == PickerKind::Permissions);
         assert!(
             app.picker
@@ -6502,7 +6608,7 @@ mod tests {
         let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
         assert_eq!(sent["cmd"], "config_show");
         app.frame(json!({"type": "result", "id": sent["id"], "ok": true,
-            "data": {"config": {"theme": "dark", "extraDirs": ["/x"]}, "path": "/home/config.json"}}));
+            "data": {"config": {"theme": "dark", "extraDirs": ["/x"]}, "path": "/home/config.json"}}), &mut serve);
         assert!(
             app.viewer
                 .as_ref()
@@ -6515,7 +6621,10 @@ mod tests {
         app.run_slash("/pwd", &mut serve);
         let sent3: Value = serde_json::from_str(&serve.sent[1]).unwrap();
         assert_eq!(sent3["cmd"], "pwd");
-        app.frame(json!({"type": "result", "id": sent3["id"], "ok": true, "data": {"cwd": "/w"}}));
+        app.frame(
+            json!({"type": "result", "id": sent3["id"], "ok": true, "data": {"cwd": "/w"}}),
+            &mut serve,
+        );
         app.run_slash("/cd sub", &mut serve);
         let sent4: Value = serde_json::from_str(&serve.sent[2]).unwrap();
         assert_eq!(sent4["cmd"], "cd");
@@ -6529,17 +6638,20 @@ mod tests {
         app.run_slash("/init", &mut serve);
         let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
         assert_eq!(sent["cmd"], "init");
-        app.frame(json!({"type": "result", "id": sent["id"], "ok": true, "data": {"path": "/w/AGENTS.md"}}));
+        app.frame(json!({"type": "result", "id": sent["id"], "ok": true, "data": {"path": "/w/AGENTS.md"}}), &mut serve);
         assert!(app.lines.iter().any(|l| l.text.contains("AGENTS.md")));
 
         app.run_slash("/doctor", &mut serve);
         let sent2: Value = serde_json::from_str(&serve.sent[1]).unwrap();
         assert_eq!(sent2["cmd"], "doctor");
-        app.frame(json!({"type": "result", "id": sent2["id"], "ok": true,
-        "data": {"checks": [
-            {"name": "git", "ok": true, "detail": "repo detected"},
-            {"name": "model key", "ok": false, "detail": "no key"}
-        ]}}));
+        app.frame(
+            json!({"type": "result", "id": sent2["id"], "ok": true,
+            "data": {"checks": [
+                {"name": "git", "ok": true, "detail": "repo detected"},
+                {"name": "model key", "ok": false, "detail": "no key"}
+            ]}}),
+            &mut serve,
+        );
         let v = app.viewer.as_ref().unwrap();
         assert!(v.text.contains("✓"));
         assert!(v.text.contains("✗"));
@@ -6553,7 +6665,7 @@ mod tests {
         app.run_slash("/debug-zip", &mut serve);
         let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
         assert_eq!(sent["cmd"], "debug_zip");
-        app.frame(json!({"type": "result", "id": sent["id"], "ok": true, "data": {"path": "/w/d.zip", "format": "zip"}}));
+        app.frame(json!({"type": "result", "id": sent["id"], "ok": true, "data": {"path": "/w/d.zip", "format": "zip"}}), &mut serve);
         assert!(app.lines.iter().any(|l| l.text.contains("/w/d.zip")));
     }
     #[test]
@@ -6568,6 +6680,7 @@ mod tests {
         app.frame(
             json!({"type": "hello", "sessionId": "1", "model": "m", "mode": "ask",
             "cwd": sub.to_str().unwrap(), "tools": []}),
+            &mut serve,
         );
         app.input = "review @target.txt".chars().collect();
         app.cursor = app.input.len();
@@ -6589,7 +6702,10 @@ mod tests {
         let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
         assert_eq!(sent["cmd"], "set_plan");
         assert_eq!(sent["on"], true);
-        app.frame(json!({"type": "result", "id": sent["id"], "ok": true, "data": {"plan": true}}));
+        app.frame(
+            json!({"type": "result", "id": sent["id"], "ok": true, "data": {"plan": true}}),
+            &mut serve,
+        );
         assert!(app.plan_mode);
         let spans = app.status_spans();
         let text: String = spans.iter().map(|s| s.content.to_string()).collect();
@@ -6609,6 +6725,7 @@ mod tests {
         assert_eq!(sent["level"], "high");
         app.frame(
             json!({"type": "result", "id": sent["id"], "ok": true, "data": {"effort": "high"}}),
+            &mut serve,
         );
         assert!(app.lines.iter().any(|l| l.text.contains("high")));
     }
@@ -6633,15 +6750,21 @@ mod tests {
         let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
         assert_eq!(sent["cmd"], "remember");
         assert_eq!(sent["text"], "用户偏好中文");
-        app.frame(json!({"type": "result", "id": sent["id"], "ok": true,
-            "data": {"remembered": "用户偏好中文", "path": "/h/AGENTS.md"}}));
+        app.frame(
+            json!({"type": "result", "id": sent["id"], "ok": true,
+            "data": {"remembered": "用户偏好中文", "path": "/h/AGENTS.md"}}),
+            &mut serve,
+        );
         assert!(app.lines.iter().any(|l| l.text.contains("已记住")));
 
         app.run_slash("/memory", &mut serve);
         let sent2: Value = serde_json::from_str(&serve.sent[1]).unwrap();
         assert_eq!(sent2["cmd"], "memory");
-        app.frame(json!({"type": "result", "id": sent2["id"], "ok": true,
-            "data": {"text": "- 用户偏好中文\n", "path": "/h/AGENTS.md"}}));
+        app.frame(
+            json!({"type": "result", "id": sent2["id"], "ok": true,
+            "data": {"text": "- 用户偏好中文\n", "path": "/h/AGENTS.md"}}),
+            &mut serve,
+        );
         let v = app.viewer.as_ref().unwrap();
         assert!(v.text.contains("用户偏好中文"));
     }
@@ -6657,7 +6780,7 @@ mod tests {
             "data": {"skills": [
                 {"name": "global-demo", "description": "全局演示", "path": "/h/skills/global-demo/SKILL.md", "scope": "global"},
                 {"name": "proj-demo", "description": "项目", "path": "/w/.tango/skills/proj-demo/SKILL.md", "scope": "project"}
-            ]}}));
+            ]}}), &mut serve);
         assert!(app.picker.as_ref().unwrap().kind == PickerKind::Skills);
         assert!(app.picker.as_ref().unwrap().items.len() == 2);
     }
@@ -6670,8 +6793,11 @@ mod tests {
         let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
         assert_eq!(sent["cmd"], "goal");
         assert_eq!(sent["text"], "完成示例");
-        app.frame(json!({"type": "result", "id": sent["id"], "ok": true,
-            "data": {"goal": "完成示例", "maxRounds": 5}}));
+        app.frame(
+            json!({"type": "result", "id": sent["id"], "ok": true,
+            "data": {"goal": "完成示例", "maxRounds": 5}}),
+            &mut serve,
+        );
         assert!(app.goal_text.is_some());
         let spans = app.status_spans();
         let text: String = spans.iter().map(|s| s.content.to_string()).collect();
@@ -6679,7 +6805,10 @@ mod tests {
         app.run_slash("/goal off", &mut serve);
         let sent2: Value = serde_json::from_str(&serve.sent[1]).unwrap();
         assert_eq!(sent2["text"], "off");
-        app.frame(json!({"type": "result", "id": sent2["id"], "ok": true, "data": {"goal": null}}));
+        app.frame(
+            json!({"type": "result", "id": sent2["id"], "ok": true, "data": {"goal": null}}),
+            &mut serve,
+        );
         assert!(app.goal_text.is_none());
     }
 
@@ -6705,7 +6834,7 @@ mod tests {
         let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
         assert_eq!(sent["cmd"], "worktree_list");
         app.frame(json!({"type": "result", "id": sent["id"], "ok": true,
-            "data": {"worktrees": [{"name": "exp1", "path": "/w/x", "branch": "tango/exp1", "dirty": 2, "createdAt": "t"}]}}));
+            "data": {"worktrees": [{"name": "exp1", "path": "/w/x", "branch": "tango/exp1", "dirty": 2, "createdAt": "t"}]}}), &mut serve);
         assert!(app.picker.as_ref().unwrap().kind == PickerKind::Worktree);
         app.key(
             crossterm::event::KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
@@ -6732,8 +6861,7 @@ mod tests {
         assert_eq!(sent["cmd"], "bg");
         assert_eq!(sent["prompt"], "后台检查");
         app.frame(
-            json!({"type": "result", "id": sent["id"], "ok": true, "data": {"task": {"id": "abc", "status": "running"}}}),
-        );
+            json!({"type": "result", "id": sent["id"], "ok": true, "data": {"task": {"id": "abc", "status": "running"}}}), &mut serve);
         assert!(app.lines.iter().any(|l| l.text.contains("abc")));
 
         app.run_slash("/tasks", &mut serve);
@@ -6742,8 +6870,7 @@ mod tests {
         app.frame(
             json!({"type": "result", "id": sent2["id"], "ok": true, "data": {"tasks": [
                 {"id": "abc", "status": "done", "model": "m", "prompt": "后台检查", "sessionId": "sess1"}
-            ]}}),
-        );
+            ]}}), &mut serve);
         let v = app.viewer.as_ref().unwrap();
         assert!(v.text.contains("done"));
         assert!(v.text.contains("后台检查"));
@@ -6761,8 +6888,11 @@ mod tests {
         app.run_slash("/agents", &mut serve);
         let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
         assert_eq!(sent["cmd"], "agents_show");
-        app.frame(json!({"type": "result", "id": sent["id"], "ok": true,
-                "data": {"roles": {"subagent": "mock/flash"}, "driver": "mock/mock"}}));
+        app.frame(
+            json!({"type": "result", "id": sent["id"], "ok": true,
+                "data": {"roles": {"subagent": "mock/flash"}, "driver": "mock/mock"}}),
+            &mut serve,
+        );
         let v = app.viewer.as_ref().unwrap();
         assert!(v.text.contains("mock/flash"));
         assert!(v.text.contains("driver"));
@@ -6782,8 +6912,11 @@ mod tests {
         let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
         assert_eq!(sent["cmd"], "subtask");
         assert_eq!(sent["prompt"], "修个测试");
-        app.frame(json!({"type": "result", "id": sent["id"], "ok": true,
-                "data": {"task": {"id": "s1", "status": "running", "worktreeName": "bg-1"}}}));
+        app.frame(
+            json!({"type": "result", "id": sent["id"], "ok": true,
+                "data": {"task": {"id": "s1", "status": "running", "worktreeName": "bg-1"}}}),
+            &mut serve,
+        );
         assert!(app.lines.iter().any(|l| l.text.contains("s1")));
     }
 
@@ -6794,8 +6927,11 @@ mod tests {
         app.run_slash("/mcp", &mut serve);
         let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
         assert_eq!(sent["cmd"], "mcp_list");
-        app.frame(json!({"type": "result", "id": sent["id"], "ok": true,
-                "data": {"servers": [{"name": "demo", "connected": true}]}}));
+        app.frame(
+            json!({"type": "result", "id": sent["id"], "ok": true,
+                "data": {"servers": [{"name": "demo", "connected": true}]}}),
+            &mut serve,
+        );
         let v = app.viewer.as_ref().unwrap();
         assert!(v.text.contains("demo"));
         assert!(v.text.contains("已连接"));
@@ -6808,15 +6944,22 @@ mod tests {
         app.run_slash("/plugins", &mut serve);
         let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
         assert_eq!(sent["cmd"], "plugins_list");
-        app.frame(json!({"type": "result", "id": sent["id"], "ok": true,
-                "data": {"plugins": [{"name": "demo", "description": "测试", "enabled": true}]}}));
+        app.frame(
+            json!({"type": "result", "id": sent["id"], "ok": true,
+                "data": {"plugins": [{"name": "demo", "description": "测试", "enabled": true}]}}),
+            &mut serve,
+        );
         assert!(app.viewer.as_ref().unwrap().text.contains("demo"));
     }
 
     #[test]
     fn notice_frames_render_as_chat_lines() {
         let mut app = App::new();
-        app.frame(json!({"type": "notice", "text": "⚠ 另一个会话正在此目录运行"}));
+        let mut serve = Serve::mock();
+        app.frame(
+            json!({"type": "notice", "text": "⚠ 另一个会话正在此目录运行"}),
+            &mut serve,
+        );
         assert!(app.lines.iter().any(|l| l.text.contains("另一个会话")));
     }
 
@@ -7053,7 +7196,10 @@ mod tests {
         // turn completes: recap line from the answer's first line, pin context ends
         app.assistant_replies
             .push("已将慢查询加了索引，延迟从 2s 降到 50ms。\n细节略".into());
-        app.frame(json!({"type": "result", "id": app.prompt_id, "ok": true, "data": {}}));
+        app.frame(
+            json!({"type": "result", "id": app.prompt_id, "ok": true, "data": {}}),
+            &mut serve,
+        );
         assert!(!app.busy);
         assert!(
             app.lines
@@ -7068,5 +7214,49 @@ mod tests {
             !text2.contains("▶ 帮我优化"),
             "pin cleared after completion: {text2}"
         );
+    }
+
+    #[test]
+    fn queued_prompts_send_in_order_and_interrupt_clears() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.busy = true; // a turn is running
+        app.input = "第二个问题".chars().collect();
+        app.cursor = app.input.len();
+        app.key(
+            crossterm::event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut serve,
+        );
+        assert!(app.input.is_empty(), "queued text leaves the input box");
+        assert_eq!(app.local_queue.len(), 1);
+        assert!(app.lines.iter().any(|l| l.text.contains("已排队 1")));
+        // second Enter queues another — exactly two entries, no fake third
+        app.input = "第三个问题".chars().collect();
+        app.cursor = app.input.len();
+        app.key(
+            crossterm::event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut serve,
+        );
+        assert_eq!(app.local_queue.len(), 2);
+
+        // turn 1 finishes → queue head auto-sends, busy stays true
+        app.frame(
+            json!({"type": "result", "id": app.prompt_id, "ok": true, "data": {}}),
+            &mut serve,
+        );
+        assert!(app.busy, "next queued prompt is now running");
+        assert_eq!(serve.sent.len(), 1);
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        assert_eq!(sent["text"], "第二个问题");
+
+        // ctrl+c during that turn: interrupt sent + queue cleared
+        app.key(
+            crossterm::event::KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            &mut serve,
+        );
+        let interrupt: Value = serde_json::from_str(&serve.sent[1]).unwrap();
+        assert_eq!(interrupt["cmd"], "interrupt");
+        assert!(app.local_queue.is_empty());
+        assert!(app.lines.iter().any(|l| l.text.contains("已清空 1 条排队")));
     }
 }
