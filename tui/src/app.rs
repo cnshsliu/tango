@@ -386,6 +386,30 @@ fn local_utc_offset_seconds() -> i64 {
     }
 }
 
+/// Query the current macOS input source via macism (no args = print current).
+/// None when macism is missing — the whole feature then stays off.
+fn ime_current() -> Option<String> {
+    let out = std::process::Command::new("macism").output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let id = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if id.is_empty() { None } else { Some(id) }
+}
+
+fn ime_switch(id: &str) -> bool {
+    std::process::Command::new("macism")
+        .arg(id)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Only keyboard layouts named ABC (any variant) count as "no switch needed".
+fn ime_should_switch(current: &str) -> bool {
+    !(current == "com.apple.keylayout.ABC" || current == "com.apple.keylayout.US")
+}
+
 /// Scan a rendered chat line for the first token that looks like and IS an existing
 /// local file (absolute, ./…, ../… or ~/…). Clicking it opens the file viewer.
 fn find_existing_file_path(text: &str) -> Option<String> {
@@ -594,6 +618,8 @@ pub struct App {
     local_queue: Vec<String>,
     /// /queue dialog open (clickable per-item actions)
     queue_dialog: bool,
+    /// the IME we switched away from for a single-key dialog (macOS macism)
+    ime_restore: Option<String>,
     /// clickable button rects, rebuilt every draw
     queue_buttons: Vec<(Rect, QueueAction)>,
     /// plan mode badge (/plan)
@@ -673,6 +699,7 @@ impl App {
             current_prompt: None,
             local_queue: Vec::new(),
             queue_dialog: false,
+            ime_restore: None,
             queue_buttons: Vec::new(),
             plan_mode: false,
             goal_text: None,
@@ -734,6 +761,7 @@ impl App {
         self.btw_id = None;
         self.btw_title = None;
         self.permission = None;
+        self.ime_restore_prev();
         self.viewer = None;
         self.pending_viewer = None;
         self.edited = None;
@@ -904,6 +932,30 @@ impl App {
                 self.viewer = Some(Viewer::read_only(format!("文件 · {target}"), capped));
             }
             Err(e) => self.push(format!("无法读取 {target}：{e}"), Tone::Error),
+        }
+    }
+
+    /// Single-key dialogs (y/n/a) are unreachable through a CJK IME. While macism
+    /// is installed, switch to ABC for the dialog and restore afterwards.
+    fn ime_for_dialog(&mut self) {
+        if cfg!(test) {
+            return;
+        }
+        let Some(cur) = ime_current() else { return };
+        if !ime_should_switch(&cur) {
+            self.ime_restore = None; // already ABC — nothing to do
+            return;
+        }
+        if ime_switch("com.apple.keylayout.ABC") {
+            self.ime_restore = Some(cur);
+        }
+    }
+
+    fn ime_restore_prev(&mut self) {
+        if let Some(prev) = self.ime_restore.take()
+            && !cfg!(test)
+        {
+            ime_switch(&prev);
         }
     }
 
@@ -3381,6 +3433,7 @@ impl App {
     }
 
     fn answer(&mut self, serve: &mut Serve, allow: bool) {
+        self.ime_restore_prev();
         if let Some(p) = self.permission.take() {
             serve.notify(json!({ "cmd": "permission", "request": p.request, "allow": allow }));
             self.push(
@@ -3509,6 +3562,7 @@ impl App {
                     detail,
                     reason,
                 });
+                self.ime_for_dialog(); // y/n/a need a roman keyboard through a CJK IME
             }
             "turn_end" => {
                 if let Some(c) = v["totalCostUsd"].as_f64() {
@@ -7586,5 +7640,29 @@ mod tests {
             "queue survives"
         );
         assert!(app.lines.iter().any(|l| l.text.contains("排队保留 1 条")));
+    }
+
+    #[test]
+    fn ime_switch_policy() {
+        // already ABC/US → no switch
+        assert!(!ime_should_switch("com.apple.keylayout.ABC"));
+        assert!(!ime_should_switch("com.apple.keylayout.US"));
+        // CJK IMEs and layouts → switch
+        assert!(ime_should_switch("com.tencent.inputmethod.wetype.pinyin"));
+        assert!(ime_should_switch("im.rime.inputmethod.Squirrel.Hans"));
+    }
+
+    #[test]
+    fn ime_state_round_trip_is_guarded_in_tests() {
+        let mut app = App::new();
+        app.ime_restore = Some("com.tencent.inputmethod.wete.pinyin".into());
+        app.ime_for_dialog(); // cfg(test) → no system call, no state change beyond guard
+        assert_eq!(
+            app.ime_restore.as_deref(),
+            Some("com.tencent.inputmethod.wete.pinyin"),
+            "tests never touch the real IME"
+        );
+        app.ime_restore_prev(); // cfg(test) → clears only
+        assert!(app.ime_restore.is_none());
     }
 }
