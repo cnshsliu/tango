@@ -3640,12 +3640,13 @@ impl App {
         match k.code {
             KeyCode::Enter
                 if self
-                    .input
-                    .iter()
-                    .collect::<String>()
+                    .rendered_input()
+                    .text
                     .trim_start()
                     .starts_with('/') =>
             {
+                // judge by the displayed text: an image chip's raw path also starts
+                // with '/', but it is an attachment, not a slash command
                 let text: String = self.input.iter().collect();
                 self.clear_input();
                 self.run_slash(&text, serve); // commands stay live during a turn
