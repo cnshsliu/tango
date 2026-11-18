@@ -574,6 +574,9 @@ pub struct App {
     /// selection anchor/end as (terminal row, column) pairs — char-exact
     sel_anchor_pos: Option<(u16, u16)>,
     sel_end_pos: Option<(u16, u16)>,
+    /// the user prompt currently being worked on — pinned in the status bar so
+    /// switching between many agents never loses track of "which ask is this"
+    current_prompt: Option<String>,
     /// plan mode badge (/plan)
     plan_mode: bool,
     /// active /goal text (badge)
@@ -648,6 +651,7 @@ impl App {
             chat_inner_w: 0,
             sel_anchor_pos: None,
             sel_end_pos: None,
+            current_prompt: None,
             plan_mode: false,
             goal_text: None,
             pending: Vec::new(),
@@ -2736,6 +2740,10 @@ impl App {
     }
 
     fn submit_text(&mut self, serve: &mut Serve, text: String) {
+        // pin what we're working on: first line, capped for the status bar
+        let first = text.lines().next().unwrap_or("").to_string();
+        let shown: String = first.chars().take(48).collect();
+        self.current_prompt = Some(shown);
         self.push_user(&text);
         self.jump_to_bottom();
         self.busy = true;
@@ -3206,6 +3214,9 @@ impl App {
         for w in warns {
             self.push(format!("! {w}"), Tone::Muted);
         }
+        // pin what we're working on: first line of the ask, capped for the status bar
+        let first = text.lines().next().unwrap_or("").to_string();
+        self.current_prompt = Some(first.chars().take(48).collect());
         self.push_user(&text);
         self.jump_to_bottom();
         self.busy = true;
@@ -3328,6 +3339,16 @@ impl App {
                 let ok = v["ok"].as_bool().unwrap_or(false);
                 if id == self.prompt_id {
                     self.busy = false;
+                    self.current_prompt = None; // the pin retires with the turn
+                    // auto recap: first line of the answer, so a glance reconstructs
+                    // what this long turn actually produced
+                    if let Some(last) = self.assistant_replies.last() {
+                        let first = last.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
+                        let head: String = first.trim().chars().take(80).collect();
+                        if !head.is_empty() {
+                            self.push(format!("✓ 本轮：{head}"), Tone::Muted);
+                        }
+                    }
                     for line in &mut self.lines {
                         if line.prompt_state == Some(PromptState::Running) {
                             line.prompt_state = Some(PromptState::Completed);
@@ -4900,6 +4921,10 @@ impl App {
         let mut spans = vec![
             Span::styled(format!(" {} ", self.model), self.theme.style(Tone::Badge)),
             Span::styled(format!(" {} ", self.mode), self.theme.style(Tone::Muted)),
+            Span::styled(
+                format!(" ▶ {} ", self.current_prompt.as_deref().unwrap_or("?")),
+                self.theme.style(Tone::Badge),
+            ),
             Span::styled(
                 format!(" ${:.4} ", self.cost),
                 self.theme.style(Tone::Warning),
@@ -6999,5 +7024,47 @@ mod tests {
             "filtered-out group header gone"
         );
         assert_eq!(app.picker_rows, vec![None, Some(0)]);
+    }
+
+    #[test]
+    fn pinned_prompt_shows_while_busy_and_recap_lands_on_completion() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.input = "帮我优化数据库查询性能的问题".chars().collect();
+        app.cursor = app.input.len();
+        app.key(
+            crossterm::event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut serve,
+        );
+        assert!(app.busy);
+        assert_eq!(
+            app.current_prompt.as_deref(),
+            Some("帮我优化数据库查询性能的问题")
+        );
+        let spans = app.status_spans();
+        let text: String = spans.iter().map(|s| s.content.to_string()).collect();
+        assert!(
+            text.contains("▶ 帮我优化数据库查询性能的问题"),
+            "pinned in status: {text}"
+        );
+
+        // turn completes: recap line from the answer's first line, pin context ends
+        app.assistant_replies
+            .push("已将慢查询加了索引，延迟从 2s 降到 50ms。\n细节略".into());
+        app.frame(json!({"type": "result", "id": app.prompt_id, "ok": true, "data": {}}));
+        assert!(!app.busy);
+        assert!(
+            app.lines
+                .iter()
+                .any(|l| l.text.contains("✓ 本轮：已将慢查询加了索引")),
+            "auto recap pushed"
+        );
+        // pinned prompt span stops showing after completion
+        let spans2 = app.status_spans();
+        let text2: String = spans2.iter().map(|s| s.content.to_string()).collect();
+        assert!(
+            !text2.contains("▶ 帮我优化"),
+            "pin cleared after completion: {text2}"
+        );
     }
 }
