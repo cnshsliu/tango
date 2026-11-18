@@ -1046,7 +1046,14 @@ impl App {
         }
         if let Some(q) = self.local_queue.get(idx).cloned() {
             self.local_queue.remove(idx);
-            let head: String = q.text.lines().next().unwrap_or("").chars().take(40).collect();
+            let head: String = q
+                .text
+                .lines()
+                .next()
+                .unwrap_or("")
+                .chars()
+                .take(40)
+                .collect();
             serve.command("supplement", prompt_extras(q.text, q.images));
             self.push(
                 format!("➕ 排队 #{} 已并入当前回合：{head}", idx + 1),
@@ -2641,6 +2648,16 @@ impl App {
     }
 
     fn insert_char(&mut self, c: char) {
+        // a separator (space/newline) after a just-typed existing-image path collapses
+        // that token into an attachment chip — covers terminals without bracketed paste
+        if (c == ' ' || c == '\n')
+            && let Some(cut) = self.typed_image_token_start()
+        {
+            let path: String = self.input[cut..self.cursor].iter().collect();
+            self.insert_image_paste_at(path, cut);
+            self.insert_char(c);
+            return;
+        }
         let cursor = self.cursor;
         self.replace_input_range(cursor, cursor, &[c]);
     }
@@ -2686,6 +2703,51 @@ impl App {
 
     /// Attach a pasted image: the raw input keeps the path (so copy/edit see real text),
     /// but the span renders as a `[图片 #N]` chip and rides the next prompt as an upload.
+    /// Char index where an existing-image-path token ends at the cursor begins,
+    /// or None when the text right before the cursor isn't such a token.
+    fn typed_image_token_start(&self) -> Option<usize> {
+        // right after a chip span the "token" is already collapsed text — recursing
+        // here would re-chip the span forever (stack overflow)
+        if self.pastes.iter().any(|p| p.end == self.cursor) {
+            return None;
+        }
+        let mut start = self.cursor;
+        while start > 0 && !self.input[start - 1].is_whitespace() {
+            start -= 1;
+        }
+        if start == self.cursor {
+            return None;
+        }
+        let token: String = self.input[start..self.cursor].iter().collect();
+        image_path_from_paste(&token).map(|_| start)
+    }
+
+    /// insert_image_paste, but inserting at an arbitrary position (typed-token collapse)
+    fn insert_image_paste_at(&mut self, path: String, at: usize) {
+        let id = self.next_image;
+        self.next_image += 1;
+        self.images.push(ImageAttachment {
+            id,
+            path: path.clone(),
+        });
+        let chars: Vec<char> = path.chars().collect();
+        let end = at + chars.len();
+        self.replace_input_range(at, end, &chars);
+        self.pastes.push(PastedSpan {
+            start: at,
+            end,
+            id: self.next_paste,
+            extra_lines: 0,
+            image: Some(id),
+        });
+        self.next_paste += 1;
+        self.cursor = end;
+        self.push(
+            format!("🖼 已附加图片 #{id} · 点击查看 · 随下一条消息发送"),
+            Tone::Muted,
+        );
+    }
+
     fn insert_image_paste(&mut self, path: String) {
         let id = self.next_image;
         self.next_image += 1;
@@ -2741,7 +2803,23 @@ impl App {
             text.push(self.input[raw]);
             raw += 1;
         }
-        (text, images)
+        // last-resort sweep: bare existing-image tokens that never hit a chip path
+        // (typed without a trailing separator, odd terminals) still upload — the model
+        // should never see a raw local path for an image that exists
+        let mut swept = String::new();
+        for token in text.split_inclusive(|c: char| c == ' ' || c == '\n') {
+            let trimmed = token.trim_end();
+            if let Some(path) = image_path_from_paste(trimmed)
+                && !images.contains(&path)
+            {
+                let sep = &token[trimmed.len()..];
+                swept.push_str(&format!("[图片 {}]{sep}", images.len() + 1));
+                images.push(path);
+            } else {
+                swept.push_str(token);
+            }
+        }
+        (swept, images)
     }
 
     fn clear_input(&mut self) {
@@ -3638,13 +3716,7 @@ impl App {
             return;
         }
         match k.code {
-            KeyCode::Enter
-                if self
-                    .rendered_input()
-                    .text
-                    .trim_start()
-                    .starts_with('/') =>
-            {
+            KeyCode::Enter if self.rendered_input().text.trim_start().starts_with('/') => {
                 // judge by the displayed text: an image chip's raw path also starts
                 // with '/', but it is an attachment, not a slash command
                 let text: String = self.input.iter().collect();
@@ -7990,8 +8062,16 @@ mod tests {
             Some(img.clone()),
             "quoted drag path"
         );
-        assert_eq!(image_path_from_paste(&format!("{img}\nmore")), None, "multi-line");
-        assert_eq!(image_path_from_paste("/no/such/file.png"), None, "must exist");
+        assert_eq!(
+            image_path_from_paste(&format!("{img}\nmore")),
+            None,
+            "multi-line"
+        );
+        assert_eq!(
+            image_path_from_paste("/no/such/file.png"),
+            None,
+            "must exist"
+        );
         assert_eq!(image_path_from_paste("notes.txt"), None, "not an image ext");
         assert_eq!(image_path_from_paste(""), None);
         let _ = std::fs::remove_file(&img);
@@ -8123,7 +8203,9 @@ mod tests {
             &mut serve,
         );
         assert!(
-            app.lines.iter().any(|l| l.text.contains(&format!("打开图片 {img}"))),
+            app.lines
+                .iter()
+                .any(|l| l.text.contains(&format!("打开图片 {img}"))),
             "click opened the image"
         );
         let _ = std::fs::remove_file(&img);
@@ -8148,7 +8230,10 @@ mod tests {
             .expect("chip row drawn");
         let row_text = &app.chat_rows[g].text;
         let label_char = row_text.find("[图片 #1]").unwrap();
-        let col: usize = row_text[..label_char].chars().map(|c| display_width(&c.to_string())).sum();
+        let col: usize = row_text[..label_char]
+            .chars()
+            .map(|c| display_width(&c.to_string()))
+            .sum();
         let term_row = app.chat_area.y + (g - app.chat_scroll_offset) as u16;
         app.handle(
             Event::Mouse(crossterm::event::MouseEvent {
@@ -8160,7 +8245,9 @@ mod tests {
             &mut serve,
         );
         assert!(
-            app.lines.iter().any(|l| l.text.contains(&format!("打开图片 {img}"))),
+            app.lines
+                .iter()
+                .any(|l| l.text.contains(&format!("打开图片 {img}"))),
             "chat chip click opened the image"
         );
         let _ = std::fs::remove_file(&img);
@@ -8176,5 +8263,56 @@ mod tests {
         assert!(app.images.is_empty());
         assert_eq!(app.next_image, 1);
         let _ = std::fs::remove_file(&img);
+    }
+
+    #[test]
+    fn typed_image_path_collapses_to_chip_at_separator() {
+        let mut app = App::new();
+        let dir = std::env::temp_dir().join("tango-typed-img");
+        std::fs::create_dir_all(&dir).unwrap();
+        let img = dir.join("shot.png");
+        std::fs::write(&img, b"x").unwrap();
+        // type the path char by char (no bracketed paste), then a space
+        for c in format!("{}", img.display()).chars() {
+            app.insert_char(c);
+        }
+        // before the separator it is still plain text
+        assert!(app.rendered_input().text.contains("shot.png"));
+        app.insert_char(' ');
+        let rendered = app.rendered_input().text;
+        assert!(
+            rendered.contains("[图片 #1] "),
+            "chip after separator: {rendered}"
+        );
+        assert!(!rendered.contains(".png"), "raw path collapsed: {rendered}");
+        // submit: the upload rides along, chat line shows the marker not the path
+        let mut serve = Serve::mock();
+        app.key(
+            crossterm::event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut serve,
+        );
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        assert_eq!(sent["images"][0], json!(img.display().to_string()));
+        assert!(sent["text"].to_string().contains("[图片 #1]"));
+        assert!(!sent["text"].to_string().contains(".png"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn bare_image_token_at_submit_still_uploads_via_sweep() {
+        let mut app = App::new();
+        let dir = std::env::temp_dir().join("tango-sweep-img");
+        std::fs::create_dir_all(&dir).unwrap();
+        let img = dir.join("final.png");
+        std::fs::write(&img, b"x").unwrap();
+        // typed WITHOUT a trailing separator — only the submit sweep catches it
+        for c in format!("看这张 {}", img.display()).chars() {
+            app.insert_char(c);
+        }
+        let (text, images) = app.take_submission();
+        assert_eq!(images, vec![img.display().to_string()]);
+        assert!(text.contains("[图片 1]"));
+        assert!(!text.contains(".png"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
