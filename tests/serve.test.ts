@@ -2081,3 +2081,43 @@ test('T4: conflicted worktree merge aborts cleanly; /stop keeps done status', as
     await rm(work, { recursive: true, force: true });
   }
 });
+
+test('import codex: trusted commands from config.toml map to bash rules', async () => {
+  const mock = await startMock();
+  const home = await mkdtemp(join(tmpdir(), 'tango-serve-home-'));
+  const work = await mkdtemp(join(tmpdir(), 'tango-serve-work-'));
+  await writeFile(join(home, 'models.json'), JSON.stringify([
+    { id: 'mock/mock', provider: 'mock', model: 'm', api: 'openai-completions', baseUrl: `http://127.0.0.1:${(mock.server.address() as AddressInfo).port}/v1`, apiKey: 'MOCK_SERVE_KEY', contextWindow: 200 }
+  ]));
+  mock.setScript(() => SSE({ choices: [{ delta: { content: 'ok' } }] }) + SSE({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1 } }) + 'data: [DONE]\n\n');
+  // a fake ~/.codex/config.toml via TANGO_HOME homedir indirection is not possible;
+  // the command accepts an explicit path for testability
+  const toml = join(home, 'codex-config.toml');
+  await writeFile(toml, `
+model = "gpt-5"
+approval_policy = "auto"
+
+[[trusted_commands]]
+command = "git status"
+
+[[trusted_commands]]
+command = "npm test"
+
+[projects."/some/path"]
+trust_level = 200
+`);
+  const s = await startServe(home, work, 0);
+  try {
+    await s.next();
+    s.send({ id: 200, cmd: 'import', source: 'codex', path: toml });
+    const imp = await s.until((f: any) => f.type === 'result' && f.id === 200, 'import');
+    assert.ok(imp.ok, JSON.stringify(imp));
+    assert.ok(imp.data.imported.includes('bash:git status'), JSON.stringify(imp.data));
+    assert.ok(imp.data.imported.includes('bash:npm test'));
+  } finally {
+    s.child.kill();
+    mock.server.close();
+    await rm(home, { recursive: true, force: true });
+    await rm(work, { recursive: true, force: true });
+  }
+});

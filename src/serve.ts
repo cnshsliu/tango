@@ -935,7 +935,27 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
         try {
           if (source === 'claude-code') rawJson = await rf2(join(cwd, '.claude', 'settings.json'), 'utf8');
           else if (source === 'grok') rawJson = await rf2(join(homedir(), '.grok', 'settings.json'), 'utf8');
-          else return reply(cmd, false, undefined, `import: unknown source "${source}" (claude-code | grok)`);
+          else if (source === 'codex') {
+            // config.toml: no TOML parser dependency — a loose scan for trusted command entries
+            const tomlPath = cmd.path ? resolve(cwd, String(cmd.path)) : join(homedir(), '.codex', 'config.toml');
+            const toml = await rf2(tomlPath, 'utf8');
+            const cmds = [...toml.matchAll(/^command\s*=\s*"([^"]+)"/gm)].map((m) => m[1]);
+            const imported0: string[] = [];
+            const skipped0: { raw: string; reason: string }[] = [];
+            for (const c of cmds) {
+              const p = parseRule(`bash:${c}`);
+              if (p.ok) imported0.push(`bash:${c}`);
+              else skipped0.push({ raw: `command = "${c}"`, reason: p.error });
+            }
+            if (!cmds.length) skipped0.push({ raw: tomlPath, reason: 'no trusted command entries found' });
+            const cfgT = await loadConfig();
+            const allowT = [...new Set([...(cfgT.permissions?.allow ?? []), ...imported0])];
+            await withConfig(async () => saveConfig({ ...(await loadConfig()), permissions: { allow: allowT } }));
+            if (perm.rules) perm.rules.allow = allowT;
+            reply(cmd, true, { imported: imported0, skipped: skipped0 });
+            return;
+          }
+          else return reply(cmd, false, undefined, `import: unknown source "${source}" (claude-code | grok | codex)`);
           const parsed = JSON.parse(rawJson);
           for (const e of parsed?.permissions?.allow ?? []) rawEntries.push({ raw: String(e) });
         } catch (e: any) {

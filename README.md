@@ -95,8 +95,9 @@ TUI commands: `/model`, `/agents`, `/resume`, `/new`, `/rename`, `/mode`, `/plan
 - **/agents [role model]** — role-based routing: `driver` (live), `subagent` (/subtask, /bg),
   `longContext` (/bg --long). Defaults to the current model.
 - **/mcp** — MCP servers from config `mcpServers: {name: {command, args}}` (stdio JSON-RPC);
-  tools bridge as `mcp_<server>_<tool>`, treated as write-effect (permission rules apply),
-  dead/hung servers degrade to disconnected without touching serve.
+  tools bridge as `mcp_<server>_<tool>` (collision-suffixed), treated as write-effect
+  (permission rules apply). Dead servers lazily reconnect on the next call (capped at 3
+  attempts); spawn failures and EPIPE never take serve down.
 - **/plugins** — local plugins: `~/.tango/plugins/<name>/plugin.json` with
   `{name, description, enabled?, hooks?: {beforeTool?, afterTool?}}`; hooks receive the call
   JSON on stdin like config hooks; `enabled: false` skips.
@@ -139,8 +140,11 @@ Three rule kinds, persisted in config.json (`permissions.allow`) and live via `/
 cwd or absolute, segment-boundary matched so `src` never matches `src-evil/`), `bash:<prefix>`
 (first command tokens, so `bash:git status` matches `git status -s` but not `git_status`).
 Rules never override readonly mode; they only turn "ask" into "allow".
-`/import claude-code|grok` maps another agent's allowed-tools into these rules and reports
-every entry it could not represent. `/cd <dir>` moves the session working directory (agent,
+`/import claude-code|grok|codex` maps another agent's allowed-tools into these rules and
+reports every entry it could not represent (codex reads trusted `command = "…"` entries from
+`~/.codex/config.toml`, loose TOML scan, `path:` override for testing). Bash rules cover only
+the command segments they match: a risky command later in the same line (`git status; rm …`)
+still asks. `/export` and `/insights` write into `~/.tango/exports/` (never dirty the repo). `/cd <dir>` moves the session working directory (agent,
 tools and checkpoints follow live); `/add_dir <dir>` registers an extra writable root.
 
 ## Observability
