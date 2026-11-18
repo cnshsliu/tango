@@ -419,6 +419,81 @@ fn find_existing_file_path(text: &str) -> Option<String> {
     best
 }
 
+/// One rendered terminal row of the chat: which source line, which char range, what text.
+/// Owning the wrap (instead of ratatui's Paragraph) is what makes character-exact
+/// mouse selection possible.
+#[derive(Clone, Debug)]
+struct ChatRow {
+    line: usize,
+    cs: usize, // char start (into the source line text)
+    ce: usize, // char end, exclusive
+    text: String,
+}
+
+/// Word wrap with char-index tracking; long words (URLs, CJK runs) hard-split at width.
+fn wrap_chat_rows(texts: &[String], width: usize) -> Vec<ChatRow> {
+    let mut rows = Vec::new();
+    let w = width.max(1);
+    for (line, text) in texts.iter().enumerate() {
+        let chars: Vec<char> = text.chars().collect();
+        if chars.is_empty() {
+            rows.push(ChatRow {
+                line,
+                cs: 0,
+                ce: 0,
+                text: String::new(),
+            });
+            continue;
+        }
+        // split into tokens: runs of spaces stay attached to the preceding word end
+        let mut cs = 0usize;
+        let mut idx = 0usize;
+        while idx < chars.len() {
+            // find the next break candidate: end of a word + space run
+            let mut end = idx;
+            let mut width_so_far = 0usize;
+            let mut last_space: Option<usize> = None;
+            while end < chars.len() {
+                let cw = display_width(&chars[end].to_string());
+                if width_so_far + cw > w {
+                    break;
+                }
+                width_so_far += cw;
+                if chars[end] == ' ' {
+                    last_space = Some(end);
+                }
+                end += 1;
+            }
+            let (row_end, next) = if end >= chars.len() {
+                (end, end)
+            } else if let Some(sp) = last_space.filter(|&s| s > idx) {
+                // break after the last space inside the window (word wrap)
+                (sp + 1, sp + 1)
+            } else {
+                (end, end) // hard split: single long word
+            };
+            let piece: String = chars[cs..row_end].iter().collect();
+            rows.push(ChatRow {
+                line,
+                cs,
+                ce: row_end,
+                text: piece,
+            });
+            cs = next;
+            idx = next;
+            // skip leading spaces of the next row (trim leading-only when the row starts with spaces)
+            while idx < chars.len()
+                && chars[idx] == ' '
+                && display_width(&chars[idx].to_string()) == 1
+            {
+                // keep at most one leading space for continuity
+                break;
+            }
+        }
+    }
+    rows
+}
+
 fn parse_utc_offset(s: &str) -> Option<i64> {
     // "+0800" / "-0530" — length checked BEFORE split_at (empty used to panic)
     if s.len() < 5 {
@@ -492,10 +567,13 @@ pub struct App {
     /// in-chat mouse selection (terminal rows); release copies the covered lines
     sel_anchor: Option<u16>,
     sel_end: Option<u16>,
-    /// rendered chat line texts + geometry, captured each draw for selection mapping
-    chat_shown_texts: Vec<String>,
+    /// rendered chat rows (self-managed wrap), captured each draw for mouse mapping
+    chat_rows: Vec<ChatRow>,
     chat_scroll_offset: usize,
     chat_inner_w: u16,
+    /// selection anchor/end as (terminal row, column) pairs — char-exact
+    sel_anchor_pos: Option<(u16, u16)>,
+    sel_end_pos: Option<(u16, u16)>,
     /// plan mode badge (/plan)
     plan_mode: bool,
     /// active /goal text (badge)
@@ -565,9 +643,11 @@ impl App {
             serve_cwd: None,
             sel_anchor: None,
             sel_end: None,
-            chat_shown_texts: Vec::new(),
+            chat_rows: Vec::new(),
             chat_scroll_offset: 0,
             chat_inner_w: 0,
+            sel_anchor_pos: None,
+            sel_end_pos: None,
             plan_mode: false,
             goal_text: None,
             pending: Vec::new(),
@@ -643,42 +723,44 @@ impl App {
         self.respawn = Some(target);
     }
 
-    /// Map terminal rows (absolute) to logical chat-line indices using the geometry
-    /// captured by the last draw. Wrapping uses the same math as visual_lines.
-    fn rows_to_line_range(&self, row_a: u16, row_b: u16, chat_y: u16) -> Option<(usize, usize)> {
-        if self.chat_shown_texts.is_empty() || self.chat_inner_w == 0 {
-            return None;
-        }
-        let inner_w = self.chat_inner_w as usize;
-        let total: usize = self
-            .chat_shown_texts
-            .iter()
-            .map(|t| display_width(t).div_ceil(inner_w.max(1)).max(1))
-            .sum();
-        if total == 0 {
-            return None;
-        }
-        // clicks can land on rows beyond the content (bottom padding) — clamp them in
-        let v_lo = (row_a.min(row_b).saturating_sub(chat_y) as usize + self.chat_scroll_offset)
-            .min(total - 1);
-        let v_hi = (row_b.max(row_a).saturating_sub(chat_y) as usize + self.chat_scroll_offset)
-            .min(total - 1);
-        let mut start = None;
-        let mut end = 0usize;
-        let mut visual = 0usize;
-        for (idx, text) in self.chat_shown_texts.iter().enumerate() {
-            let rows = display_width(text)
-                .div_ceil(self.chat_inner_w as usize)
-                .max(1);
-            if start.is_none() && visual + rows > v_lo {
-                start = Some(idx);
+    /// Terminal row → global row index (the renderer's own row list).
+    fn global_row(&self, term_row: u16, chat_y: u16) -> Option<usize> {
+        let g = term_row.saturating_sub(chat_y) as usize + self.chat_scroll_offset;
+        (g < self.chat_rows.len()).then_some(g)
+    }
+
+    /// Normalized selection as (row_a, col_a, row_b, col_b) in GLOBAL rows, a ≤ b.
+    fn selection_range(&self, chat_y: u16) -> Option<(usize, usize, usize, usize)> {
+        let (a, b) = (self.sel_anchor_pos?, self.sel_end_pos?);
+        let ga = self.global_row(a.0, chat_y)?;
+        let gb = self.global_row(b.0, chat_y)?;
+        let (ra, ca, rb, cb) = if (ga, a.1) <= (gb, b.1) {
+            (ga, a.1, gb, b.1)
+        } else {
+            (gb, b.1, ga, a.1)
+        };
+        Some((ra, ca as usize, rb, cb as usize))
+    }
+
+    /// The exact selected text: partial rows at both ends, full rows between.
+    fn selected_text(&self, chat_y: u16) -> Option<String> {
+        let (ra, ca, rb, cb) = self.selection_range(chat_y)?;
+        let mut out = String::new();
+        for g in ra..=rb.min(self.chat_rows.len().saturating_sub(1)) {
+            let row = self.chat_rows.get(g)?;
+            let chars: Vec<char> = row.text.chars().collect();
+            let from = if g == ra { ca.min(chars.len()) } else { 0 };
+            let to = if g == rb {
+                cb.min(chars.len())
+            } else {
+                chars.len()
+            };
+            if g > ra {
+                out.push('\n');
             }
-            if visual <= v_hi {
-                end = idx;
-            }
-            visual += rows;
+            out.push_str(&chars[from..to].iter().collect::<String>());
         }
-        start.map(|s| (s, end))
+        (out.trim().len() > 0).then_some(out)
     }
 
     /// A clipboard copy that never touches the real clipboard under `cargo test`.
@@ -690,48 +772,46 @@ impl App {
     }
 
     /// Left press in the chat area: a complete local file path under the cursor opens in
-    /// the read-only viewer; anything else starts a text selection.
+    /// the read-only viewer; anything else starts a character-exact selection.
     fn chat_press(&mut self, row: u16, column: u16, chat_y: u16) {
-        if let Some((lo, hi)) = self.rows_to_line_range(row, row, chat_y) {
-            let text = self
-                .chat_shown_texts
-                .get(lo..=hi.min(self.chat_shown_texts.len() - 1))
-                .map(|s| s.join("\n"))
-                .unwrap_or_default();
-            if let Some(path) = find_existing_file_path(&text) {
-                self.open_file_viewer(&path);
-                return;
-            }
-        }
-        self.sel_anchor = Some(row);
-        self.sel_end = Some(row);
-    }
-
-    fn chat_drag(&mut self, row: u16) {
-        if self.sel_anchor.is_some() {
-            self.sel_end = Some(row);
-        }
-    }
-
-    /// Release: copy the covered logical lines to the system clipboard.
-    fn chat_release(&mut self, chat_y: u16) {
-        if let (Some(a_row), Some(b_row)) = (self.sel_anchor.take(), self.sel_end.take()) {
-            if let Some((lo, hi)) = self.rows_to_line_range(a_row, b_row, chat_y) {
-                let hi = hi.min(self.chat_shown_texts.len().saturating_sub(1));
-                let text = self
-                    .chat_shown_texts
-                    .get(lo..=hi)
-                    .map(|s| s.join("\n"))
-                    .unwrap_or_default();
-                if text.trim().is_empty() {
+        if let Some(g) = self.global_row(row, chat_y) {
+            if let Some(li) = self.chat_rows.get(g).map(|r| r.line) {
+                let mut full = String::new();
+                for r in &self.chat_rows {
+                    if r.line == li {
+                        full.push_str(&r.text);
+                    }
+                }
+                if let Some(path) = find_existing_file_path(&full) {
+                    self.open_file_viewer(&path);
                     return;
                 }
-                match self.copy_to_clipboard(&text) {
-                    Ok(()) => {
-                        self.push(format!("已复制 {} 行到剪贴板", hi - lo + 1), Tone::Success)
-                    }
-                    Err(e) => self.push(format!("复制失败：{e}"), Tone::Error),
+            }
+        }
+        self.sel_anchor_pos = Some((row, column));
+        self.sel_end_pos = Some((row, column));
+    }
+
+    fn chat_drag(&mut self, row: u16, column: u16) {
+        if self.sel_anchor_pos.is_some() {
+            self.sel_end_pos = Some((row, column));
+        }
+    }
+
+    /// Release: copy exactly the dragged-over characters to the system clipboard.
+    fn chat_release(&mut self, chat_y: u16) {
+        let text = self.selected_text(chat_y);
+        self.sel_anchor_pos = None;
+        self.sel_end_pos = None;
+        if let Some(text) = text
+            && !text.trim().is_empty()
+        {
+            match self.copy_to_clipboard(&text) {
+                Ok(()) => {
+                    let n = text.chars().filter(|c| *c != '\n').count();
+                    self.push(format!("已复制 {n} 个字符到剪贴板"), Tone::Success);
                 }
+                Err(e) => self.push(format!("复制失败：{e}"), Tone::Error),
             }
         }
     }
@@ -2512,7 +2592,7 @@ impl App {
                                 }
                             }
                         }
-                        MouseEventKind::Drag(MouseButton::Left) => self.chat_drag(m.row),
+                        MouseEventKind::Drag(MouseButton::Left) => self.chat_drag(m.row, m.column),
                         MouseEventKind::Up(MouseButton::Left) => {
                             self.chat_release(self.chat_area.y)
                         }
@@ -3291,7 +3371,10 @@ impl App {
                                                 },
                                                 current: id == cur,
                                                 label: id.clone(),
-                                                group: m["platform"].as_str().unwrap_or("").to_string(),
+                                                group: m["platform"]
+                                                    .as_str()
+                                                    .unwrap_or("")
+                                                    .to_string(),
                                                 id,
                                             })
                                         })
@@ -4414,22 +4497,18 @@ impl App {
         let spans = self.status_spans();
         f.render_widget(Paragraph::new(Line::from(spans)), status_a);
 
-        // chat with bottom-anchored scrolling (scroll_back=0 follows the newest line)
-        let shown: Vec<Line> = self
-            .chat_lines()
-            .into_iter()
-            .map(|l| Line::from(Span::styled(l.text, self.theme.style(l.tone))))
-            .collect();
+        // chat with bottom-anchored scrolling (scroll_back=0 follows the newest line).
+        // We own the wrap (wrap_chat_rows) so every terminal row maps back to an exact
+        // (source line, char range) — character-exact mouse selection and click targets.
         let inner_w = chat_a.width as usize;
-        let stream_rows = if self.stream.is_empty() {
-            0
-        } else {
-            self.stream
-                .split('\n')
-                .map(|line| display_width(line).div_ceil(inner_w.max(1)).max(1))
-                .sum::<usize>()
-        };
-        let total = Self::visual_lines(&self.chat_lines(), inner_w) + stream_rows;
+        let mut texts: Vec<String> = self.chat_lines().iter().map(|l| l.text.clone()).collect();
+        if !self.stream.is_empty() {
+            // live assistant text (not committed yet) hangs off the last line, markdown stripped
+            texts.push(self.stream.replace("**", "").replace('`', ""));
+        }
+        let tones: Vec<Tone> = self.chat_lines().iter().map(|l| l.tone).collect();
+        let all_rows = wrap_chat_rows(&texts, inner_w);
+        let total = all_rows.len();
         if self.last_visual_total > 0 && total > self.last_visual_total && self.scroll_back > 0 {
             let added = total - self.last_visual_total;
             self.scroll_back += added;
@@ -4440,43 +4519,46 @@ impl App {
         }
         self.last_visual_total = total;
         let offset = total.saturating_sub(chat_h + self.scroll_back);
-        // live assistant text (not committed yet) hangs off the last line, markdown stripped
-        let mut shown = shown;
-        if !self.stream.is_empty() {
-            let preview = self.stream.replace("**", "").replace('`', "");
-            shown.push(Line::from(Span::raw(preview)));
-        }
-        // selection support: remember the exact texts and geometry the paragraph renders,
-        // so mouse rows can map back to whole logical lines (copy + click targets)
-        self.chat_shown_texts = shown
-            .iter()
-            .map(|l| {
-                l.spans
-                    .iter()
-                    .map(|s| s.content.to_string())
-                    .collect::<String>()
-            })
-            .collect();
+        self.chat_rows = all_rows;
         self.chat_scroll_offset = offset;
         self.chat_inner_w = chat_a.width;
-        // visual selection highlight: whole lines covered by the drag render reversed
-        if let (Some(a_row), Some(b_row)) = (self.sel_anchor, self.sel_end) {
-            if let Some((lo, hi)) = self.rows_to_line_range(a_row, b_row, chat_a.y) {
-                for idx in lo..=hi.min(shown.len().saturating_sub(1)) {
-                    if let Some(line) = shown.get_mut(idx) {
-                        for span in line.spans.iter_mut() {
-                            span.style = span.style.reversed();
-                        }
-                    }
+
+        // render the visible window row by row with char-exact selection highlight
+        let sel = self.selection_range(chat_a.y);
+        let mut shown: Vec<Line> = Vec::new();
+        for g in offset..total.min(offset + chat_h as usize) {
+            let Some(row) = self.chat_rows.get(g) else {
+                continue;
+            };
+            let tone = tones.get(row.line).copied().unwrap_or(Tone::Text);
+            let style = self.theme.style(tone);
+            let chars: Vec<char> = row.text.chars().collect();
+            let (s_from, s_to) = match sel {
+                Some((ra, ca, rb, cb)) if ra <= g && g <= rb => {
+                    let from = if g == ra { ca.min(chars.len()) } else { 0 };
+                    let to = if g == rb {
+                        cb.min(chars.len())
+                    } else {
+                        chars.len()
+                    };
+                    (from, to.max(from))
                 }
+                _ => (0, 0),
+            };
+            if sel.is_some() && s_to > s_from {
+                shown.push(Line::from(vec![
+                    Span::styled(chars[..s_from].iter().collect::<String>(), style),
+                    Span::styled(
+                        chars[s_from..s_to].iter().collect::<String>(),
+                        style.reversed(),
+                    ),
+                    Span::styled(chars[s_to..].iter().collect::<String>(), style),
+                ]));
+            } else {
+                shown.push(Line::from(Span::styled(row.text.clone(), style)));
             }
         }
-        f.render_widget(
-            Paragraph::new(Text::from(shown))
-                .wrap(Wrap { trim: false })
-                .scroll((offset as u16, 0)),
-            chat_a,
-        );
+        f.render_widget(Paragraph::new(Text::from(shown)), chat_a);
         self.jump_area = Rect::default();
         if self.unread_rows > 0 && chat_a.height > 0 {
             let label = format!(" ↓ {} 行新内容 · ctrl+end 回到底部 ", self.unread_rows);
@@ -6760,34 +6842,68 @@ mod tests {
     }
 
     #[test]
-    fn rows_to_line_range_maps_wrapped_selection() {
-        let mut app = App::new();
-        app.chat_inner_w = 10;
-        app.chat_scroll_offset = 0;
-        app.chat_shown_texts = vec![
-            "short".into(),
-            "a-very-long-line-that-wraps-several-times".into(),
-            "tail".into(),
+    fn wrap_chat_rows_tracks_char_ranges() {
+        let texts = vec![
+            "short".to_string(),
+            "alpha beta gamma delta".to_string(), // wraps at width 11
+            "一很长的中文字符串没有任何空格所以只能硬切".to_string(), // CJK hard-split
         ];
-        // rows 0..0 → line 0; rows 0..5 cover the wrapped line 1; rows 2..2 land inside line 1
-        assert_eq!(app.rows_to_line_range(0, 0, 0), Some((0, 0)));
-        assert_eq!(app.rows_to_line_range(0, 5, 0), Some((0, 1)));
-        assert_eq!(app.rows_to_line_range(2, 2, 0), Some((1, 1)));
-        assert_eq!(app.rows_to_line_range(9, 9, 0), Some((2, 2)));
+        let rows = wrap_chat_rows(&texts, 11);
+        // row 0 = whole short line
+        assert_eq!(rows[0].text, "short");
+        assert_eq!(rows[0].ce, 5);
+        // line 1 word-wraps; every row's concatenation restores the full text
+        let l1: String = rows
+            .iter()
+            .filter(|r| r.line == 1)
+            .map(|r| r.text.as_str())
+            .collect();
+        assert_eq!(l1, "alpha beta gamma delta");
+        // CJK hard-split also restores exactly
+        let l2: String = rows
+            .iter()
+            .filter(|r| r.line == 2)
+            .map(|r| r.text.as_str())
+            .collect();
+        assert_eq!(l2, texts[2]);
+        // char ranges are contiguous and in-bounds
+        let mut prev = 0usize;
+        for r in rows.iter().filter(|r| r.line == 1) {
+            assert_eq!(r.cs, prev);
+            prev = r.ce;
+        }
     }
 
     #[test]
-    fn chat_selection_release_copies_covered_lines() {
+    fn char_selection_copies_exact_dragged_text() {
         let mut app = App::new();
         app.chat_inner_w = 40;
         app.chat_scroll_offset = 0;
-        app.chat_shown_texts = vec!["alpha".into(), "beta".into(), "gamma".into()];
-        app.chat_press(1, 0, 0); // press on row 1 (no file path there → selection starts)
-        assert!(app.sel_anchor.is_some());
-        app.chat_drag(2);
+        app.chat_rows = wrap_chat_rows(
+            &[
+                "the quick brown fox jumps".to_string(),
+                "second line here".to_string(),
+            ],
+            40,
+        );
+        // drag from row 0 col 4 to row 0 col 9 → exactly "quick"
+        app.sel_anchor_pos = Some((0, 4));
+        app.sel_end_pos = Some((0, 9));
+        assert_eq!(app.selected_text(0).unwrap(), "quick");
+        // across rows: row 0 col 20 → row 1 col 6 → "jumps" + "\n" + "second"
+        app.sel_anchor_pos = Some((0, 20));
+        app.sel_end_pos = Some((1, 6));
+        assert_eq!(app.selected_text(0).unwrap(), "jumps\nsecond");
+        // reverse drag normalizes
+        app.sel_anchor_pos = Some((1, 6));
+        app.sel_end_pos = Some((0, 20));
+        assert_eq!(app.selected_text(0).unwrap(), "jumps\nsecond");
+        // release clears and reports char count
+        app.sel_anchor_pos = Some((0, 4));
+        app.sel_end_pos = Some((0, 9));
         app.chat_release(0);
-        assert!(app.sel_anchor.is_none(), "selection cleared after release");
-        assert!(app.lines.iter().any(|l| l.text.contains("已复制 2 行")));
+        assert!(app.sel_anchor_pos.is_none());
+        assert!(app.lines.iter().any(|l| l.text.contains("已复制 5 个字符")));
     }
 
     #[test]
@@ -6800,18 +6916,21 @@ mod tests {
         // mirror the real geometry: banner row 0, prompt row 1, width 200
         app.chat_inner_w = 200;
         app.chat_scroll_offset = 0;
-        app.chat_shown_texts = vec![
-            "tango serve banner".into(),
-            format!("❯ 看下 {}", f.display()),
-            "看到了文件内容".into(),
-        ];
+        app.chat_rows = wrap_chat_rows(
+            &[
+                "tango serve banner".to_string(),
+                format!("❯ 看下 {}", f.display()),
+                "看到了文件内容".to_string(),
+            ],
+            200,
+        );
         app.chat_press(1, 30, 0); // press on the prompt row
         let v = app.viewer.as_ref().expect("viewer opened");
         assert!(v.read_only);
         assert!(v.title.contains("target.md"));
         assert_eq!(v.text, "CONTENT");
         assert!(
-            app.sel_anchor.is_none(),
+            app.sel_anchor_pos.is_none(),
             "no selection started for a path click"
         );
         let _ = std::fs::remove_dir_all(&dir);
@@ -6850,8 +6969,15 @@ mod tests {
         assert!(text.contains("── tknet ──"), "tknet header rendered");
         assert!(text.contains("── opencode ──"), "opencode header rendered");
         let p = app.picker.as_ref().unwrap();
-        assert_eq!(p.sel, 1, "selection lands on the current model, not a header");
-        assert_eq!(p.filtered_items().len(), 3, "headers are not selectable items");
+        assert_eq!(
+            p.sel, 1,
+            "selection lands on the current model, not a header"
+        );
+        assert_eq!(
+            p.filtered_items().len(),
+            3,
+            "headers are not selectable items"
+        );
         assert_eq!(
             app.picker_rows,
             vec![None, Some(0), None, Some(1), None, Some(2)],
@@ -6868,7 +6994,10 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(text.contains("── opencode ──"));
-        assert!(!text.contains("── tknet ──"), "filtered-out group header gone");
+        assert!(
+            !text.contains("── tknet ──"),
+            "filtered-out group header gone"
+        );
         assert_eq!(app.picker_rows, vec![None, Some(0)]);
     }
 }
