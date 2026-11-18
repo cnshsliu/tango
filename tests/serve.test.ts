@@ -2036,3 +2036,48 @@ test('plugins: local plugin hooks load; enabled:false skips', async () => {
     await rm(work, { recursive: true, force: true });
   }
 });
+
+test('T4: conflicted worktree merge aborts cleanly; /stop keeps done status', async () => {
+  const mock = await startMock();
+  const home = await mkdtemp(join(tmpdir(), 'tango-serve-home-'));
+  const work = await mkdtemp(join(tmpdir(), 'tango-serve-work-'));
+  await writeFile(join(home, 'models.json'), JSON.stringify([
+    { id: 'mock/mock', provider: 'mock', model: 'm', api: 'openai-completions', baseUrl: `http://127.0.0.1:${(mock.server.address() as AddressInfo).port}/v1`, apiKey: 'MOCK_SERVE_KEY', contextWindow: 200 }
+  ]));
+  mock.setScript(() => SSE({ choices: [{ delta: { content: 'ok' } }] }) + SSE({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1 } }) + 'data: [DONE]\n\n');
+  const git = (args: string[]) => spawnSync('git', args, { cwd: work, encoding: 'utf8' });
+  git(['init', '-q']); git(['config', 'user.email', 't@t']); git(['config', 'user.name', 't']);
+  await writeFile(join(work, 'f.txt'), 'base\n'); git(['add', '.']); git(['commit', '-q', '-m', 'i']);
+
+  const s = await startServe(home, work, 0);
+  try {
+    await s.next();
+    s.send({ id: 200, cmd: 'worktree_create', name: 'conf' });
+    const c = await s.until((f: any) => f.type === 'result' && f.id === 200 && f.ok, 'create');
+    const wt = c.data.path;
+    // divergent edits: same line on both sides
+    await writeFile(join(wt, 'f.txt'), 'worktree-side\n');
+    spawnSync('git', ['add', '.'], { cwd: wt });
+    spawnSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'wt'], { cwd: wt });
+    await writeFile(join(work, 'f.txt'), 'main-side\n');
+    spawnSync('git', ['add', '.'], { cwd: work });
+    spawnSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'main'], { cwd: work });
+
+    s.send({ id: 201, cmd: 'worktree_merge', name: 'conf' });
+    const m = await s.until((f: any) => f.type === 'result' && f.id === 201, 'merge');
+    assert.ok(m.ok, JSON.stringify(m));
+    assert.equal(m.data.merged, false, 'conflict reported');
+    // the main repo is NOT left mid-merge
+    const mid = spawnSync('git', ['rev-parse', '--verify', 'MERGE_HEAD'], { cwd: work, encoding: 'utf8' });
+    assert.notEqual(mid.status, 0, 'no MERGE_HEAD — aborted cleanly');
+    const st = spawnSync('git', ['status', '--porcelain'], { cwd: work, encoding: 'utf8' }).stdout;
+    assert.ok(!st.includes('UU'), 'no unresolved conflict entries');
+    assert.equal((await readFile(join(work, 'f.txt'), 'utf8')).trim(), 'main-side', 'main file intact');
+  } finally {
+    s.child.kill();
+    spawnSync('git', ['worktree', 'prune'], { cwd: work });
+    mock.server.close();
+    await rm(home, { recursive: true, force: true });
+    await rm(work, { recursive: true, force: true });
+  }
+});

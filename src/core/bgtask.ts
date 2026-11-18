@@ -171,9 +171,11 @@ export async function startBgTask(args: {
 }
 
 export async function stopTask(id: string, mainCwd: string): Promise<BgTask> {
+  void mainCwd;
   const task = await findTask(id);
   if (!task) throw new Error(`no such task: ${id}`);
-  if (task.status === 'running' && alive(task.pid)) {
+  if (task.status !== 'running') return task; // done/failed history is not rewritten
+  if (alive(task.pid)) {
     try {
       process.kill(-task.pid, 'SIGTERM'); // process group (detached)
     } catch {

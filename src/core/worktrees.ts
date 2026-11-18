@@ -92,5 +92,10 @@ export async function worktreeMerge(cwd: string, name: string): Promise<{ merged
     throw new Error('main workspace has uncommitted changes — commit or stash before merging');
   }
   const r = git(cwd, ['merge', '--no-edit', entry.branch]);
-  return { merged: r.ok, output: (r.out || r.err) };
+  if (!r.ok) {
+    // never leave the main repo mid-merge: abort and report the conflict output
+    git(cwd, ['merge', '--abort']);
+    return { merged: false, output: (r.out || r.err) + '\n（已自动 git merge --abort，主工作区已恢复干净）' };
+  }
+  return { merged: true, output: r.out };
 }
