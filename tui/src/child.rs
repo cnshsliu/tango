@@ -171,7 +171,14 @@ mod tests {
         let pid = serve.child.id().to_string();
         drop(serve);
         // `kill -0` succeeds on a zombie; it must fail once the child is reaped
-        let alive = Command::new("kill").args(["-0", &pid]).stderr(Stdio::null()).status().unwrap();
-        assert!(!alive.success(), "serve child {pid} was killed but not reaped (zombie)");
+        let alive = Command::new("kill")
+            .args(["-0", &pid])
+            .stderr(Stdio::null())
+            .status()
+            .unwrap();
+        assert!(
+            !alive.success(),
+            "serve child {pid} was killed but not reaped (zombie)"
+        );
     }
 }

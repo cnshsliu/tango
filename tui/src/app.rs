@@ -320,6 +320,10 @@ const SLASH: &[(&str, &str)] = &[
         "就地分叉：保留到该回合、丢弃其后（原未来可用 /redo 找回）",
     ),
     ("/btw <q>", "临时提问当前上下文，不写入会话"),
+    (
+        "/todo",
+        "待定列表：模型等你选的 ❓ 与顺带建议 · 点击逐条处理",
+    ),
     ("/clear", "清空屏幕（上下文保留）"),
     ("/compact", "压缩较早的上下文"),
     ("/cost", "本会话花费与上下文条数"),
@@ -528,6 +532,41 @@ enum QueueAction {
     ClearAll,          // drop every queued item
 }
 
+/// Something the model left for the user to act on: a blocking choice (?choice) the
+/// user hasn't answered, or a side suggestion (?suggest). Per-item: it leaves the
+/// list only when the user explicitly handles it.
+#[derive(Clone, Debug, PartialEq)]
+enum TodoKind {
+    Choice {
+        question: String,
+        options: Vec<String>,
+    },
+    Suggest {
+        text: String,
+    },
+}
+
+#[derive(Clone, Debug)]
+struct TodoItem {
+    kind: TodoKind,
+}
+
+/// A clickable action in the /todo dialog.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum TodoAction {
+    Expand(usize), // re-open this unanswered choice's option panel
+    Run(usize),    // act on a suggestion: send "执行这条建议" as the next prompt
+    Drop(usize),   // dismiss without acting
+}
+
+/// The model asked the user to pick; the panel renders above the input box.
+#[derive(Clone)]
+struct Choices {
+    question: String,
+    options: Vec<String>,
+    sel: usize, // highlighted row (↑↓ + enter, or click)
+}
+
 #[derive(Clone, Debug)]
 struct ChatRow {
     line: usize,
@@ -696,6 +735,20 @@ pub struct App {
     ime_restore: Option<String>,
     /// clickable button rects, rebuilt every draw
     queue_buttons: Vec<(Rect, QueueAction)>,
+    /// the model's pending ?choice — an option panel above the input box
+    choices: Option<Choices>,
+    /// Esc collapses the panel; the todo entry (and badge) keep it findable
+    choices_collapsed: bool,
+    /// clickable option rows of the choices panel, rebuilt every draw
+    choice_rows: Vec<Rect>,
+    /// unanswered choices + side suggestions, handled per-item via /todo
+    todos: Vec<TodoItem>,
+    /// /todo dialog open
+    todo_dialog: bool,
+    /// clickable button rects of the /todo dialog, rebuilt every draw
+    todo_buttons: Vec<(Rect, TodoAction)>,
+    /// last reply ended on a plain question with no ?choice — show ❓
+    ask_badge: bool,
     /// plan mode badge (/plan)
     plan_mode: bool,
     /// active /goal text (badge)
@@ -776,6 +829,13 @@ impl App {
             current_prompt: None,
             local_queue: Vec::new(),
             queue_dialog: false,
+            choices: None,
+            choices_collapsed: false,
+            choice_rows: Vec::new(),
+            todos: Vec::new(),
+            todo_dialog: false,
+            todo_buttons: Vec::new(),
+            ask_badge: false,
             ime_restore: None,
             queue_buttons: Vec::new(),
             plan_mode: false,
@@ -1062,6 +1122,42 @@ impl App {
     }
 
     /// Clickable file paths: show the file's content in the shared read-only viewer.
+    /// The picked option goes out as the next prompt; the matching todo entry retires.
+    fn pick_choice(&mut self, serve: &mut Serve, idx: usize) {
+        let Some(c) = self.choices.take() else { return };
+        let Some(pick) = c.options.get(idx).cloned() else {
+            self.choices = Some(c);
+            return;
+        };
+        self.todos.retain(|t| !matches!(&t.kind,
+            TodoKind::Choice { question, options } if *question == c.question && *options == c.options));
+        self.submit_text(serve, pick, vec![]);
+    }
+
+    /// Re-open the option panel for an unanswered choice parked in todo.
+    fn expand_choice(&mut self, idx: usize) {
+        if let Some(TodoKind::Choice { question, options }) =
+            self.todos.get(idx).map(|t| t.kind.clone())
+        {
+            self.choices = Some(Choices {
+                question,
+                options,
+                sel: 0,
+            });
+            self.choices_collapsed = false;
+            self.todo_dialog = false;
+            self.todo_buttons.clear();
+        }
+    }
+
+    /// Act on a suggestion from todo: send it as the next prompt, drop the entry.
+    fn run_suggestion(&mut self, serve: &mut Serve, idx: usize) {
+        if let Some(TodoKind::Suggest { text }) = self.todos.get(idx).map(|t| t.kind.clone()) {
+            self.todos.remove(idx);
+            self.submit_text(serve, format!("请执行这条建议：{text}"), vec![]);
+        }
+    }
+
     /// merge one queued item into the RUNNING turn (clickable [并入当前])
     fn queue_supplement_one(&mut self, serve: &mut Serve, idx: usize) {
         if !self.busy {
@@ -1524,6 +1620,11 @@ impl App {
         }
         let mut in_fence = false;
         let lines: Vec<&str> = s.trim_end().split('\n').collect();
+        // ?choice block: lines after the marker up to the first non-option line become
+        // the option panel instead of transcript text
+        let mut in_choice = false;
+        let mut choice_options: Vec<String> = Vec::new();
+        let mut last_text = String::new();
         let mut i = 0;
         while i < lines.len() {
             let line = lines[i].trim_end();
@@ -1534,6 +1635,54 @@ impl App {
             }
             if in_fence {
                 self.push(format!("  {line}"), Tone::Muted);
+                i += 1;
+                continue;
+            }
+            // the ?choice marker opens the block wherever it sits in the line
+            if !in_choice && let Some(pos) = line.find("?choice") {
+                let before = line[..pos].trim_end();
+                if !before.is_empty() {
+                    last_text = before.chars().take(60).collect();
+                    self.push(before.to_string(), Tone::Text);
+                }
+                in_choice = true;
+                i += 1;
+                continue;
+            }
+            // an open ?choice block keeps eating "N. option" lines
+            if in_choice {
+                if let Some(rest) = Self::option_label(line) {
+                    choice_options.push(rest.to_string());
+                    i += 1;
+                    continue;
+                }
+                if choice_options.is_empty() {
+                    // marker seen but no options yet — keep scanning
+                    i += 1;
+                    continue;
+                }
+                // first non-option line closes the block; fall through to render it
+                in_choice = false;
+            }
+            // side suggestion: strip the marker (wherever it sits in the line), keep the
+            // text in context, park it in todo
+            if let Some(pos) = line.find("?suggest") {
+                let before = line[..pos].trim_end();
+                let rest = line[pos + "?suggest".len()..].trim();
+                if !before.is_empty() {
+                    self.push(before.to_string(), Tone::Text);
+                }
+                if !rest.is_empty() {
+                    let suggestion = rest.to_string();
+                    self.push(suggestion.clone(), Tone::Muted);
+                    if !self.todos.iter().any(
+                        |t| matches!(&t.kind, TodoKind::Suggest { text } if *text == suggestion),
+                    ) {
+                        self.todos.push(TodoItem {
+                            kind: TodoKind::Suggest { text: suggestion },
+                        });
+                    }
+                }
                 i += 1;
                 continue;
             }
@@ -1554,9 +1703,54 @@ impl App {
                 continue;
             }
             let t = line.replace("**", "").replace('`', "");
+            last_text = t.chars().take(60).collect();
             self.push(t, Tone::Text);
             i += 1;
         }
+        if !choice_options.is_empty() {
+            let question = if last_text.is_empty() {
+                "模型在等你选择".to_string()
+            } else {
+                last_text
+            };
+            self.choices = Some(Choices {
+                question: question.clone(),
+                options: choice_options.clone(),
+                sel: 0,
+            });
+            self.choices_collapsed = false;
+            // unanswered choices are findable forever: park one per ask in todo
+            let already = self.todos.iter().any(|t| matches!(&t.kind,
+                TodoKind::Choice { question: q, options: o } if *q == question && *o == choice_options));
+            if !already {
+                self.todos.push(TodoItem {
+                    kind: TodoKind::Choice {
+                        question,
+                        options: choice_options,
+                    },
+                });
+            }
+            self.ask_badge = false;
+        } else if s.trim_end().ends_with('？') || s.trim_end().ends_with('?') {
+            // plain question, no structured block — the badge is the only nudge
+            self.ask_badge = true;
+        }
+    }
+
+    /// "1. text" / "1、text" / "1) text" → Some("text")
+    fn option_label(line: &str) -> Option<&str> {
+        let t = line.trim_start();
+        let digits = t.chars().take_while(|c| c.is_ascii_digit()).count();
+        if digits == 0 {
+            return None;
+        }
+        let after = &t[digits..];
+        after
+            .strip_prefix(". ")
+            .or_else(|| after.strip_prefix("、"))
+            .or_else(|| after.strip_prefix(") "))
+            .map(str::trim)
+            .filter(|rest| !rest.is_empty())
     }
 
     /// Re-flow a markdown table into fixed-width terminal columns (CJK-aware padding).
@@ -1900,6 +2094,12 @@ impl App {
             "/context" => {
                 let id = serve.command("context", vec![]);
                 self.pending.push((id, Pending::Context));
+            }
+            "/todo" => {
+                self.todo_dialog = !self.todo_dialog;
+                if !self.todo_dialog {
+                    self.todo_buttons.clear();
+                }
             }
             "/queue" => {
                 let arg = rest.trim();
@@ -3070,6 +3270,42 @@ impl App {
                     self.queue_buttons.clear();
                     return false;
                 }
+                // the /todo dialog's clickable buttons
+                if self.todo_dialog
+                    && let MouseEventKind::Down(MouseButton::Left) = m.kind
+                {
+                    let pos = Position::new(m.column, m.row);
+                    if let Some((_, action)) = self
+                        .todo_buttons
+                        .iter()
+                        .find(|(rect, _)| rect.contains(pos))
+                        .cloned()
+                    {
+                        match action {
+                            TodoAction::Expand(i) => self.expand_choice(i),
+                            TodoAction::Run(i) => self.run_suggestion(serve, i),
+                            TodoAction::Drop(i) => {
+                                if i < self.todos.len() {
+                                    self.todos.remove(i);
+                                }
+                            }
+                        }
+                        return false;
+                    }
+                    self.todo_dialog = false;
+                    self.todo_buttons.clear();
+                    return false;
+                }
+                // a click on a choices-panel row picks that option
+                if !self.choice_rows.is_empty()
+                    && let MouseEventKind::Down(MouseButton::Left) = m.kind
+                {
+                    let pos = Position::new(m.column, m.row);
+                    if let Some(idx) = self.choice_rows.iter().position(|rect| rect.contains(pos)) {
+                        self.pick_choice(serve, idx);
+                        return false;
+                    }
+                }
                 if let Some(viewer) = self.viewer.as_mut() {
                     match m.kind {
                         MouseEventKind::ScrollUp => viewer.scroll_by(-3, viewer.max_scroll),
@@ -3297,6 +3533,10 @@ impl App {
     }
 
     fn submit_text(&mut self, serve: &mut Serve, text: String, images: Vec<String>) {
+        // a new prompt answers whatever was on screen; an unanswered choice stays
+        // parked in todo for explicit handling
+        self.choices = None;
+        self.ask_badge = false;
         // pin what we're working on: first line, capped for the status bar
         let first = text.lines().next().unwrap_or("").to_string();
         let shown: String = first.chars().take(48).collect();
@@ -3553,6 +3793,43 @@ impl App {
             self.queue_dialog = false;
             self.queue_buttons.clear();
             return;
+        }
+        if self.todo_dialog && k.code == KeyCode::Esc {
+            self.todo_dialog = false;
+            self.todo_buttons.clear();
+            return;
+        }
+        // the choices panel navigates only when the input is empty — typing wins
+        if self.choices.is_some()
+            && !self.choices_collapsed
+            && self.input.is_empty()
+            && !self.queue_dialog
+            && !self.todo_dialog
+        {
+            match k.code {
+                KeyCode::Up => {
+                    if let Some(c) = self.choices.as_mut() {
+                        c.sel = c.sel.saturating_sub(1);
+                    }
+                    return;
+                }
+                KeyCode::Down => {
+                    if let Some(c) = self.choices.as_mut() {
+                        c.sel = (c.sel + 1).min(c.options.len().saturating_sub(1));
+                    }
+                    return;
+                }
+                KeyCode::Enter => {
+                    let sel = self.choices.as_ref().map(|c| c.sel).unwrap_or(0);
+                    self.pick_choice(serve, sel);
+                    return;
+                }
+                KeyCode::Esc if !self.busy => {
+                    self.choices_collapsed = true;
+                    return;
+                }
+                _ => {}
+            }
         }
         if ctrl && k.code == KeyCode::Char('t') {
             self.open_transcript();
@@ -5306,6 +5583,140 @@ impl App {
             self.queue_buttons.push((fb2, QueueAction::ClearAll));
         }
 
+        // the /todo dialog: every unanswered choice and side suggestion, one row each
+        if self.todo_dialog {
+            let n = self.todos.len();
+            let h = (n.min(10) as u16) + 3; // rows + hint + padding
+            let w = 76u16.min(area.width);
+            let pop = Rect {
+                x: (area.width.saturating_sub(w)) / 2,
+                y: (area.height.saturating_sub(h)) / 2,
+                width: w,
+                height: h,
+            };
+            let inner = render_dialog(
+                f,
+                pop,
+                "待定 · To be considered",
+                "点击逐条处理 · esc 关闭",
+                self.theme,
+            );
+            self.todo_buttons.clear();
+            let btn_style = self.theme.style(Tone::Badge);
+            let del_style = self.theme.style(Tone::Warning);
+            let iw = inner.width as usize;
+            let mut y = inner.y;
+            for (i, item) in self.todos.iter().enumerate() {
+                if i >= 10 || y >= inner.y + inner.height {
+                    break;
+                }
+                let (badge, head, b1_label, b2_label, act1, act2) = match &item.kind {
+                    TodoKind::Choice { question, .. } => (
+                        "❓",
+                        question.clone(),
+                        "[展开]",
+                        "[忽略]",
+                        TodoAction::Expand(i),
+                        TodoAction::Drop(i),
+                    ),
+                    TodoKind::Suggest { text } => (
+                        "💡",
+                        text.clone(),
+                        "[执行]",
+                        "[丢弃]",
+                        TodoAction::Run(i),
+                        TodoAction::Drop(i),
+                    ),
+                };
+                let head: String = head.chars().take(iw.saturating_sub(22)).collect();
+                let text_area = Rect {
+                    x: inner.x,
+                    y,
+                    width: inner.width.saturating_sub(20),
+                    height: 1,
+                };
+                f.render_widget(Paragraph::new(format!("{badge} {head}")), text_area);
+                let b1 = Rect {
+                    x: inner.x + inner.width.saturating_sub(14),
+                    y,
+                    width: 7,
+                    height: 1,
+                };
+                let b2 = Rect {
+                    x: inner.x + inner.width.saturating_sub(7),
+                    y,
+                    width: 7,
+                    height: 1,
+                };
+                f.render_widget(Paragraph::new(b1_label).style(btn_style), b1);
+                f.render_widget(Paragraph::new(b2_label).style(del_style), b2);
+                self.todo_buttons.push((b1, act1));
+                self.todo_buttons.push((b2, act2));
+                y += 1;
+            }
+            if n == 0 {
+                f.render_widget(
+                    Paragraph::new("（空 · 模型的 ?choice/?suggest 会收进这里）"),
+                    inner,
+                );
+            }
+        }
+
+        // the choices panel, glued above the input box like the completion popup
+        if let Some(c) = self.choices.clone()
+            && !self.choices_collapsed
+        {
+            self.choice_rows.clear();
+            let ph = (c.options.len() as u16) + 3; // question + options + hint
+            let w = 64u16.min(area.width);
+            let pop = Rect {
+                x: (area.width.saturating_sub(w)) / 2,
+                y: input_a.y.saturating_sub(ph),
+                width: w,
+                height: ph,
+            };
+            let inner = render_dialog(
+                f,
+                pop,
+                "❓ 模型在等你选择",
+                "↑↓/点击 选择 · enter 确认 · esc 收起（/todo 找回）",
+                self.theme,
+            );
+            let q: String = c.question.chars().take(inner.width as usize).collect();
+            f.render_widget(
+                Paragraph::new(q).style(self.theme.style(Tone::Selected)),
+                Rect {
+                    x: inner.x,
+                    y: inner.y,
+                    width: inner.width,
+                    height: 1,
+                },
+            );
+            for (i, opt) in c.options.iter().enumerate() {
+                let row = Rect {
+                    x: inner.x,
+                    y: inner.y + 1 + i as u16,
+                    width: inner.width,
+                    height: 1,
+                };
+                let label: String = opt
+                    .chars()
+                    .take(inner.width.saturating_sub(4) as usize)
+                    .collect();
+                let style = if i == c.sel {
+                    self.theme.style(Tone::Badge)
+                } else {
+                    self.theme.style(Tone::Text)
+                };
+                let marker = if i == c.sel { "❯" } else { " " };
+                f.render_widget(
+                    Paragraph::new(format!("{}. {marker} {label}", i + 1)).style(style),
+                    row,
+                );
+                self.choice_rows.push(row);
+            }
+        }
+
         // completion popup, glued above the input rule
         if let Some(p) = &self.popup {
             let ph = (p.items.len().min(6) + 2) as u16;
@@ -5665,6 +6076,14 @@ impl App {
                 format!(" ▶ {p} "),
                 self.theme.style(Tone::Badge),
             ));
+        }
+        if !self.todos.is_empty() {
+            spans.push(Span::styled(
+                format!(" ❓{}待 /todo ", self.todos.len()),
+                self.theme.style(Tone::Warning),
+            ));
+        } else if self.ask_badge {
+            spans.push(Span::styled(" ❓待答复 ", self.theme.style(Tone::Warning)));
         }
         if self.focus {
             spans.push(Span::styled(" focus ", self.theme.style(Tone::Badge)));
@@ -7930,6 +8349,175 @@ mod tests {
             "dragged text was copied"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn choice_block_parses_into_panel_and_todo() {
+        let mut app = App::new();
+        app.stream = "修复方法如上。\n?choice\n1. 现在就改\n2. 先看测试再改\n3. 不改".into();
+        app.commit_stream();
+        let c = app.choices.as_ref().expect("choice panel armed");
+        assert_eq!(c.options, vec!["现在就改", "先看测试再改", "不改"]);
+        assert!(!app.choices_collapsed, "panel visible on arrival");
+        assert_eq!(app.todos.len(), 1, "unanswered choice also lands in todo");
+        // the marker block never shows as raw chat text
+        assert!(app.lines.iter().any(|l| l.text.contains("修复方法如上")));
+        assert!(
+            !app.lines.iter().any(|l| l.text.contains("?choice")),
+            "marker stripped from chat"
+        );
+        assert!(
+            !app.lines.iter().any(|l| l.text.contains("1. 现在就改")),
+            "options live in the panel, not the transcript"
+        );
+    }
+
+    #[test]
+    fn suggest_line_lands_in_todo_and_renders_clean() {
+        let mut app = App::new();
+        app.stream = "主体已完成。?suggest 之后顺手补个回归测试\n继续下一步。".into();
+        app.commit_stream();
+        assert!(app.choices.is_none(), "a suggestion is not a blocking ask");
+        assert_eq!(app.todos.len(), 1);
+        assert!(matches!(
+            &app.todos[0].kind,
+            TodoKind::Suggest { text } if text == "之后顺手补个回归测试"
+        ));
+        assert!(
+            !app.lines.iter().any(|l| l.text.contains("?suggest")),
+            "marker stripped from chat"
+        );
+        assert!(
+            app.lines
+                .iter()
+                .any(|l| l.text.contains("之后顺手补个回归测试")),
+            "suggestion text still visible in context"
+        );
+    }
+
+    #[test]
+    fn picking_choice_sends_prompt_and_clears_todo() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.stream = "要改吗？\n?choice\n1. 现在就改\n2. 不改".into();
+        app.commit_stream();
+        app.pick_choice(&mut serve, 0);
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        assert_eq!(sent["cmd"], "prompt");
+        assert_eq!(sent["text"], "现在就改");
+        assert!(app.choices.is_none(), "panel retires once answered");
+        assert!(app.todos.is_empty(), "answered choice leaves the todo list");
+    }
+
+    #[test]
+    fn unrelated_submit_hides_panel_keeps_todo() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.stream = "?choice\n1. 现在就改\n2. 不改".into();
+        app.commit_stream();
+        app.submit_text(&mut serve, "先做另一件事".into(), vec![]);
+        assert!(app.choices.is_none(), "panel steps aside for a new prompt");
+        assert_eq!(
+            app.todos.len(),
+            1,
+            "unanswered choice stays in todo until explicitly handled"
+        );
+    }
+
+    #[test]
+    fn trailing_question_sets_ask_badge() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.stream = "所以要把这个修掉吗？".into();
+        app.commit_stream();
+        assert!(app.ask_badge, "plain question turns on the ❓ badge");
+        assert!(app.choices.is_none());
+        assert!(app.todos.is_empty(), "heuristic badge adds no todo noise");
+        app.submit_text(&mut serve, "修吧".into(), vec![]);
+        assert!(!app.ask_badge, "badge retires on the next prompt");
+    }
+
+    #[test]
+    fn status_shows_pending_badge() {
+        let mut app = App::new();
+        app.todos.push(TodoItem {
+            kind: TodoKind::Suggest { text: "x".into() },
+        });
+        assert!(app.status_segments_text().contains("❓"));
+    }
+
+    #[test]
+    fn todo_dialog_buttons_run_drop_expand() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.stream = "改好了。?choice\n1. 提交\n2. 再看看\n另外 ?suggest 顺手补个回归测试".into();
+        app.commit_stream();
+        assert_eq!(app.todos.len(), 2);
+        app.run_slash("/todo", &mut serve);
+        assert!(app.todo_dialog);
+        {
+            let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();
+            terminal.draw(|f| app.draw(f)).unwrap();
+        }
+        // the suggestion's [执行] — find it by action kind, not row order
+        let (run1, _): (Rect, TodoAction) = app
+            .todo_buttons
+            .iter()
+            .find(|(_, act)| matches!(act, TodoAction::Run(_)))
+            .cloned()
+            .unwrap();
+        app.handle(
+            Event::Mouse(crossterm::event::MouseEvent {
+                kind: crossterm::event::MouseEventKind::Down(MouseButton::Left),
+                column: run1.x + 2,
+                row: run1.y,
+                modifiers: KeyModifiers::NONE,
+            }),
+            &mut serve,
+        );
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        assert_eq!(sent["cmd"], "prompt");
+        assert_eq!(sent["text"], "请执行这条建议：顺手补个回归测试");
+        assert_eq!(app.todos.len(), 1, "acted-on suggestion retires");
+
+        // drop the remaining choice (its Drop button carries the choice's index);
+        // the dialog stays open after a button click, so just redraw
+        let choice_idx = app
+            .todos
+            .iter()
+            .position(|t| matches!(&t.kind, TodoKind::Choice { .. }))
+            .unwrap();
+        {
+            let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();
+            terminal.draw(|f| app.draw(f)).unwrap();
+        }
+        let (drop0, _): (Rect, TodoAction) = app
+            .todo_buttons
+            .iter()
+            .find(|(_, act)| *act == TodoAction::Drop(choice_idx))
+            .cloned()
+            .unwrap();
+        app.handle(
+            Event::Mouse(crossterm::event::MouseEvent {
+                kind: crossterm::event::MouseEventKind::Down(MouseButton::Left),
+                column: drop0.x + 2,
+                row: drop0.y,
+                modifiers: KeyModifiers::NONE,
+            }),
+            &mut serve,
+        );
+        assert!(app.todos.is_empty(), "dismissed choice retires");
+        assert!(app.todo_dialog, "dialog stays open after a button click");
+
+        // expand re-opens a parked choice's panel
+        app.stream = "?choice\n1. 提交\n2. 再看看".into();
+        app.commit_stream();
+        app.submit_text(&mut serve, "别的事".into(), vec![]);
+        assert!(app.choices.is_none());
+        app.expand_choice(0);
+        let c = app.choices.as_ref().expect("panel re-opened from todo");
+        assert_eq!(c.options, vec!["提交", "再看看"]);
     }
 
     #[test]

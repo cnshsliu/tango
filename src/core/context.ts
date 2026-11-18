@@ -84,9 +84,32 @@ export interface ContextInfo {
   skills: SkillInfo[];
 }
 
+/** How the user's terminal renders decision asks — the TUI parses these markers. */
+const ASK_PROTOCOL = `# Asking the user
+
+The user may not be watching the screen when your turn ends. Never end a turn on a bare
+question. Two markers, both understood by the terminal:
+
+When you need the user's decision before proceeding, end your reply with a choice block:
+
+?choice
+1. <concise option — put your recommendation first>
+2. <option>
+3. <option>
+
+Use 2-4 options. The terminal renders them as a clickable panel; the picked option comes
+back to you as the user's next message, so treat it as their answer and continue.
+
+For minor suggestions raised while other work continues (nothing blocking), emit one line:
+
+?suggest <one-line suggestion>
+
+These collect into the user's review list and may be acted on much later. Never use ?choice
+for rhetorical questions, and never propose a ?choice whose options all mean "keep waiting".`;
+
 /** Assemble the system prompt: base + AGENTS.md + skills index + environment. */
 export async function buildContext(cwd: string): Promise<ContextInfo> {
-  const parts = [BASE_PROMPT];
+  const parts = [BASE_PROMPT, ASK_PROTOCOL];
 
   const agents = await loadAgentsFiles(cwd);
   if (agents.length) parts.push('# Project instructions\n\n' + agents.join('\n\n---\n\n'));

@@ -1498,6 +1498,19 @@ test('remember appends to global AGENTS.md and memory returns it', async () => {
   }
 });
 
+test('system prompt teaches the ?choice/?suggest ask protocol', async () => {
+  const { buildContext } = await import('../src/core/context.js');
+  const dir = await mkdtemp(join(tmpdir(), 'tango-ask-'));
+  try {
+    const { systemPrompt } = await buildContext(dir);
+    assert.ok(systemPrompt.includes('?choice'), 'choice-block marker documented');
+    assert.ok(systemPrompt.includes('?suggest'), 'suggest marker documented');
+    assert.ok(systemPrompt.includes('recommendation'), 'options guidance present');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('skills command lists global and project skills with sources', async () => {
   const mock = await startMock();
   const home = await mkdtemp(join(tmpdir(), 'tango-serve-home-'));
