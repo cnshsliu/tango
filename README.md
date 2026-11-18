@@ -300,6 +300,21 @@ picker; Enter or Ctrl+S sends it explicitly. If Neovim is unavailable, the draft
 Bracketed paste never submits by itself: multi-line and long pasted text is
 shown as `[Pasted text #N +M lines]` followed by a fresh input line, while the full original text is
 kept for submission. Further typing stays visible, and the input scrolls to keep the cursor in view.
+
+Pasting an **image** works like the CLI agents: terminals drop a clipboard image to a temp file and
+paste its path (e.g. `/var/folders/…/orca-paste-….png`); tango recognizes a single-line paste naming an
+existing `.png/.jpg/.jpeg/.gif/.webp` file and turns it into a compact `[图片 #N]` chip instead of the
+long path. The chip is atomic (Backspace/Delete removes it whole), survives Alt+S draft stashing, and
+is **mouse-clickable** — clicking it (in the input box or in the chat transcript) opens the image in
+the system viewer (macOS `open` / Linux `xdg-open`). On submit the image rides the next prompt as a
+base64 upload (`images` field → `ImageBlock` → vendor `image_url`/`image` content), with the chip text
+`[图片 #N]` left in the message so the model knows where it sits; queued and Alt+Enter-supplemented
+prompts carry their images too. Resumed history replays images as clickable `[图片 <path>]` chips.
+Models flagged `vision: true` (Claude / Gemini / GPT consumer flagships / Grok-4.7 presets) accept
+images silently; an unflagged model still receives the image but prints a heads-up notice — override
+per-model with `"vision": true` in `~/.tango/models.json`. The `read` tool likewise returns image files
+as images. Limits: 10MB per file; external-editor (`/editor`) round-trips flatten chips back to path
+text.
 Keys follow
 one rule: nothing but `/exit` (or `/quit`) can leave the session. Ctrl+C interrupts a running turn
 and clears the input when idle — press it as often as you like; Esc closes popups, else does the
