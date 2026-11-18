@@ -1,0 +1,71 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { presets, platformOf, isFreeModel, displayPlatform, groupModels } from '../src/core/models/registry.js';
+import type { ModelSpec } from '../src/core/types.js';
+
+const spec = (over: Partial<ModelSpec>): ModelSpec => ({
+  id: 't/m', provider: 't', model: 'm', api: 'openai-completions', baseUrl: 'http://x', ...over
+});
+
+test('platformOf: explicit platform wins, provider is the fallback', () => {
+  assert.equal(platformOf(spec({ platform: 'opencode', provider: 'opencode' })), 'opencode');
+  assert.equal(platformOf(spec({ provider: 'tknet' })), 'tknet');
+});
+
+test('isFreeModel: only zero input AND output cost; unknown cost is not free', () => {
+  assert.ok(isFreeModel(spec({ cost: { input: 0, output: 0 } })));
+  assert.ok(!isFreeModel(spec({})));
+  assert.ok(!isFreeModel(spec({ cost: { input: 0, output: 1 } })));
+  assert.ok(!isFreeModel(spec({ cost: { input: 1, output: 0 } })));
+});
+
+test('groupModels: virtual free platform first, sources keep first-appearance order', () => {
+  const models = [
+    spec({ id: 'tknet/a', provider: 'tknet', cost: { input: 1, output: 1 } }),
+    spec({ id: 'oc/free', provider: 'opencode', cost: { input: 0, output: 0 } }),
+    spec({ id: 'tknet/b', provider: 'tknet', cost: { input: 1, output: 1 } }),
+    spec({ id: 'other/free', provider: 'other', cost: { input: 0, output: 0 } }),
+    spec({ id: 'oc/paid', provider: 'opencode', cost: { input: 1, output: 1 } })
+  ];
+  const groups = groupModels(models);
+  assert.deepEqual(groups.map(([p]) => p), ['free', 'tknet', 'opencode']);
+  assert.deepEqual(groups[0][1].map((m) => m.id), ['oc/free', 'other/free']);
+  assert.equal(displayPlatform(models[1]), 'free');
+  assert.equal(displayPlatform(models[0]), 'tknet');
+});
+
+test('opencode presets: 35 paid models, key via OPENCODE_API_KEY env, no opencode install needed', () => {
+  const oc = presets.filter((m) => m.platform === 'opencode');
+  assert.equal(oc.length, 35);
+  for (const m of oc) {
+    assert.equal(m.provider, 'opencode');
+    assert.equal(m.apiKey, 'OPENCODE_API_KEY');
+    assert.ok(m.id.startsWith('opencode/'));
+    assert.ok((m.contextWindow ?? 0) > 0, m.id);
+    assert.ok(m.cost, m.id);
+    if (m.model.startsWith('claude')) {
+      assert.equal(m.api, 'anthropic-messages', m.id);
+      assert.equal(m.baseUrl, 'https://opencode.ai/inference/anthropic/v1', m.id);
+    } else {
+      assert.equal(m.api, 'openai-completions', m.id);
+      assert.equal(m.baseUrl, 'https://opencode.ai/inference/openai/v1', m.id);
+    }
+    // harness-locked free models must NOT be preset (429 from non-OpenCode clients)
+    assert.ok(!isFreeModel(m), `${m.id} is free — opencode free models are harness-locked`);
+  }
+  // long-prompt tiers survive the catalog → preset mapping, ascending
+  const sol = oc.find((m) => m.id === 'opencode/gpt-6.2-sol')!;
+  assert.deepEqual(sol.cost!.tiers, [{ above: 272000, input: 4, cacheRead: 0.2, cacheWrite: 5, output: 15 }]);
+  const haiku = oc.find((m) => m.id === 'opencode/claude-haiku-5-5')!;
+  assert.equal(haiku.cost!.tiers![0].above, 100000);
+});
+
+test('presets: ids stay unique after the opencode batch; existing defaults unchanged', () => {
+  assert.equal(new Set(presets.map((m) => m.id)).size, presets.length);
+  assert.equal(presets[0].id, 'tknet/qwen3.8-flash-next', 'tknet stays the first default');
+  // every preset groups under a platform (provider fallback)
+  for (const [p, list] of groupModels(presets)) {
+    assert.ok(p.length > 0);
+    for (const m of list) assert.equal(displayPlatform(m), p);
+  }
+});

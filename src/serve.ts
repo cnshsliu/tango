@@ -23,7 +23,7 @@ import { hasKey, keyProblem, loadConfig, loadModels, pickModel, saveConfig, sess
 import { listDrafts, promoteDraft, saveDraft } from './core/skills.js';
 import { join, resolve } from 'node:path';
 import { SessionStore } from './core/session.js';
-import { costUsd } from './core/models/registry.js';
+import { costUsd, displayPlatform, groupModels } from './core/models/registry.js';
 import type { AskFn, PermissionMode } from './core/permissions.js';
 import type { ToolResult } from './core/types.js';
 import { buildTools, loadPluginHooks, openAgent, VERSION, type HostArgs, type PermState } from './host.js';
@@ -1222,10 +1222,16 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
         return;
       }
       case 'models': {
-        const models = await loadModels();
+        const models = groupModels(await loadModels()).flatMap(([, list]) => list);
         reply(cmd, true, {
           current: agent.model.id,
-          models: models.map((m) => ({ id: m.id, keyed: hasKey(m), contextWindow: m.contextWindow ?? 0 }))
+          models: models.map((m) => ({
+            id: m.id,
+            keyed: hasKey(m),
+            contextWindow: m.contextWindow ?? 0,
+            platform: displayPlatform(m),
+            region: m.region ?? null
+          }))
         });
         return;
       }

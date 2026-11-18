@@ -420,3 +420,22 @@ test('effort: reasoning_effort rides openai requests; off omits it', async () =>
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test('bash abort and timeout kill the whole process group, not just the shell wrapper', async () => {
+  const { bashTool } = await import('../src/core/tools/bash.js');
+  // abort mid-run: a curl/sleep grandchild must die with the shell
+  const ac = new AbortController();
+  const t0 = Date.now();
+  const p = bashTool.execute({ command: 'sleep 30 && echo done' }, { cwd: '/tmp', signal: ac.signal });
+  setTimeout(() => ac.abort(), 800);
+  const r = await p;
+  const ms = Date.now() - t0;
+  assert.ok(ms < 5000, `abort must kill the group quickly, took ${ms}ms`);
+  assert.ok(r.isError);
+  // timeout: same story, the child group dies at the deadline
+  const t1 = Date.now();
+  const r2 = await bashTool.execute({ command: 'sleep 30 && echo done', timeout: 1 }, { cwd: '/tmp', signal: new AbortController().signal });
+  const ms2 = Date.now() - t1;
+  assert.ok(ms2 < 6000, `timeout must kill the group at the deadline, took ${ms2}ms`);
+  assert.ok(String(r2.content[0].text).includes('killed after 1s'));
+});

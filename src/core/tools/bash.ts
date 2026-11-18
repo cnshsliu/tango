@@ -17,11 +17,23 @@ export const bashTool: Tool<{ command: string; timeout?: number }> = {
   },
   execute({ command, timeout = 120 }, ctx) {
     return new Promise((resolvePromise) => {
+      // detached → own process group: kills reach curl/sleep grandkids too.
+      // Killing only the bash wrapper orphans them and they keep the output pipe
+      // open, so the tool only "finishes" when the grandchild exits naturally —
+      // the interrupt/timeout appeared to do nothing for whole downloads.
       const child = spawn('/bin/bash', ['-lc', command], {
         cwd: ctx.cwd,
         env: process.env,
-        stdio: ['ignore', 'pipe', 'pipe']
+        stdio: ['ignore', 'pipe', 'pipe'],
+        detached: true
       });
+      const killGroup = () => {
+        try {
+          process.kill(-child.pid!, 'SIGKILL');
+        } catch {
+          try { child.kill('SIGKILL'); } catch {}
+        }
+      };
       let out = '';
       const push = (b: Buffer) => {
         out += b.toString();
@@ -30,10 +42,10 @@ export const bashTool: Tool<{ command: string; timeout?: number }> = {
       child.stderr.on('data', push);
 
       const timer = setTimeout(() => {
-        child.kill('SIGKILL');
+        killGroup();
         out += `\n[killed after ${timeout}s]`;
       }, timeout * 1000);
-      const onAbort = () => child.kill('SIGKILL');
+      const onAbort = killGroup;
       ctx.signal.addEventListener('abort', onAbort, { once: true });
 
       child.on('close', (code) => {

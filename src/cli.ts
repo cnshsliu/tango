@@ -17,6 +17,7 @@ import {
 } from './core/config.js';
 import { listDrafts, promoteDraft, saveDraft } from './core/skills.js';
 import { keyEnvName } from './core/models/util.js';
+import { groupModels } from './core/models/registry.js';
 import { SessionStore, type SessionSummary } from './core/session.js';
 import type { AskFn, PermissionMode } from './core/permissions.js';
 import { addTask, daemonLoop, feishuWebhook, lastRunAt, loadTasks, parseInterval, removeTask, runDueOnce, sendFeishu, summarizeOutput } from './core/scheduler.js';
@@ -190,19 +191,18 @@ function replAgent(model: ModelSpec, store: SessionStore, cwd: string, cfg: { ch
 }
 
 function printModels(models: ModelSpec[], current?: string): void {
-  const groups: [string, ModelSpec[]][] = [
-    ['tknet (own gateway)', models.filter((m) => m.region === 'gateway')],
-    ['China (mainland endpoints)', models.filter((m) => m.region === 'cn')],
-    ['International (outside mainland China)', models.filter((m) => m.region === 'intl')],
-    ['Other (from models.json, no region)', models.filter((m) => !m.region)]
-  ];
-  for (const [title, list] of groups) {
-    if (!list.length) continue;
-    console.log(cyan(title));
+  const labels: Record<string, string> = {
+    free: 'free (zero-cost models, any source)',
+    tknet: 'tknet (own gateway)',
+    opencode: 'opencode (opencode.ai Console tokenhub)'
+  };
+  for (const [platform, list] of groupModels(models)) {
+    console.log(cyan(labels[platform] ?? platform));
     for (const m of list) {
       const mark = hasKey(m) ? '✓' : '·';
       const source = keyEnvName(m) ?? (m.apiKey ? 'literal key' : 'no key');
-      const note = hasKey(m) ? `  ${source}` : `  (${keyProblem(m)})`;
+      const tag = m.region ? `${m.region} · ` : '';
+      const note = hasKey(m) ? `  ${tag}${source}` : `  ${tag}(${keyProblem(m)})`;
       console.log(`  ${mark} ${m.id}${m.id === current ? cyan('  (current)') : ''}${dim(note)}`);
     }
   }

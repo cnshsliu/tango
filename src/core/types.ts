@@ -81,6 +81,12 @@ export interface ModelSpec {
   cost?: Prices & { tiers?: (Prices & { above: number })[] };
   /** where the endpoint is served: mainland China, outside it, or the user's own gateway */
   region?: 'cn' | 'intl' | 'gateway';
+  /**
+   * Source platform (tokenhub) the model is reached through, e.g. "opencode", "tknet".
+   * Defaults to `provider` when unset. Display grouping uses this; zero-cost models are
+   * additionally collected into the virtual "free" platform (see groupModels).
+   */
+  platform?: string;
 }
 
 export interface ToolSchema {

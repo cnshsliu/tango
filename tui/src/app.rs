@@ -145,6 +145,9 @@ struct PickItem {
     note: String,
     warn: bool,
     current: bool,
+    /// optional section header (model picker: source platform, "free" first);
+    /// empty = no grouping. Headers are rendered, never selectable.
+    group: String,
 }
 
 struct Picker {
@@ -462,7 +465,8 @@ pub struct App {
     viewer: Option<Viewer>,
     chat_area: Rect,
     picker_area: Rect,
-    picker_start: usize,
+    /// visible picker window rows → item index (None = group header row)
+    picker_rows: Vec<Option<usize>>,
     popup_area: Rect,
     jump_area: Rect,
     /// 0 = pinned to the newest line (follow mode); increases when scrolling back
@@ -541,7 +545,7 @@ impl App {
             viewer: None,
             chat_area: Rect::default(),
             picker_area: Rect::default(),
-            picker_start: 0,
+            picker_rows: Vec::new(),
             popup_area: Rect::default(),
             jump_area: Rect::default(),
             scroll_back: 0,
@@ -847,6 +851,7 @@ impl App {
             ("ask", Some(_)) => {
                 self.pending_viewer = Some(viewer);
                 let item = |id: &str, label: &str, note: &str| PickItem {
+                    group: String::new(),
                     id: id.into(),
                     label: label.into(),
                     note: note.into(),
@@ -967,6 +972,7 @@ impl App {
         self.push(notice, Tone::Warning);
         self.edited = Some((viewer, edited));
         let item = |id: &str, label: &str, note: &str| PickItem {
+            group: String::new(),
             id: id.into(),
             label: label.into(),
             note: note.into(),
@@ -1034,6 +1040,23 @@ impl App {
             text.trim_end(),
             prompt_rows,
         ));
+    }
+
+    /// open_line_viewer that reports success, so a plain-text click can fall through
+    /// to path-click / selection instead of silently doing nothing
+    fn open_line_viewer_quiet(&mut self, index: usize) -> bool {
+        let found = self.lines.get(index).and_then(|line| {
+            line.output
+                .as_ref()
+                .map(|output| (Self::viewer_title(line), output.clone(), line.prompt_state))
+        });
+        match found {
+            Some((title, text, state)) => {
+                self.request_viewer(Viewer::with_source(title, text, index, state));
+                true
+            }
+            None => false,
+        }
     }
 
     fn open_line_viewer(&mut self, index: usize) {
@@ -1318,6 +1341,7 @@ impl App {
         let items = SLASH
             .iter()
             .map(|(command, description)| PickItem {
+                group: String::new(),
                 id: command.split(' ').next().unwrap_or(command).into(),
                 label: (*command).into(),
                 note: (*description).into(),
@@ -1339,6 +1363,7 @@ impl App {
             .enumerate()
             .rev()
             .map(|(index, text)| PickItem {
+                group: String::new(),
                 id: index.to_string(),
                 label: text.lines().next().unwrap_or("").chars().take(80).collect(),
                 note: text.clone(),
@@ -1903,6 +1928,7 @@ impl App {
                     let items = ["dark", "light", "auto"]
                         .into_iter()
                         .map(|theme| PickItem {
+                            group: String::new(),
                             id: theme.into(),
                             label: theme.into(),
                             note: match theme {
@@ -2424,10 +2450,17 @@ impl App {
                             let row = m.row.saturating_sub(self.picker_area.y + 1) as usize;
                             let p = self.picker.as_ref().unwrap();
                             let query_rows = usize::from(p.filterable());
-                            let index = self.picker_start + row.saturating_sub(query_rows);
-                            if row >= query_rows && index < p.filtered_items().len() {
-                                self.picker.as_mut().unwrap().sel = index;
-                                self.accept_picker(serve);
+                            // map the clicked display row back to an item; header rows do nothing
+                            let index = row
+                                .checked_sub(query_rows)
+                                .and_then(|r| self.picker_rows.get(r))
+                                .copied()
+                                .flatten();
+                            if let Some(index) = index {
+                                if index < p.filtered_items().len() {
+                                    self.picker.as_mut().unwrap().sel = index;
+                                    self.accept_picker(serve);
+                                }
                             }
                         }
                         _ => {}
@@ -2455,31 +2488,33 @@ impl App {
                     }
                 } else {
                     match m.kind {
+                        MouseEventKind::ScrollUp => self.scroll_back += 3,
+                        MouseEventKind::ScrollDown => self.scroll_chat_down(3),
+                        // one ordered click handler: jump badge → line-with-output →
+                        // clickable file path → text selection start (drag+release copies)
                         MouseEventKind::Down(MouseButton::Left) => {
-                            self.chat_press(m.row, m.column, self.chat_area.y)
+                            let pos = Position::new(m.column, m.row);
+                            if self.jump_area.contains(pos) {
+                                self.jump_to_bottom();
+                            } else if self.chat_area.contains(pos) {
+                                // path click is the most specific intent; fall back to
+                                // the line-output viewer, then to selection start
+                                self.chat_press(m.row, m.column, self.chat_area.y);
+                                if self.viewer.is_none() {
+                                    let row = m.row.saturating_sub(self.chat_area.y) as usize;
+                                    if let Some(index) = self.line_at_visual_row(
+                                        self.chat_area.width as usize,
+                                        self.chat_area.height as usize,
+                                        row,
+                                    ) {
+                                        self.open_line_viewer_quiet(index);
+                                    }
+                                }
+                            }
                         }
                         MouseEventKind::Drag(MouseButton::Left) => self.chat_drag(m.row),
                         MouseEventKind::Up(MouseButton::Left) => {
                             self.chat_release(self.chat_area.y)
-                        }
-                        MouseEventKind::ScrollUp => self.scroll_back += 3,
-                        MouseEventKind::ScrollDown => self.scroll_chat_down(3),
-                        MouseEventKind::Down(MouseButton::Left)
-                            if self.jump_area.contains(Position::new(m.column, m.row)) =>
-                        {
-                            self.jump_to_bottom();
-                        }
-                        MouseEventKind::Down(MouseButton::Left)
-                            if self.chat_area.contains(Position::new(m.column, m.row)) =>
-                        {
-                            let row = m.row.saturating_sub(self.chat_area.y);
-                            if let Some(index) = self.line_at_visual_row(
-                                self.chat_area.width as usize,
-                                self.chat_area.height as usize,
-                                row as usize,
-                            ) {
-                                self.open_line_viewer(index);
-                            }
                         }
                         _ => {}
                     }
@@ -3256,6 +3291,7 @@ impl App {
                                                 },
                                                 current: id == cur,
                                                 label: id.clone(),
+                                                group: m["platform"].as_str().unwrap_or("").to_string(),
                                                 id,
                                             })
                                         })
@@ -3272,6 +3308,7 @@ impl App {
                                         .filter_map(|s| {
                                             let id = s["id"].as_str()?.to_string();
                                             Some(PickItem {
+                                                group: String::new(),
                                                 note: {
                                                     let name = s["name"].as_str().unwrap_or("");
                                                     if name.is_empty() {
@@ -3425,6 +3462,7 @@ impl App {
                                                 n["ts"].as_str().unwrap_or("").replace('T', " ");
                                             let ts: String = ts.chars().take(16).collect();
                                             Some(PickItem {
+                                                group: String::new(),
                                                 label: format!("#{i} · {ts} · {first}"),
                                                 note: if snap {
                                                     "✓ 代码快照".into()
@@ -3552,6 +3590,7 @@ impl App {
                                             let which =
                                                 if is_current { "本会话" } else { "他会话" };
                                             Some(PickItem {
+                                                group: String::new(),
                                                 label: format!("[{which}] {tag}{first}"),
                                                 note: snippet,
                                                 warn: false,
@@ -3765,6 +3804,7 @@ impl App {
                                     a.iter()
                                         .filter_map(|p| {
                                             Some(PickItem {
+                                                group: String::new(),
                                                 label: p["name"].as_str()?.to_string(),
                                                 note: p["preview"]
                                                     .as_str()
@@ -3804,6 +3844,7 @@ impl App {
                                     a.iter()
                                         .filter_map(|r| {
                                             Some(PickItem {
+                                                group: String::new(),
                                                 label: r["rule"].as_str()?.to_string(),
                                                 note: r["note"].as_str().unwrap_or("").to_string(),
                                                 warn: false,
@@ -3924,6 +3965,7 @@ impl App {
                                     a.iter()
                                         .filter_map(|sk| {
                                             Some(PickItem {
+                                                group: String::new(),
                                                 label: format!(
                                                     "{} [{}]",
                                                     sk["name"].as_str()?,
@@ -3985,6 +4027,7 @@ impl App {
                                     .iter()
                                     .filter_map(|w| {
                                         Some(PickItem {
+                                            group: String::new(),
                                             label: format!(
                                                 "{} · {} · 脏文件 {}",
                                                 w["name"].as_str()?,
@@ -4513,9 +4556,24 @@ impl App {
         // model/session/command picker overlay
         if let Some(p) = &self.picker {
             let filtered = p.filtered_items();
-            let pagination = usize::from(filtered.len() > 14);
+            // display rows: a group header precedes the first item of each group
+            // (model picker groups by source platform; headers are never selectable)
+            enum PickRow<'a> {
+                Header(&'a str),
+                Item(usize),
+            }
+            let mut display: Vec<PickRow> = Vec::with_capacity(filtered.len());
+            let mut last_group: Option<&str> = None;
+            for (i, it) in filtered.iter().enumerate() {
+                if !it.group.is_empty() && last_group != Some(it.group.as_str()) {
+                    display.push(PickRow::Header(it.group.as_str()));
+                    last_group = Some(it.group.as_str());
+                }
+                display.push(PickRow::Item(i));
+            }
+            let pagination = usize::from(display.len() > 14);
             let query_rows = usize::from(p.filterable());
-            let h = (filtered.len().min(14) + pagination + query_rows + 2) as u16;
+            let h = (display.len().min(14) + pagination + query_rows + 2) as u16;
             let w = (area.width.min(72)).max(44).min(area.width);
             let pop = Rect {
                 x: (area.width.saturating_sub(w)) / 2,
@@ -4549,38 +4607,53 @@ impl App {
             };
             let inner = render_dialog(f, pop, title, hint, self.theme);
             let label_w = (inner.width as usize).saturating_sub(28);
-            let start = if p.sel < 13 { 0 } else { p.sel - 12 };
+            let sel_row = display
+                .iter()
+                .position(|r| matches!(r, PickRow::Item(i) if *i == p.sel))
+                .unwrap_or(0);
+            let start = if sel_row < 13 { 0 } else { sel_row - 12 };
             self.picker_area = pop;
-            self.picker_start = start;
-            let win = &filtered[start..(start + 14).min(filtered.len())];
+            let win = &display[start..(start + 14).min(display.len())];
+            self.picker_rows = win
+                .iter()
+                .map(|r| match r {
+                    PickRow::Item(i) => Some(*i),
+                    PickRow::Header(_) => None,
+                })
+                .collect();
             let mut rows: Vec<Line> = win
                 .iter()
-                .enumerate()
-                .map(|(i, it)| {
-                    let i = i + start;
-                    let marks = format!(
-                        "{}{} {}",
-                        if it.warn { "⚠" } else { " " },
-                        if it.current { "✓" } else { " " },
-                        if i == p.sel { "▸" } else { " " }
-                    );
-                    let style = if it.warn {
-                        self.theme.style(Tone::Muted)
-                    } else if i == p.sel {
-                        self.theme.style(Tone::Selected)
-                    } else {
-                        self.theme.style(Tone::Text)
-                    };
-                    let pad = label_w.saturating_sub(display_width(&it.label));
-                    let note: String = it
-                        .note
-                        .chars()
-                        .take((inner.width as usize).saturating_sub(label_w + 9))
-                        .collect();
-                    Line::from(Span::styled(
-                        format!(" {marks} {}{} {}", it.label, " ".repeat(pad), note),
-                        style,
-                    ))
+                .map(|slot| match slot {
+                    PickRow::Header(g) => Line::from(Span::styled(
+                        format!(" ── {} ──", g),
+                        self.theme.style(Tone::Muted),
+                    )),
+                    PickRow::Item(i) => {
+                        let it = filtered[*i];
+                        let marks = format!(
+                            "{}{} {}",
+                            if it.warn { "⚠" } else { " " },
+                            if it.current { "✓" } else { " " },
+                            if *i == p.sel { "▸" } else { " " }
+                        );
+                        let style = if it.warn {
+                            self.theme.style(Tone::Muted)
+                        } else if *i == p.sel {
+                            self.theme.style(Tone::Selected)
+                        } else {
+                            self.theme.style(Tone::Text)
+                        };
+                        let pad = label_w.saturating_sub(display_width(&it.label));
+                        let note: String = it
+                            .note
+                            .chars()
+                            .take((inner.width as usize).saturating_sub(label_w + 9))
+                            .collect();
+                        Line::from(Span::styled(
+                            format!(" {marks} {}{} {}", it.label, " ".repeat(pad), note),
+                            style,
+                        ))
+                    }
                 })
                 .collect();
             if p.filterable() {
@@ -4592,14 +4665,18 @@ impl App {
                     )),
                 );
             }
-            if filtered.len() > 14 {
+            if display.len() > 14 {
+                let nums: Vec<usize> = win
+                    .iter()
+                    .filter_map(|r| match r {
+                        PickRow::Item(i) => Some(*i),
+                        PickRow::Header(_) => None,
+                    })
+                    .collect();
+                let first = nums.first().copied().unwrap_or(0);
+                let last = nums.last().copied().unwrap_or(first);
                 rows.push(Line::from(Span::styled(
-                    format!(
-                        "   {}–{} / {}",
-                        start + 1,
-                        start + win.len(),
-                        filtered.len()
-                    ),
+                    format!("   {}–{} / {}", first + 1, last + 1, filtered.len()),
                     self.theme.style(Tone::Muted),
                 )));
             }
@@ -6711,5 +6788,87 @@ mod tests {
         app.chat_release(0);
         assert!(app.sel_anchor.is_none(), "selection cleared after release");
         assert!(app.lines.iter().any(|l| l.text.contains("已复制 2 行")));
+    }
+
+    #[test]
+    fn chat_press_opens_viewer_for_real_file_click() {
+        let mut app = App::new();
+        let dir = std::env::temp_dir().join("tango-press");
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("target.md");
+        std::fs::write(&f, "CONTENT").unwrap();
+        // mirror the real geometry: banner row 0, prompt row 1, width 200
+        app.chat_inner_w = 200;
+        app.chat_scroll_offset = 0;
+        app.chat_shown_texts = vec![
+            "tango serve banner".into(),
+            format!("❯ 看下 {}", f.display()),
+            "看到了文件内容".into(),
+        ];
+        app.chat_press(1, 30, 0); // press on the prompt row
+        let v = app.viewer.as_ref().expect("viewer opened");
+        assert!(v.read_only);
+        assert!(v.title.contains("target.md"));
+        assert_eq!(v.text, "CONTENT");
+        assert!(
+            app.sel_anchor.is_none(),
+            "no selection started for a path click"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn model_picker_groups_by_platform_with_free_first() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let mut app = App::new();
+        let item = |id: &str, group: &str, current: bool| PickItem {
+            id: id.into(),
+            label: id.into(),
+            note: String::new(),
+            warn: false,
+            current,
+            group: group.into(),
+        };
+        // serve sends models pre-ordered: virtual "free" platform first, then sources
+        app.picker = Some(Picker::new(
+            PickerKind::Model,
+            vec![
+                item("x/free-a", "free", false),
+                item("tknet/m1", "tknet", true),
+                item("opencode/m2", "opencode", false),
+            ],
+        ));
+        let mut terminal = Terminal::new(TestBackend::new(72, 20)).unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let text: String = (0..20)
+            .map(|y| (0..72).map(|x| buffer[(x, y)].symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("── free ──"), "free header rendered");
+        assert!(text.contains("── tknet ──"), "tknet header rendered");
+        assert!(text.contains("── opencode ──"), "opencode header rendered");
+        let p = app.picker.as_ref().unwrap();
+        assert_eq!(p.sel, 1, "selection lands on the current model, not a header");
+        assert_eq!(p.filtered_items().len(), 3, "headers are not selectable items");
+        assert_eq!(
+            app.picker_rows,
+            vec![None, Some(0), None, Some(1), None, Some(2)],
+            "mouse row map: header rows are None"
+        );
+        // filtering keeps only the matching group's header
+        app.picker.as_mut().unwrap().query = "opencode".into();
+        app.picker.as_mut().unwrap().sel = 0;
+        let mut terminal = Terminal::new(TestBackend::new(72, 20)).unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let text: String = (0..20)
+            .map(|y| (0..72).map(|x| buffer[(x, y)].symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("── opencode ──"));
+        assert!(!text.contains("── tknet ──"), "filtered-out group header gone");
+        assert_eq!(app.picker_rows, vec![None, Some(0)]);
     }
 }
