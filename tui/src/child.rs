@@ -155,5 +155,23 @@ impl Serve {
 impl Drop for Serve {
     fn drop(&mut self) {
         let _ = self.child.kill();
+        // reap it: an unreaped child stays a zombie until the TUI exits, and the next serve's
+        // lock check (`process.kill(pid, 0)`) treats a zombie as a live concurrent session
+        let _ = self.child.wait();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dropping_serve_reaps_the_child() {
+        let serve = Serve::mock();
+        let pid = serve.child.id().to_string();
+        drop(serve);
+        // `kill -0` succeeds on a zombie; it must fail once the child is reaped
+        let alive = Command::new("kill").args(["-0", &pid]).stderr(Stdio::null()).status().unwrap();
+        assert!(!alive.success(), "serve child {pid} was killed but not reaped (zombie)");
     }
 }
