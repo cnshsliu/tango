@@ -21,6 +21,16 @@ export interface BridgedTool {
   inputSchema: Record<string, unknown>;
 }
 
+/** Bridged tool name: mcp_<server>_<tool>; appends _2/_3… when the name is already taken. */
+export function bridgeName(server: string, tool: string, taken: Set<string>): string {
+  const base = `mcp_${server}_${tool}`.replace(/[^a-zA-Z0-9_-]/g, '_');
+  let name = base;
+  let n = 2;
+  while (taken.has(name)) name = `${base}_${n++}`;
+  taken.add(name);
+  return name;
+}
+
 export class McpServer {
   readonly name: string;
   connected = false;
@@ -93,12 +103,31 @@ export class McpServer {
   }
 
   async callTool(name: string, args: Record<string, unknown>): Promise<{ text: string; isError: boolean }> {
+    // lazy reconnect: a dead server restarts on the next call (capped), instead of staying
+    // disconnected for the whole session (batch-4 deferred minor)
+    if (!this.connected || !this.child || this.child.exitCode !== null || this.child.killed) {
+      if (this.reconnects < 3) {
+        this.reconnects++;
+        try {
+          this.stop();
+          await this.start();
+          this.reconnects = 0; // a successful handshake resets the budget
+        } catch (e: any) {
+          return { text: `mcp ${this.name}: reconnect failed (${e?.message ?? e})`, isError: true };
+        }
+      } else {
+        return { text: `mcp ${this.name}: reconnect budget exhausted (3 attempts)`, isError: true };
+      }
+    }
     const r = await this.request('tools/call', { name, arguments: args });
     const text = (r?.content ?? [])
       .map((c: any) => (c.type === 'text' ? c.text : `[${c.type}]`))
       .join('\n');
     return { text, isError: r?.isError === true };
   }
+
+  /** deterministic collision-free bridged name: mcp_<server>_<tool>, suffixed on collision */
+  private reconnects = 0;
 
   stop(): void {
     this.connected = false;

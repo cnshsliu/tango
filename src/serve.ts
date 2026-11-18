@@ -14,7 +14,7 @@ import { createInterface } from 'node:readline';
 import { randomUUID } from 'node:crypto';
 import { buildContext } from './core/context.js';
 import { reconcileTasks, startBgTask, stopTask } from './core/bgtask.js';
-import { connectServers } from './core/mcp.js';
+import { bridgeName, connectServers } from './core/mcp.js';
 import { worktreeCreate, worktreeList, worktreeMerge, worktreeRemove } from './core/worktrees.js';
 import { parseRule } from './core/permissions.js';
 import { restoreSnapshot } from './core/git-snapshot.js';
@@ -76,11 +76,12 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
   else if (typeof config.autocompact === 'number') agent.compactAt = config.autocompact;
   // MCP servers: connect before hello so their tools ride the tool list
   const mcpServers = await connectServers(config.mcpServers);
+  const takenBridgedNames = new Set<string>();
   for (const server of mcpServers) {
     if (!server.connected) continue;
     for (const t of await server.listTools().catch(() => [])) {
       agent.tools.register({
-        name: `mcp_${server.name}_${t.name}`,
+        name: bridgeName(server.name, t.name, takenBridgedNames),
         description: t.description,
         input: t.inputSchema,
         writeEffect: true, // external tools: unknown side effects, checkpoint them
