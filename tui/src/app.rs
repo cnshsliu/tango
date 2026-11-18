@@ -426,6 +426,15 @@ fn find_existing_file_path(text: &str) -> Option<String> {
 /// One rendered terminal row of the chat: which source line, which char range, what text.
 /// Owning the wrap (instead of ratatui's Paragraph) is what makes character-exact
 /// mouse selection possible.
+/// A clickable action in the /queue dialog.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum QueueAction {
+    Supplement(usize), // merge this queued item into the RUNNING turn
+    Remove(usize),     // drop this queued item
+    SupplementAll,     // merge every queued item into the running turn
+    ClearAll,          // drop every queued item
+}
+
 #[derive(Clone, Debug)]
 struct ChatRow {
     line: usize,
@@ -583,6 +592,10 @@ pub struct App {
     current_prompt: Option<String>,
     /// prompts entered while a turn runs: sent locally in order when it finishes
     local_queue: Vec<String>,
+    /// /queue dialog open (clickable per-item actions)
+    queue_dialog: bool,
+    /// clickable button rects, rebuilt every draw
+    queue_buttons: Vec<(Rect, QueueAction)>,
     /// plan mode badge (/plan)
     plan_mode: bool,
     /// active /goal text (badge)
@@ -659,6 +672,8 @@ impl App {
             sel_end_pos: None,
             current_prompt: None,
             local_queue: Vec::new(),
+            queue_dialog: false,
+            queue_buttons: Vec::new(),
             plan_mode: false,
             goal_text: None,
             pending: Vec::new(),
@@ -828,6 +843,45 @@ impl App {
     }
 
     /// Clickable file paths: show the file's content in the shared read-only viewer.
+    /// merge one queued item into the RUNNING turn (clickable [并入当前])
+    fn queue_supplement_one(&mut self, serve: &mut Serve, idx: usize) {
+        if !self.busy {
+            self.push(
+                "当前没有进行中的回合 — 回车直接发送或等待排队轮到它",
+                Tone::Muted,
+            );
+            return;
+        }
+        if let Some(text) = self.local_queue.get(idx).cloned() {
+            self.local_queue.remove(idx);
+            let head: String = text.lines().next().unwrap_or("").chars().take(40).collect();
+            serve.command("supplement", vec![("text", Value::String(text))]);
+            self.push(
+                format!("➕ 排队 #{} 已并入当前回合：{head}", idx + 1),
+                Tone::Success,
+            );
+        }
+    }
+
+    /// merge the WHOLE queue into the running turn (clickable [全部并入当前])
+    fn queue_supplement_all(&mut self, serve: &mut Serve) {
+        if !self.busy {
+            self.push(
+                "当前没有进行中的回合 — 排队会在回合结束后依次发送",
+                Tone::Muted,
+            );
+            return;
+        }
+        let n = self.local_queue.len();
+        if n == 0 {
+            return;
+        }
+        for text in std::mem::take(&mut self.local_queue) {
+            serve.command("supplement", vec![("text", Value::String(text))]);
+        }
+        self.push(format!("➕ 已把 {n} 条排队全部并入当前回合"), Tone::Success);
+    }
+
     fn open_file_viewer(&mut self, path: &str) {
         let trimmed = path.trim_end_matches(|c: char| ".,;:!?\"')]".contains(c));
         let line_free = trimmed.trim_end_matches(|c: char| c.is_ascii_digit() || c == ':');
@@ -1590,27 +1644,18 @@ impl App {
                         }
                         _ => self.push("usage: /queue rm <编号>（/queue 里看编号）", Tone::Muted),
                     }
-                } else if !arg.is_empty() {
-                    self.push(
-                        "usage: /queue · /queue rm <编号> · /queue clear",
-                        Tone::Muted,
-                    );
-                } else if self.local_queue.is_empty() {
-                    self.push(
-                        "队列为空 · 忙碌时按回车排队、Alt+Enter 补充到当前回合",
-                        Tone::Muted,
-                    );
-                } else {
-                    let mut text = String::from("排队中（依次自动发送）：\n\n");
-                    for (i, q) in self.local_queue.iter().enumerate() {
-                        let head: String =
-                            q.lines().next().unwrap_or("").chars().take(60).collect();
-                        text.push_str(&format!("  {}. {head}\n", i + 1));
+                } else if arg == "all" {
+                    self.queue_supplement_all(serve);
+                } else if arg.is_empty() {
+                    self.queue_dialog = !self.queue_dialog;
+                    if !self.queue_dialog {
+                        self.queue_buttons.clear();
                     }
-                    text.push_str(
-                        "\n/queue rm <编号> 移除 · /queue clear 全清 · ctrl+c 只打断当前",
+                } else {
+                    self.push(
+                        "usage: /queue · /queue rm <n> · /queue all（全部并入当前） · /queue clear",
+                        Tone::Muted,
                     );
-                    self.viewer = Some(Viewer::read_only("提示队列", text));
                 }
             }
             "/config" => {
@@ -2556,6 +2601,49 @@ impl App {
                 }
             }
             Event::Mouse(m) => {
+                // the /queue dialog's clickable buttons come first
+                if self.queue_dialog
+                    && let MouseEventKind::Down(MouseButton::Left) = m.kind
+                {
+                    let pos = Position::new(m.column, m.row);
+                    if let Some((_, action)) = self
+                        .queue_buttons
+                        .iter()
+                        .find(|(rect, _)| rect.contains(pos))
+                        .cloned()
+                    {
+                        match action {
+                            QueueAction::Supplement(i) => self.queue_supplement_one(serve, i),
+                            QueueAction::Remove(i) => {
+                                if let Some(text) = self.local_queue.get(i).cloned() {
+                                    self.local_queue.remove(i);
+                                    let head: String = text
+                                        .lines()
+                                        .next()
+                                        .unwrap_or("")
+                                        .chars()
+                                        .take(40)
+                                        .collect();
+                                    self.push(
+                                        format!("已移除排队 #{}：{head}", i + 1),
+                                        Tone::Muted,
+                                    );
+                                }
+                            }
+                            QueueAction::SupplementAll => self.queue_supplement_all(serve),
+                            QueueAction::ClearAll => {
+                                let n = self.local_queue.len();
+                                self.local_queue.clear();
+                                self.push(format!("已清空 {n} 条排队提示"), Tone::Muted);
+                            }
+                        }
+                        return false;
+                    }
+                    // click outside the dialog closes it
+                    self.queue_dialog = false;
+                    self.queue_buttons.clear();
+                    return false;
+                }
                 if let Some(viewer) = self.viewer.as_mut() {
                     match m.kind {
                         MouseEventKind::ScrollUp => viewer.scroll_by(-3, viewer.max_scroll),
@@ -3037,6 +3125,11 @@ impl App {
                 }
                 _ => {}
             }
+            return;
+        }
+        if self.queue_dialog && (k.code == KeyCode::Esc || k.code == KeyCode::Char('q')) {
+            self.queue_dialog = false;
+            self.queue_buttons.clear();
             return;
         }
         if ctrl && k.code == KeyCode::Char('t') {
@@ -4706,6 +4799,86 @@ impl App {
             );
         }
 
+        // /queue dialog: clickable per-item actions
+        if self.queue_dialog {
+            let n = self.local_queue.len();
+            let h = (n.min(10) as u16) + 4; // rows + rule + footer buttons + hint
+            let w = 72u16.min(area.width);
+            let pop = Rect {
+                x: (area.width.saturating_sub(w)) / 2,
+                y: (area.height.saturating_sub(h)) / 2,
+                width: w,
+                height: h,
+            };
+            let inner = render_dialog(f, pop, "提示队列", "点击按钮操作 · esc 关闭", self.theme);
+            self.queue_buttons.clear();
+            let iw = inner.width as usize;
+            let btn_style = self.theme.style(Tone::Badge);
+            let del_style = self.theme.style(Tone::Warning);
+            let mut y = inner.y;
+            for (i, q) in self.local_queue.iter().enumerate() {
+                if i >= 10 {
+                    break;
+                }
+                let head: String = q
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .chars()
+                    .take(iw.saturating_sub(26))
+                    .collect();
+                let text_area = Rect {
+                    x: inner.x,
+                    y,
+                    width: inner.width.saturating_sub(24),
+                    height: 1,
+                };
+                f.render_widget(Paragraph::new(format!("{}. {head}", i + 1)), text_area);
+                // [并入] [删] buttons at the right edge
+                let by = y;
+                let bx1 = inner.x + inner.width.saturating_sub(16);
+                let b1 = Rect {
+                    x: bx1,
+                    y: by,
+                    width: 8,
+                    height: 1,
+                };
+                f.render_widget(Paragraph::new(" [并入] ").style(btn_style), b1);
+                let bx2 = inner.x + inner.width.saturating_sub(7);
+                let b2 = Rect {
+                    x: bx2,
+                    y: by,
+                    width: 7,
+                    height: 1,
+                };
+                f.render_widget(Paragraph::new(" [删] ").style(del_style), b2);
+                self.queue_buttons.push((b1, QueueAction::Supplement(i)));
+                self.queue_buttons.push((b2, QueueAction::Remove(i)));
+                y += 1;
+            }
+            if n == 0 {
+                f.render_widget(Paragraph::new("（队列为空 · 忙碌时按回车排队）"), inner);
+            }
+            // footer: [全部并入] [清空]
+            let fy = inner.y + inner.height.saturating_sub(1);
+            let fb1 = Rect {
+                x: inner.x + inner.width / 2 - 18,
+                y: fy,
+                width: 12,
+                height: 1,
+            };
+            let fb2 = Rect {
+                x: inner.x + inner.width / 2 + 4,
+                y: fy,
+                width: 8,
+                height: 1,
+            };
+            f.render_widget(Paragraph::new(" [全部并入] ").style(btn_style), fb1);
+            f.render_widget(Paragraph::new(" [清空] ").style(del_style), fb2);
+            self.queue_buttons.push((fb1, QueueAction::SupplementAll));
+            self.queue_buttons.push((fb2, QueueAction::ClearAll));
+        }
+
         // completion popup, glued above the input rule
         if let Some(p) = &self.popup {
             let ph = (p.items.len().min(6) + 2) as u16;
@@ -6340,30 +6513,130 @@ mod tests {
     }
 
     #[test]
-    fn queue_command_manages_the_local_queue() {
+    fn queue_dialog_click_buttons_and_keyboard_paths() {
         let mut app = App::new();
         let mut serve = Serve::mock();
-        app.local_queue = vec!["第一问".into(), "第二问".into()];
+        app.busy = true;
+        app.local_queue = vec!["第一问".into(), "第二问".into(), "第三问".into()];
+
+        // /queue opens the clickable dialog; buttons are laid out at draw time
         app.run_slash("/queue", &mut serve);
-        let v = app.viewer.as_ref().unwrap();
-        assert!(v.text.contains("1. 第一问"));
-        assert!(v.text.contains("2. 第二问"));
-        app.viewer = None;
-
-        app.run_slash("/queue rm 1", &mut serve);
-        assert_eq!(app.local_queue, vec!["第二问".to_string()]);
+        assert!(app.queue_dialog);
+        {
+            use ratatui::{Terminal, backend::TestBackend};
+            let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();
+            terminal.draw(|f| app.draw(f)).unwrap();
+        }
         assert!(
-            app.lines
-                .iter()
-                .any(|l| l.text.contains("已移除排队 #1：第一问"))
+            app.queue_buttons.len() >= 8,
+            "2 per item + 2 footer buttons"
         );
 
-        app.run_slash("/queue clear", &mut serve);
+        // click [删] on item 1 (find its Remove(0) rect)
+        let (del0, _): (Rect, QueueAction) = app
+            .queue_buttons
+            .iter()
+            .find(|(_, act)| *act == QueueAction::Remove(0))
+            .cloned()
+            .unwrap();
+        let cx = del0.x + 2;
+        let cy = del0.y;
+        app.handle(
+            Event::Mouse(crossterm::event::MouseEvent {
+                kind: crossterm::event::MouseEventKind::Down(MouseButton::Left),
+                column: cx,
+                row: cy,
+                modifiers: KeyModifiers::NONE,
+            }),
+            &mut serve,
+        );
+        assert_eq!(
+            app.local_queue,
+            vec!["第二问".to_string(), "第三问".to_string()]
+        );
+        {
+            use ratatui::{Terminal, backend::TestBackend};
+            let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();
+            terminal.draw(|f| app.draw(f)).unwrap();
+        }
+        assert!(app.lines.iter().any(|l| l.text.contains("已移除排队 #1")));
+
+        // click [并入] on (new) item 1 → supplement sent, item leaves the queue
+        let (sup0, _): (Rect, QueueAction) = app
+            .queue_buttons
+            .iter()
+            .find(|(_, act)| *act == QueueAction::Supplement(0))
+            .cloned()
+            .unwrap();
+        app.handle(
+            Event::Mouse(crossterm::event::MouseEvent {
+                kind: crossterm::event::MouseEventKind::Down(MouseButton::Left),
+                column: sup0.x + 2,
+                row: sup0.y,
+                modifiers: KeyModifiers::NONE,
+            }),
+            &mut serve,
+        );
+        assert_eq!(app.local_queue, vec!["第三问".to_string()]);
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        assert_eq!(sent["cmd"], "supplement");
+        assert_eq!(sent["text"], "第二问");
+        {
+            use ratatui::{Terminal, backend::TestBackend};
+            let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();
+            terminal.draw(|f| app.draw(f)).unwrap();
+        }
+
+        // click [全部并入] → the rest rides the running turn, queue empties
+        let (all, _): (Rect, QueueAction) = app
+            .queue_buttons
+            .iter()
+            .find(|(_, act)| *act == QueueAction::SupplementAll)
+            .cloned()
+            .unwrap();
+        app.handle(
+            Event::Mouse(crossterm::event::MouseEvent {
+                kind: crossterm::event::MouseEventKind::Down(MouseButton::Left),
+                column: all.x + 2,
+                row: all.y,
+                modifiers: KeyModifiers::NONE,
+            }),
+            &mut serve,
+        );
         assert!(app.local_queue.is_empty());
-        assert!(
-            serve.sent.is_empty(),
-            "local queue management sends nothing to serve"
+        let sent2: Value = serde_json::from_str(&serve.sent[1]).unwrap();
+        assert_eq!(sent2["text"], "第三问");
+        {
+            use ratatui::{Terminal, backend::TestBackend};
+            let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();
+            terminal.draw(|f| app.draw(f)).unwrap();
+        }
+
+        // queue more, click [清空]
+        app.local_queue = vec!["x".into()];
+        let (clr, _): (Rect, QueueAction) = app
+            .queue_buttons
+            .iter()
+            .find(|(_, act)| *act == QueueAction::ClearAll)
+            .cloned()
+            .unwrap();
+        app.handle(
+            Event::Mouse(crossterm::event::MouseEvent {
+                kind: crossterm::event::MouseEventKind::Down(MouseButton::Left),
+                column: clr.x + 2,
+                row: clr.y,
+                modifiers: KeyModifiers::NONE,
+            }),
+            &mut serve,
         );
+        assert!(app.local_queue.is_empty());
+
+        // Esc closes
+        app.key(
+            crossterm::event::KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            &mut serve,
+        );
+        assert!(!app.queue_dialog);
     }
     #[test]
     fn usage_opens_a_report_viewer_and_insights_reports_path() {
