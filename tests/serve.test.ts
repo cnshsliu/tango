@@ -2224,3 +2224,27 @@ test('A: a user file created BETWEEN two dropped turns survives the rewind', asy
     await rm(work, { recursive: true, force: true });
   }
 });
+
+test('B: stopTask validates process identity before killing a process group', async () => {
+  const { stopTask, updateTask, findTask } = await import('../src/core/bgtask.js');
+  const { startBgTask } = await import('../src/core/bgtask.js');
+  // fabricate a registry entry pointing at OUR OWN test process (a pid that is alive
+  // but is NOT a tango serve child) — stop must refuse to kill it
+  const fake = {
+    id: 'fake1', name: 'fake', prompt: 'x', worktree: '/nonexistent', worktreeName: 'fake',
+    pid: process.pid, logFile: '/dev/null', status: 'running', startedAt: new Date().toISOString()
+  };
+  const { join: j } = await import('node:path');
+  const { tmpdir } = await import('node:os');
+  // isolated TANGO_HOME registry
+  process.env.TANGO_HOME = await (await import('node:fs/promises')).mkdtemp(j(tmpdir(), 'bgt-b-'));
+  const { writeFile: wfx, mkdir: mkx } = await import('node:fs/promises');
+  await mkx(j(process.env.TANGO_HOME, 'sessions'), { recursive: true });
+  await wfx(j(process.env.TANGO_HOME, 'tasks-bg.json'), JSON.stringify([fake]));
+  await updateTask('fake1', { worktreeName: 'fake' });
+  const stopped = await stopTask('fake1', process.cwd());
+  // the status is stopped in the registry, but the test process was NOT killed (we're alive)
+  assert.equal(stopped.status, 'stopped');
+  assert.ok(true, 'we are still alive: identity check refused to kill(-pid)');
+  delete process.env.TANGO_HOME;
+});

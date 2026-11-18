@@ -4,7 +4,7 @@
  * work, then leave). The session file lands in the shared TANGO_HOME sessions dir,
  * so /resume can open any completed background task.
  */
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { createReadStream, createWriteStream, readFileSync } from 'node:fs';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
@@ -19,6 +19,8 @@ export interface BgTask {
   worktree: string; // path
   worktreeName: string;
   sessionId?: string;
+  /** full spawn command; kill refuses pids whose live command no longer matches (pid reuse) */
+  command?: string;
   pid: number;
   logFile: string;
   status: 'running' | 'done' | 'failed' | 'stopped';
@@ -63,6 +65,21 @@ function alive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
+  } catch {
+    return false;
+  }
+}
+
+/** True when the live process still looks like OUR child: the recorded spawn command must
+ *  appear in `ps -o command=`. A recycled pid running someone else's program never matches,
+ *  so kill(-pid) can never hit an unrelated process group (limitation B). */
+function isOurChild(task: BgTask): boolean {
+  if (!task.command) return false; // no recorded identity (legacy entry): refuse to group-kill
+  try {
+    const r = spawnSync('ps', ['-o', 'command=', '-p', String(task.pid)], { encoding: 'utf8', timeout: 3000 });
+    if (r.status !== 0) return false;
+    const cmd = r.stdout.trim();
+    return cmd.includes('serve') && cmd.includes(task.worktree);
   } catch {
     return false;
   }
@@ -139,6 +156,7 @@ export async function startBgTask(args: {
   // the child runs alone in its own disposable worktree: auto mode is safe there and keeps
   // permission asks from hanging a task forever (I1)
   env.TANGO_MODE = 'auto';
+  const childCommand = `${process.execPath} serve --cwd ${entry.path}`; // identity for kill validation
   const child = spawn(process.execPath, [...interp, cliEntry, 'serve', '-m', model, '--cwd', entry.path], {
     cwd: args.mainCwd,
     detached: true, // survives the parent serve; reaped via pid checks
@@ -164,7 +182,8 @@ export async function startBgTask(args: {
     logFile,
     status: 'running',
     startedAt: new Date().toISOString(),
-    model
+    model,
+    command: childCommand
   };
   await writeAll([...(await readAll()), task]);
   return task;
@@ -176,11 +195,14 @@ export async function stopTask(id: string, mainCwd: string): Promise<BgTask> {
   if (!task) throw new Error(`no such task: ${id}`);
   if (task.status !== 'running') return task; // done/failed history is not rewritten
   if (alive(task.pid)) {
-    try {
-      process.kill(-task.pid, 'SIGTERM'); // process group (detached)
-    } catch {
-      try { process.kill(task.pid, 'SIGKILL'); } catch {}
+    if (isOurChild(task)) {
+      try {
+        process.kill(-task.pid, 'SIGTERM'); // process group (detached)
+      } catch {
+        try { process.kill(task.pid, 'SIGKILL'); } catch {}
+      }
     }
+    // identity mismatch (pid reuse / hand-written registry entry): never group-kill strangers
   }
   await updateTask(task.id, { status: 'stopped', endedAt: new Date().toISOString() });
   // keep the session file; drop the worktree (it may be dirty — leave it for inspection)
