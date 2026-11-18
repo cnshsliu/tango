@@ -476,7 +476,9 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
 ${rows('按模型', '<tr><th>模型</th><th class=num>请求</th><th class=num>输入 tok</th><th class=num>输出 tok</th><th class=num>花费</th></tr>' + data.byModel.map((m) => `<tr><td>${esc(m.model)}</td><td class=num>${m.requests}</td><td class=num>${m.input}</td><td class=num>${m.output}</td><td class=num>$${m.costUsd.toFixed(4)}</td></tr>`).join(''))}
 ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th><th class=num>花费</th><th></th></tr>' + data.bySession.map((x) => `<tr><td>${x.id.slice(0, 8)}</td><td>${x.name || ''}</td><td class=num>${x.messages}</td><td class=num>$${x.costUsd.toFixed(4)}</td><td><div class=bar style="width:${Math.round((x.costUsd / maxCost) * 100)}px"></div></td></tr>`).join(''))}`;
           const { writeFile: wf } = await import('node:fs/promises');
-          const path = join(cwd, `tango-insights-${new Date().toISOString().slice(0, 10)}.html`);
+          const exportsDir = join(tangoDir(), 'exports');
+          await (await import('node:fs/promises')).mkdir(exportsDir, { recursive: true });
+          const path = join(exportsDir, `tango-insights-${new Date().toISOString().slice(0, 10)}.html`);
           await wf(path, html, 'utf8');
           reply(cmd, true, { path });
           return;
@@ -1011,19 +1013,28 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
       case 'preset_list':
       case 'preset_get': {
         // prompt templates live in TANGO_HOME/presets.json as {name: text}
-        const { readFile: rf, writeFile: wf } = await import('node:fs/promises');
+        const { readFile: rf, writeFile: wf, rename: rn } = await import('node:fs/promises');
         const file = join(sessionsDir(), '..', 'presets.json');
         let presets: Record<string, string> = {};
         try {
           presets = JSON.parse(await rf(file, 'utf8'));
-        } catch {}
+        } catch (e: any) {
+          // a corrupt file is backed up once instead of silently vanishing
+          if (e?.code !== 'ENOENT') {
+            try {
+              await wf(file + '.corrupt', await rf(file, 'utf8'), 'utf8');
+              process.stderr.write('[presets] corrupt file backed up to presets.json.corrupt\n');
+            } catch {}
+          }
+        }
         if (cmd.cmd === 'preset_save') {
           const name = String(cmd.name ?? '').trim();
           const text = String(cmd.text ?? '');
           if (!name || !text.trim()) return reply(cmd, false, undefined, 'preset_save: need name and text');
           const overwritten = presets[name] !== undefined;
           presets[name] = text;
-          await wf(file, JSON.stringify(presets, null, 2), 'utf8');
+          await wf(file + '.tmp', JSON.stringify(presets, null, 2), 'utf8');
+          await rn(file + '.tmp', file); // atomic: a crash mid-save cannot wipe all presets
           reply(cmd, true, { name, overwritten });
           return;
         }
@@ -1059,6 +1070,7 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
       case 'btw': {
         const text = String(cmd.text ?? '');
         if (!text.trim()) return reply(cmd, false, undefined, 'btw: empty text');
+        runningText = text; // /queue names the side question too
         try {
           const msg = await agent.ask(text, (ev) => {
             if (ev.type !== 'done') out({ type: 'btw_stream', id: cmd.id, event: ev });
@@ -1303,7 +1315,9 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
         const out = format === 'html'
           ? `<!doctype html><meta charset="utf-8"><title>tango export</title><style>body{font-family:ui-monospace,monospace;max-width:60em;margin:2em auto;line-height:1.5;padding:0 1em}hr{border:0;border-top:1px dashed #999}</style><pre>${body.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</pre>`
           : `# tango 会话导出\n\n${body}`;
-        const path = join(cwd, `tango-export-${store.id.slice(0, 8)}.${format}`);
+        const exportsDir = join(tangoDir(), 'exports');
+        await (await import('node:fs/promises')).mkdir(exportsDir, { recursive: true });
+        const path = join(exportsDir, `tango-export-${store.id.slice(0, 8)}.${format}`);
         const { writeFile: wf } = await import('node:fs/promises');
         await wf(path, out, 'utf8');
         reply(cmd, true, { path, format });
@@ -1334,6 +1348,7 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
         return;
       }
       case 'recap': {
+        runningText = '/recap'; // /queue names the recap too
         try {
           const msg = await agent.ask(
             '用一两句话总结当前对话到目前为止的要点，直接给出总结，不要任何前缀。',
@@ -1407,7 +1422,10 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
           contextWindow: agent.model.contextWindow ?? 128_000,
           autocompact: agent.compactAt,
           effort: agent.effort ?? 'off',
-          sessionTokens
+          sessionTokens,
+          goal: goal.text,
+          loop: loop.prompt || null,
+          plan: perm.plan?.on === true
         });
         return;
       default:

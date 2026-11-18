@@ -71,7 +71,7 @@ export function loadPluginHooks(): { plugins: { name: string; description: strin
   const dir = join(tangoDir(), 'plugins');
   let names: string[] = [];
   try {
-    names = readdirSync(dir).filter((d) => d !== '.DS_Store');
+    names = readdirSync(dir).filter((d) => d !== '.DS_Store').sort(); // deterministic hook merge order
   } catch {
     return { plugins, hooks };
   }

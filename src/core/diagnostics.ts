@@ -96,12 +96,13 @@ const clip = (s: string) => {
  * After write/edit of a source file, run the project's own checker and append
  * the errors to the tool result, so the model sees a broken edit immediately.
  */
-export function installDiagnostics(events: EventBus, cwd: string): () => void {
+export function installDiagnostics(events: EventBus, cwd: string | (() => string)): () => void {
+  const cwdNow = () => (typeof cwd === 'function' ? cwd() : cwd);
   return events.on('after_tool', async ({ call, result }) => {
     if ((call.name !== 'write' && call.name !== 'edit') || result.isError) return;
     const path = (call.input as { path?: string } | undefined)?.path;
     if (!path) return;
-    const ctx: ToolContext = { cwd, signal: new AbortController().signal };
+    const ctx: ToolContext = { cwd: cwdNow(), signal: new AbortController().signal };
     let text: string;
     try {
       text = await diagnosticsFor(path, ctx);

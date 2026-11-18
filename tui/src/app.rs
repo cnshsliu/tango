@@ -354,6 +354,43 @@ const SLASH: &[(&str, &str)] = &[
 /// inline @path tokens are expanded into file contents at send time (Claude Code style)
 const AT_FILE_CAP: usize = 6000;
 
+/// Local UTC offset in seconds, from libc's mktime/localtime (no hardcoded timezone).
+fn local_utc_offset_seconds() -> i64 {
+    #[cfg(unix)]
+    {
+        // std does not expose tm_gmtoff; use the TIMERSUB-free trick: compare mktime on
+        // a UTC-normalized struct. Cheap fallback: read TZ offset via `date +%z` once.
+        use std::sync::OnceLock;
+        static OFFSET: OnceLock<i64> = OnceLock::new();
+        *OFFSET.get_or_init(|| {
+            let out = std::process::Command::new("date")
+                .arg("+%z")
+                .output()
+                .ok()
+                .and_then(|o| String::from_utf8(o.stdout).ok())
+                .and_then(|s| parse_utc_offset(s.trim()))
+                .unwrap_or(0);
+            out
+        })
+    }
+    #[cfg(not(unix))]
+    {
+        0
+    }
+}
+
+fn parse_utc_offset(s: &str) -> Option<i64> {
+    // "+0800" / "-0530"
+    let (sign, rest) = s.split_at(1);
+    if rest.len() < 4 {
+        return None;
+    }
+    let hours: i64 = rest.get(0..2)?.parse().ok()?;
+    let mins: i64 = rest.get(2..4)?.parse().ok()?;
+    let mag = hours * 3600 + mins * 60;
+    Some(if sign == "-" { -mag } else { mag })
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum EditMode {
     Insert,
@@ -566,11 +603,14 @@ impl App {
     }
 
     fn hhmm(&self) -> String {
+        // local time (the old hardcoded UTC+8 broke for any other timezone)
         let secs = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
-            .unwrap_or(0);
-        format!("[{:02}:{:02}]", (secs / 3600 + 8) % 24, (secs / 60) % 60)
+            .unwrap_or(0) as i64;
+        let offset = local_utc_offset_seconds();
+        let local = (secs + offset).rem_euclid(86_400);
+        format!("[{:02}:{:02}]", local / 3600, (local / 60) % 60)
     }
 
     fn push(&mut self, text: impl Into<String>, tone: Tone) {
@@ -1517,7 +1557,12 @@ impl App {
             }
             "/preset" => {
                 let arg = rest.trim();
-                if let Some(name) = arg.strip_prefix("save ") {
+                if rest.trim() == "save" || rest.trim() == "save " {
+                    self.push(
+                        "usage: /preset save <name>（保存当前输入框内容）",
+                        Tone::Muted,
+                    );
+                } else if let Some(name) = arg.strip_prefix("save ") {
                     let text: String = self.input.iter().collect();
                     if text.trim().is_empty() {
                         self.push("输入框为空 — 先写好再 /preset save", Tone::Muted);
@@ -2548,6 +2593,7 @@ impl App {
             // and even while a viewer (e.g. an in-flight /btw answer) has the keys
             if self.busy && self.keys.matches(Action::Interrupt, k) {
                 serve.notify(json!({ "cmd": "interrupt" }));
+                self.goal_text = None; // serve clears the goal; mirror it immediately
                 self.push("[interrupt requested]", Tone::Muted);
                 return;
             }
@@ -2680,6 +2726,7 @@ impl App {
         // Ctrl+C always remains a safe interrupt even when the action is remapped.
         if self.busy && (self.keys.matches(Action::Interrupt, k) || k.code == KeyCode::Esc) {
             serve.notify(json!({ "cmd": "interrupt" }));
+            self.goal_text = None;
             self.push("[interrupt requested]", Tone::Muted);
             return;
         }
@@ -3092,6 +3139,9 @@ impl App {
                             Tone::Muted,
                         ),
                         (Pending::Status, true) => {
+                            // badges follow the serve truth (goal cleared by interrupt etc.)
+                            self.goal_text = d["goal"].as_str().map(|g| g.to_string());
+                            self.plan_mode = d["plan"].as_bool().unwrap_or(self.plan_mode);
                             let t = &d["sessionTokens"];
                             let (tin, tout, tcache) = (
                                 t["input"].as_u64().unwrap_or(0),
