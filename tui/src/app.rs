@@ -4922,10 +4922,6 @@ impl App {
             Span::styled(format!(" {} ", self.model), self.theme.style(Tone::Badge)),
             Span::styled(format!(" {} ", self.mode), self.theme.style(Tone::Muted)),
             Span::styled(
-                format!(" ▶ {} ", self.current_prompt.as_deref().unwrap_or("?")),
-                self.theme.style(Tone::Badge),
-            ),
-            Span::styled(
                 format!(" ${:.4} ", self.cost),
                 self.theme.style(Tone::Warning),
             ),
@@ -4952,6 +4948,12 @@ impl App {
                     percent
                 ),
                 self.theme.style(self.context_tone()),
+            ));
+        }
+        if let Some(p) = self.current_prompt.clone() {
+            spans.push(Span::styled(
+                format!(" ▶ {p} "),
+                self.theme.style(Tone::Badge),
             ));
         }
         if self.focus {
