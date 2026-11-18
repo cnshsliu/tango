@@ -156,6 +156,11 @@ tools and checkpoints follow live); `/add_dir <dir>` registers an extra writable
   `/insights` writes the same data as an offline single-file HTML report.
 - `/timestamps` toggles `[HH:MM]` prefixes; `/density 0|1|2` sets tool-detail level (compact /
   default-errors-only / full) and applies to restored history too.
+- **Mouse basics** (Claude Code / OpenCode parity): drag in the chat to select — whole
+  logical lines highlight and release copies them to the system clipboard; a click on a
+  complete local file path (absolute, `./…`, `~/…`, `:line` suffix tolerated) opens the file
+  in the read-only viewer; the permission modal takes `c` to copy the pending command before
+  answering y/n/a. `/mouse off` still hands selection back to the terminal natively.
 - `/autocompact [N%|0.N|off]` shows or sets the auto-compaction threshold (default 75% of the
   window); persisted in config.
 - `/statusline '<tpl>'` customizes the bottom bar with `{model} {mode} {cost} {ctx} {pct} {session}

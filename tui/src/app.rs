@@ -379,6 +379,43 @@ fn local_utc_offset_seconds() -> i64 {
     }
 }
 
+/// Scan a rendered chat line for the first token that looks like and IS an existing
+/// local file (absolute, ./…, ../… or ~/…). Clicking it opens the file viewer.
+fn find_existing_file_path(text: &str) -> Option<String> {
+    let bytes: Vec<char> = text.chars().collect();
+    let starts: Vec<&[char]> = vec![&['/'], &['.', '/'], &['.', '.', '/'], &['~', '/']];
+    let mut best: Option<String> = None;
+    let mut i = 0;
+    while i < bytes.len() {
+        let matched = starts.iter().any(|s| bytes[i..].starts_with(s));
+        if !matched {
+            i += 1;
+            continue;
+        }
+        let mut j = i;
+        while j < bytes.len() && (bytes[j].is_alphanumeric() || "._-/@+=~".contains(bytes[j])) {
+            j += 1;
+        }
+        let raw: String = bytes[i..j].iter().collect();
+        let cleaned = raw
+            .trim_end_matches(|c: char| ".,;:!?\"')]".contains(c))
+            .to_string();
+        let no_line = cleaned.trim_end_matches(|c: char| c.is_ascii_digit() || c == ':');
+        let expanded = if let Some(rest) = no_line.strip_prefix('~') {
+            let home = std::env::var("HOME").unwrap_or_default();
+            format!("{home}{rest}")
+        } else {
+            no_line.to_string()
+        };
+        if expanded.len() > 1 && std::path::Path::new(&expanded).is_file() {
+            best = Some(expanded);
+            break;
+        }
+        i = j.max(i + 1);
+    }
+    best
+}
+
 fn parse_utc_offset(s: &str) -> Option<i64> {
     // "+0800" / "-0530" — length checked BEFORE split_at (empty used to panic)
     if s.len() < 5 {
@@ -448,6 +485,13 @@ pub struct App {
     multiline_enter: bool,
     /// serve-side working directory (/cd moves it); @file resolves against it
     serve_cwd: Option<std::path::PathBuf>,
+    /// in-chat mouse selection (terminal rows); release copies the covered lines
+    sel_anchor: Option<u16>,
+    sel_end: Option<u16>,
+    /// rendered chat line texts + geometry, captured each draw for selection mapping
+    chat_shown_texts: Vec<String>,
+    chat_scroll_offset: usize,
+    chat_inner_w: u16,
     /// plan mode badge (/plan)
     plan_mode: bool,
     /// active /goal text (badge)
@@ -515,6 +559,11 @@ impl App {
             statusline: None,
             multiline_enter: false,
             serve_cwd: None,
+            sel_anchor: None,
+            sel_end: None,
+            chat_shown_texts: Vec::new(),
+            chat_scroll_offset: 0,
+            chat_inner_w: 0,
             plan_mode: false,
             goal_text: None,
             pending: Vec::new(),
@@ -588,6 +637,125 @@ impl App {
         self.unread_rows = 0;
         self.jump_area = Rect::default();
         self.respawn = Some(target);
+    }
+
+    /// Map terminal rows (absolute) to logical chat-line indices using the geometry
+    /// captured by the last draw. Wrapping uses the same math as visual_lines.
+    fn rows_to_line_range(&self, row_a: u16, row_b: u16, chat_y: u16) -> Option<(usize, usize)> {
+        if self.chat_shown_texts.is_empty() || self.chat_inner_w == 0 {
+            return None;
+        }
+        let inner_w = self.chat_inner_w as usize;
+        let total: usize = self
+            .chat_shown_texts
+            .iter()
+            .map(|t| display_width(t).div_ceil(inner_w.max(1)).max(1))
+            .sum();
+        if total == 0 {
+            return None;
+        }
+        // clicks can land on rows beyond the content (bottom padding) — clamp them in
+        let v_lo = (row_a.min(row_b).saturating_sub(chat_y) as usize + self.chat_scroll_offset)
+            .min(total - 1);
+        let v_hi = (row_b.max(row_a).saturating_sub(chat_y) as usize + self.chat_scroll_offset)
+            .min(total - 1);
+        let mut start = None;
+        let mut end = 0usize;
+        let mut visual = 0usize;
+        for (idx, text) in self.chat_shown_texts.iter().enumerate() {
+            let rows = display_width(text)
+                .div_ceil(self.chat_inner_w as usize)
+                .max(1);
+            if start.is_none() && visual + rows > v_lo {
+                start = Some(idx);
+            }
+            if visual <= v_hi {
+                end = idx;
+            }
+            visual += rows;
+        }
+        start.map(|s| (s, end))
+    }
+
+    /// A clipboard copy that never touches the real clipboard under `cargo test`.
+    fn copy_to_clipboard(&self, text: &str) -> std::io::Result<()> {
+        if cfg!(test) {
+            return Ok(());
+        }
+        crate::clipboard::copy(text)
+    }
+
+    /// Left press in the chat area: a complete local file path under the cursor opens in
+    /// the read-only viewer; anything else starts a text selection.
+    fn chat_press(&mut self, row: u16, column: u16, chat_y: u16) {
+        if let Some((lo, hi)) = self.rows_to_line_range(row, row, chat_y) {
+            let text = self
+                .chat_shown_texts
+                .get(lo..=hi.min(self.chat_shown_texts.len() - 1))
+                .map(|s| s.join("\n"))
+                .unwrap_or_default();
+            if let Some(path) = find_existing_file_path(&text) {
+                self.open_file_viewer(&path);
+                return;
+            }
+        }
+        self.sel_anchor = Some(row);
+        self.sel_end = Some(row);
+    }
+
+    fn chat_drag(&mut self, row: u16) {
+        if self.sel_anchor.is_some() {
+            self.sel_end = Some(row);
+        }
+    }
+
+    /// Release: copy the covered logical lines to the system clipboard.
+    fn chat_release(&mut self, chat_y: u16) {
+        if let (Some(a_row), Some(b_row)) = (self.sel_anchor.take(), self.sel_end.take()) {
+            if let Some((lo, hi)) = self.rows_to_line_range(a_row, b_row, chat_y) {
+                let hi = hi.min(self.chat_shown_texts.len().saturating_sub(1));
+                let text = self
+                    .chat_shown_texts
+                    .get(lo..=hi)
+                    .map(|s| s.join("\n"))
+                    .unwrap_or_default();
+                if text.trim().is_empty() {
+                    return;
+                }
+                match self.copy_to_clipboard(&text) {
+                    Ok(()) => {
+                        self.push(format!("已复制 {} 行到剪贴板", hi - lo + 1), Tone::Success)
+                    }
+                    Err(e) => self.push(format!("复制失败：{e}"), Tone::Error),
+                }
+            }
+        }
+    }
+
+    /// Clickable file paths: show the file's content in the shared read-only viewer.
+    fn open_file_viewer(&mut self, path: &str) {
+        let trimmed = path.trim_end_matches(|c: char| ".,;:!?\"')]".contains(c));
+        let line_free = trimmed.trim_end_matches(|c: char| c.is_ascii_digit() || c == ':');
+        let candidate = std::path::Path::new(line_free);
+        let target = if candidate.is_file() {
+            line_free
+        } else {
+            trimmed
+        };
+        match std::fs::read_to_string(target) {
+            Ok(body) => {
+                let capped = if body.len() > 200_000 {
+                    format!(
+                        "{}\n…[文件过大，仅显示前 200KB]",
+                        body.chars().take(200_000).collect::<String>()
+                    )
+                } else {
+                    body
+                };
+                self.viewer = Some(Viewer::read_only(format!("文件 · {target}"), capped));
+            }
+            Err(e) => self.push(format!("无法读取 {target}：{e}"), Tone::Error),
+        }
     }
 
     fn jump_to_bottom(&mut self) {
@@ -2287,6 +2455,13 @@ impl App {
                     }
                 } else {
                     match m.kind {
+                        MouseEventKind::Down(MouseButton::Left) => {
+                            self.chat_press(m.row, m.column, self.chat_area.y)
+                        }
+                        MouseEventKind::Drag(MouseButton::Left) => self.chat_drag(m.row),
+                        MouseEventKind::Up(MouseButton::Left) => {
+                            self.chat_release(self.chat_area.y)
+                        }
                         MouseEventKind::ScrollUp => self.scroll_back += 3,
                         MouseEventKind::ScrollDown => self.scroll_chat_down(3),
                         MouseEventKind::Down(MouseButton::Left)
@@ -2670,6 +2845,16 @@ impl App {
                 KeyCode::Char('a') | KeyCode::Char('A') => {
                     self.run_slash("/mode auto", serve);
                     self.answer(serve, true);
+                }
+                // copy the pending command to the clipboard without answering
+                KeyCode::Char('c') | KeyCode::Char('C') => {
+                    if let Some(p) = self.permission.as_ref() {
+                        let text = format!("{} {}", p.name, p.detail);
+                        match self.copy_to_clipboard(&text) {
+                            Ok(()) => self.push("命令已复制（y/n/a 待选）", Tone::Success),
+                            Err(e) => self.push(format!("复制失败：{e}"), Tone::Error),
+                        }
+                    }
                 }
                 _ => {}
             }
@@ -4217,6 +4402,31 @@ impl App {
         if !self.stream.is_empty() {
             let preview = self.stream.replace("**", "").replace('`', "");
             shown.push(Line::from(Span::raw(preview)));
+        }
+        // selection support: remember the exact texts and geometry the paragraph renders,
+        // so mouse rows can map back to whole logical lines (copy + click targets)
+        self.chat_shown_texts = shown
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.to_string())
+                    .collect::<String>()
+            })
+            .collect();
+        self.chat_scroll_offset = offset;
+        self.chat_inner_w = chat_a.width;
+        // visual selection highlight: whole lines covered by the drag render reversed
+        if let (Some(a_row), Some(b_row)) = (self.sel_anchor, self.sel_end) {
+            if let Some((lo, hi)) = self.rows_to_line_range(a_row, b_row, chat_a.y) {
+                for idx in lo..=hi.min(shown.len().saturating_sub(1)) {
+                    if let Some(line) = shown.get_mut(idx) {
+                        for span in line.spans.iter_mut() {
+                            span.style = span.style.reversed();
+                        }
+                    }
+                }
+            }
         }
         f.render_widget(
             Paragraph::new(Text::from(shown))
@@ -6422,5 +6632,84 @@ mod tests {
         let mut app = App::new();
         app.frame(json!({"type": "notice", "text": "⚠ 另一个会话正在此目录运行"}));
         assert!(app.lines.iter().any(|l| l.text.contains("另一个会话")));
+    }
+
+    #[test]
+    fn permission_c_copies_without_answering() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.permission = Some(Permission {
+            request: 1,
+            name: "bash".into(),
+            detail: "rm -rf build/".into(),
+            reason: "deletes files".into(),
+        });
+        app.key(
+            crossterm::event::KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE),
+            &mut serve,
+        );
+        assert!(app.permission.is_some(), "modal stays open after copy");
+        assert!(app.lines.iter().any(|l| l.text.contains("命令已复制")));
+        assert!(serve.sent.is_empty(), "no answer was sent");
+    }
+
+    #[test]
+    fn find_existing_file_path_click_targets() {
+        let dir = std::env::temp_dir().join("tango-click");
+        std::fs::create_dir_all(&dir).unwrap();
+        let real = dir.join("real-file.txt");
+        std::fs::write(&real, "x").unwrap();
+        // found: absolute path with trailing punctuation and a :line suffix
+        let line = format!("see {} failed", real.display());
+        assert_eq!(
+            find_existing_file_path(&line),
+            Some(real.display().to_string())
+        );
+        // ~ expansion
+        let home = std::env::var("HOME").unwrap_or_default();
+        let homefile = std::fs::canonicalize(&real).ok(); // skip if not under home
+        if homefile.is_none() {
+            let hf = std::path::Path::new(&home).join("tango-click-home-probe.txt");
+            std::fs::write(&hf, "x").unwrap();
+            let l2 = format!("open ~/{} now", hf.file_name().unwrap().to_string_lossy());
+            assert!(
+                find_existing_file_path(&l2).is_some(),
+                "home expansion works"
+            );
+        }
+        // not a file → no match, no panic
+        assert_eq!(find_existing_file_path("no paths here at all"), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rows_to_line_range_maps_wrapped_selection() {
+        let mut app = App::new();
+        app.chat_inner_w = 10;
+        app.chat_scroll_offset = 0;
+        app.chat_shown_texts = vec![
+            "short".into(),
+            "a-very-long-line-that-wraps-several-times".into(),
+            "tail".into(),
+        ];
+        // rows 0..0 → line 0; rows 0..5 cover the wrapped line 1; rows 2..2 land inside line 1
+        assert_eq!(app.rows_to_line_range(0, 0, 0), Some((0, 0)));
+        assert_eq!(app.rows_to_line_range(0, 5, 0), Some((0, 1)));
+        assert_eq!(app.rows_to_line_range(2, 2, 0), Some((1, 1)));
+        assert_eq!(app.rows_to_line_range(9, 9, 0), Some((2, 2)));
+    }
+
+    #[test]
+    fn chat_selection_release_copies_covered_lines() {
+        let mut app = App::new();
+        app.chat_inner_w = 40;
+        app.chat_scroll_offset = 0;
+        app.chat_shown_texts = vec!["alpha".into(), "beta".into(), "gamma".into()];
+        app.chat_press(1, 0, 0); // press on row 1 (no file path there → selection starts)
+        assert!(app.sel_anchor.is_some());
+        app.chat_drag(2);
+        app.chat_release(0);
+        assert!(app.sel_anchor.is_none(), "selection cleared after release");
+        assert!(app.lines.iter().any(|l| l.text.contains("已复制 2 行")));
     }
 }
