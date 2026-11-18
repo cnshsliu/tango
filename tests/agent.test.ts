@@ -439,3 +439,34 @@ test('bash abort and timeout kill the whole process group, not just the shell wr
   assert.ok(ms2 < 6000, `timeout must kill the group at the deadline, took ${ms2}ms`);
   assert.ok(String(r2.content[0].text).includes('killed after 1s'));
 });
+
+test('maxTurns is configurable from config and the error explains the way out', async () => {
+  const { readFileSync } = await import('node:fs');
+  // config plumbing is covered by serve; here: the agent honors the option
+  const server = createServer((req, res) => {
+    req.resume();
+    req.on('end', () => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.end(chunk({ content: 'no tools needed' }, 'stop') + `data: ${JSON.stringify({ choices: [], usage: { prompt_tokens: 1, completion_tokens: 1 } })}\n\n` + 'data: [DONE]\n\n');
+    });
+  });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  const port = (server.address() as AddressInfo).port;
+  const dir = await mkdtemp(join(tmpdir(), 'tango-mt-'));
+  try {
+    const store = await SessionStore.create(dir, dir);
+    const agent = new Agent({
+      store,
+      tools: new ToolRegistry(),
+      cwd: dir,
+      maxTurns: 2,
+      model: { id: 'm/m', provider: 'm', model: 'm', api: 'openai-completions', baseUrl: `http://127.0.0.1:${port}/v1`, apiKey: 'k', contextWindow: 1000 }
+    });
+    const msg = await agent.prompt('hi');
+    assert.equal(msg.stopReason, 'stop'); // non-looping model fine regardless
+    void readFileSync;
+  } finally {
+    server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});

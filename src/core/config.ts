@@ -32,6 +32,8 @@ export interface Config {
   checkpoint?: 'on' | 'off';
   /** Auto-compact threshold as a window share; 'off'/0 disables. Missing means 0.75. */
   autocompact?: number | 'off';
+  /** Max model round-trips per prompt (runaway tool-loop fuse). 1-500, default 64. */
+  maxTurns?: number;
   /** Custom status bar template with {model} {mode} {cost} {ctx} {pct} {session} {tokens}; missing = default bar */
   statusline?: string;
   /** Persistent allow rules: tool:<name> | path:<prefix> | bash:<prefix> */
