@@ -478,7 +478,9 @@ fn ime_should_switch(current: &str) -> bool {
 
 /// Scan a rendered chat line for the first token that looks like and IS an existing
 /// local file (absolute, ./…, ../… or ~/…). Clicking it opens the file viewer.
-fn find_existing_file_path(text: &str) -> Option<String> {
+/// Position-aware: the click must land on the path's own characters — a path
+/// elsewhere in the line is not a click target.
+fn find_existing_file_path(text: &str, click_idx: usize) -> Option<String> {
     let bytes: Vec<char> = text.chars().collect();
     let starts: Vec<&[char]> = vec![&['/'], &['.', '/'], &['.', '.', '/'], &['~', '/']];
     let mut best: Option<String> = None;
@@ -493,20 +495,21 @@ fn find_existing_file_path(text: &str) -> Option<String> {
         while j < bytes.len() && (bytes[j].is_alphanumeric() || "._-/@+=~".contains(bytes[j])) {
             j += 1;
         }
-        let raw: String = bytes[i..j].iter().collect();
-        let cleaned = raw
-            .trim_end_matches(|c: char| ".,;:!?\"')]".contains(c))
-            .to_string();
-        let no_line = cleaned.trim_end_matches(|c: char| c.is_ascii_digit() || c == ':');
-        let expanded = if let Some(rest) = no_line.strip_prefix('~') {
-            let home = std::env::var("HOME").unwrap_or_default();
-            format!("{home}{rest}")
-        } else {
-            no_line.to_string()
-        };
-        if expanded.len() > 1 && std::path::Path::new(&expanded).is_file() {
-            best = Some(expanded);
-            break;
+        if click_idx >= i && click_idx < j {
+            let raw: String = bytes[i..j].iter().collect();
+            let cleaned = raw
+                .trim_end_matches(|c: char| ".,;:!?\"')]".contains(c))
+                .to_string();
+            let no_line = cleaned.trim_end_matches(|c: char| c.is_ascii_digit() || c == ':');
+            let expanded = if let Some(rest) = no_line.strip_prefix('~') {
+                let home = std::env::var("HOME").unwrap_or_default();
+                format!("{home}{rest}")
+            } else {
+                no_line.to_string()
+            };
+            if expanded.len() > 1 && std::path::Path::new(&expanded).is_file() {
+                best = Some(expanded);
+            }
         }
         i = j.max(i + 1);
     }
@@ -902,46 +905,66 @@ impl App {
         crate::clipboard::copy(text)
     }
 
-    /// Left press in the chat area: a complete local file path under the cursor opens in
-    /// the read-only viewer; anything else starts a character-exact selection.
-    fn chat_press(&mut self, row: u16, column: u16, chat_y: u16) {
-        if let Some(g) = self.global_row(row, chat_y) {
-            if let Some(li) = self.chat_rows.get(g).map(|r| r.line) {
-                // rebuild the source line and map the click to a char index within it
-                let mut full = String::new();
-                let mut click_idx = 0usize;
-                for (i, r) in self.chat_rows.iter().enumerate() {
-                    if r.line != li {
-                        continue;
-                    }
-                    if i < g {
-                        click_idx += r.text.chars().count();
-                    } else if i == g {
-                        let mut col = 0usize;
-                        for ch in r.text.chars() {
-                            let w = display_width(&ch.to_string());
-                            if (column as usize) < col + w {
-                                break;
-                            }
-                            col += w;
-                            click_idx += 1;
-                        }
-                    }
-                    full.push_str(&r.text);
-                }
-                // an image chip under the cursor opens the image itself
-                if let Some(path) = self.image_chip_at(&full, click_idx) {
-                    self.open_image(&path);
-                    return;
-                }
-                if let Some(path) = find_existing_file_path(&full) {
-                    self.open_file_viewer(&path);
-                    return;
-                }
-            }
-        }
+    /// Left press in the chat area always starts a character-exact selection.
+    /// Click targets (image chips, file paths, line-output viewers) are only
+    /// acted on at release, so a drag begun anywhere can select text.
+    fn chat_press(&mut self, row: u16, column: u16) {
         self.sel_anchor_pos = Some((row, column));
         self.sel_end_pos = Some((row, column));
+    }
+
+    /// Map a chat-area position to (source line index, full line text, char index of
+    /// the click within that line). Rebuilding the line from the wrap rows is what
+    /// keeps the index in sync with what is on screen.
+    fn chat_line_hit(&self, row: u16, column: u16, chat_y: u16) -> Option<(usize, String, usize)> {
+        let g = self.global_row(row, chat_y)?;
+        let li = self.chat_rows.get(g).map(|r| r.line)?;
+        let mut full = String::new();
+        let mut click_idx = 0usize;
+        for (i, r) in self.chat_rows.iter().enumerate() {
+            if r.line != li {
+                continue;
+            }
+            if i < g {
+                click_idx += r.text.chars().count();
+            } else if i == g {
+                let mut col = 0usize;
+                for ch in r.text.chars() {
+                    let w = display_width(&ch.to_string());
+                    if (column as usize) < col + w {
+                        break;
+                    }
+                    col += w;
+                    click_idx += 1;
+                }
+            }
+            full.push_str(&r.text);
+        }
+        Some((li, full, click_idx))
+    }
+
+    /// A click (press + release, no drag) in the chat area: an image chip under the
+    /// cursor opens the image; a file path under the cursor opens the read-only
+    /// viewer; a line with collapsed output opens the transcript viewer.
+    fn chat_click(&mut self, row: u16, column: u16, chat_y: u16) {
+        if let Some((_li, full, click_idx)) = self.chat_line_hit(row, column, chat_y) {
+            if let Some(path) = self.image_chip_at(&full, click_idx) {
+                self.open_image(&path);
+                return;
+            }
+            if let Some(path) = find_existing_file_path(&full, click_idx) {
+                self.open_file_viewer(&path);
+                return;
+            }
+        }
+        let vrow = row.saturating_sub(chat_y) as usize;
+        if let Some(index) = self.line_at_visual_row(
+            self.chat_area.width as usize,
+            self.chat_area.height as usize,
+            vrow,
+        ) {
+            self.open_line_viewer_quiet(index);
+        }
     }
 
     /// The attached image whose `[图片 #N]` chip covers char index `click_idx` of a line.
@@ -1016,12 +1039,16 @@ impl App {
         }
     }
 
-    /// Release: copy exactly the dragged-over characters to the system clipboard.
-    fn chat_release(&mut self, chat_y: u16) {
+    /// Release: a press+release without movement is a click (chips/paths/viewers);
+    /// anything dragged over is copied exactly to the system clipboard.
+    fn chat_release(&mut self, chat_y: u16, row: u16, column: u16) {
+        let clicked = self.sel_anchor_pos == Some((row, column));
         let text = self.selected_text(chat_y);
         self.sel_anchor_pos = None;
         self.sel_end_pos = None;
-        if let Some(text) = text
+        if clicked {
+            self.chat_click(row, column, chat_y);
+        } else if let Some(text) = text
             && !text.trim().is_empty()
         {
             match self.copy_to_clipboard(&text) {
@@ -3108,8 +3135,9 @@ impl App {
                     match m.kind {
                         MouseEventKind::ScrollUp => self.scroll_back += 3,
                         MouseEventKind::ScrollDown => self.scroll_chat_down(3),
-                        // one ordered click handler: jump badge → line-with-output →
-                        // clickable file path → text selection start (drag+release copies)
+                        // one ordered click handler: input-box image chip → jump badge →
+                        // chat press (selection anchor; chips/paths/viewers wait for
+                        // release so a drag from anywhere can select text)
                         MouseEventKind::Down(MouseButton::Left) => {
                             let pos = Position::new(m.column, m.row);
                             // a click on an input-box image chip opens the image
@@ -3122,24 +3150,12 @@ impl App {
                             if self.jump_area.contains(pos) {
                                 self.jump_to_bottom();
                             } else if self.chat_area.contains(pos) {
-                                // path click is the most specific intent; fall back to
-                                // the line-output viewer, then to selection start
-                                self.chat_press(m.row, m.column, self.chat_area.y);
-                                if self.viewer.is_none() {
-                                    let row = m.row.saturating_sub(self.chat_area.y) as usize;
-                                    if let Some(index) = self.line_at_visual_row(
-                                        self.chat_area.width as usize,
-                                        self.chat_area.height as usize,
-                                        row,
-                                    ) {
-                                        self.open_line_viewer_quiet(index);
-                                    }
-                                }
+                                self.chat_press(m.row, m.column);
                             }
                         }
                         MouseEventKind::Drag(MouseButton::Left) => self.chat_drag(m.row, m.column),
                         MouseEventKind::Up(MouseButton::Left) => {
-                            self.chat_release(self.chat_area.y)
+                            self.chat_release(self.chat_area.y, m.row, m.column)
                         }
                         _ => {}
                     }
@@ -7741,11 +7757,20 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let real = dir.join("real-file.txt");
         std::fs::write(&real, "x").unwrap();
-        // found: absolute path with trailing punctuation and a :line suffix
+        // found when the click lands on the path itself, with trailing punctuation
+        // and a :line suffix tolerated
         let line = format!("see {} failed", real.display());
+        let on_path = 4 + real.display().to_string().chars().count() / 2;
         assert_eq!(
-            find_existing_file_path(&line),
+            find_existing_file_path(&line, on_path),
             Some(real.display().to_string())
+        );
+        // click anywhere else on the line → no match, even though the path exists
+        assert_eq!(find_existing_file_path(&line, 1), None);
+        assert_eq!(
+            find_existing_file_path(&line, line.chars().count()),
+            None,
+            "click past the end of the line"
         );
         // ~ expansion
         let home = std::env::var("HOME").unwrap_or_default();
@@ -7754,13 +7779,14 @@ mod tests {
             let hf = std::path::Path::new(&home).join("tango-click-home-probe.txt");
             std::fs::write(&hf, "x").unwrap();
             let l2 = format!("open ~/{} now", hf.file_name().unwrap().to_string_lossy());
+            let mid = 6 + hf.file_name().unwrap().to_string_lossy().chars().count() / 2;
             assert!(
-                find_existing_file_path(&l2).is_some(),
+                find_existing_file_path(&l2, mid).is_some(),
                 "home expansion works"
             );
         }
         // not a file → no match, no panic
-        assert_eq!(find_existing_file_path("no paths here at all"), None);
+        assert_eq!(find_existing_file_path("no paths here at all", 3), None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -7824,13 +7850,13 @@ mod tests {
         // release clears and reports char count
         app.sel_anchor_pos = Some((0, 4));
         app.sel_end_pos = Some((0, 9));
-        app.chat_release(0);
+        app.chat_release(0, 0, 9);
         assert!(app.sel_anchor_pos.is_none());
         assert!(app.lines.iter().any(|l| l.text.contains("已复制 5 个字符")));
     }
 
     #[test]
-    fn chat_press_opens_viewer_for_real_file_click() {
+    fn chat_viewer_opens_only_on_release_over_path() {
         let mut app = App::new();
         let dir = std::env::temp_dir().join("tango-press");
         std::fs::create_dir_all(&dir).unwrap();
@@ -7847,14 +7873,61 @@ mod tests {
             ],
             200,
         );
-        app.chat_press(1, 30, 0); // press on the prompt row
-        let v = app.viewer.as_ref().expect("viewer opened");
+        // press alone never opens the viewer — it starts a selection
+        app.chat_press(1, 30);
+        assert!(
+            app.viewer.is_none(),
+            "mouse down must not open the file viewer"
+        );
+        assert_eq!(app.sel_anchor_pos, Some((1, 30)));
+        // release on the path → viewer opens, selection cleared
+        app.chat_release(0, 1, 30);
+        let v = app.viewer.as_ref().expect("viewer opened on release");
         assert!(v.read_only);
         assert!(v.title.contains("target.md"));
         assert_eq!(v.text, "CONTENT");
+        assert!(app.sel_anchor_pos.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn chat_release_off_path_opens_no_viewer() {
+        let mut app = App::new();
+        let dir = std::env::temp_dir().join("tango-offpath");
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("cfg.json");
+        std::fs::write(&f, "{}").unwrap();
+        app.chat_inner_w = 200;
+        app.chat_scroll_offset = 0;
+        app.chat_rows = wrap_chat_rows(&[format!("已改好：不动 {}", f.display())], 200);
+        // click (press+release) on the leading text, not the path
+        app.chat_press(0, 3);
+        app.chat_release(0, 0, 3);
         assert!(
-            app.sel_anchor_pos.is_none(),
-            "no selection started for a path click"
+            app.viewer.is_none(),
+            "release off the path must not open the viewer"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn chat_drag_from_path_line_copies_instead_of_viewing() {
+        let mut app = App::new();
+        let dir = std::env::temp_dir().join("tango-drag");
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("notes.txt");
+        std::fs::write(&f, "N").unwrap();
+        app.chat_inner_w = 200;
+        app.chat_scroll_offset = 0;
+        app.chat_rows = wrap_chat_rows(&[format!("看 {}", f.display())], 200);
+        // start the drag on the path itself, move, release elsewhere → copy, no viewer
+        app.chat_press(0, 4);
+        app.chat_drag(0, 20);
+        app.chat_release(0, 0, 20);
+        assert!(app.viewer.is_none(), "a drag is a selection, not a click");
+        assert!(
+            app.lines.iter().any(|l| l.text.contains("已复制")),
+            "dragged text was copied"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -8235,9 +8308,19 @@ mod tests {
             .map(|c| display_width(&c.to_string()))
             .sum();
         let term_row = app.chat_area.y + (g - app.chat_scroll_offset) as u16;
+        // chips open on release (press+release, no drag), like file paths
         app.handle(
             Event::Mouse(crossterm::event::MouseEvent {
                 kind: MouseEventKind::Down(MouseButton::Left),
+                column: (col + 1) as u16,
+                row: term_row,
+                modifiers: KeyModifiers::NONE,
+            }),
+            &mut serve,
+        );
+        app.handle(
+            Event::Mouse(crossterm::event::MouseEvent {
+                kind: MouseEventKind::Up(MouseButton::Left),
                 column: (col + 1) as u16,
                 row: term_row,
                 modifiers: KeyModifiers::NONE,
