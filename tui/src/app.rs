@@ -380,11 +380,11 @@ fn local_utc_offset_seconds() -> i64 {
 }
 
 fn parse_utc_offset(s: &str) -> Option<i64> {
-    // "+0800" / "-0530"
-    let (sign, rest) = s.split_at(1);
-    if rest.len() < 4 {
+    // "+0800" / "-0530" — length checked BEFORE split_at (empty used to panic)
+    if s.len() < 5 {
         return None;
     }
+    let (sign, rest) = s.split_at(1);
     let hours: i64 = rest.get(0..2)?.parse().ok()?;
     let mins: i64 = rest.get(2..4)?.parse().ok()?;
     let mag = hours * 3600 + mins * 60;

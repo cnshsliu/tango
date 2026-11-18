@@ -93,9 +93,10 @@ export async function worktreeMerge(cwd: string, name: string): Promise<{ merged
   }
   const r = git(cwd, ['merge', '--no-edit', entry.branch]);
   if (!r.ok) {
-    // never leave the main repo mid-merge: abort and report the conflict output
-    git(cwd, ['merge', '--abort']);
-    return { merged: false, output: (r.out || r.err) + '\n（已自动 git merge --abort，主工作区已恢复干净）' };
+    // never leave the main repo mid-merge: abort when a merge actually started
+    const aborted = git(cwd, ['merge', '--abort']).ok;
+    const note = aborted ? '\n（已自动 git merge --abort，主工作区已恢复干净）' : '';
+    return { merged: false, output: (r.out || r.err) + note };
   }
   return { merged: true, output: r.out };
 }

@@ -115,7 +115,7 @@ export function makeAgent(model: ModelSpec, store: SessionStore, cwd: string, pe
     extraDirs: () => extraDirs.dirs,
     plan: () => plan.on
   });
-  installDiagnostics(events, cwd);
+  installDiagnostics(events, () => agent.cwd); // /cd moves the checker root too
   const pluginHooks = loadPluginHooks().hooks;
   const mergedHooks = {
     beforeTool: cfg.hooks?.beforeTool ?? pluginHooks.beforeTool,

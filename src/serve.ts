@@ -86,9 +86,7 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
         input: t.inputSchema,
         writeEffect: true, // external tools: unknown side effects, checkpoint them
         execute: async (input) => {
-          if (!server.connected) {
-            return { content: [{ type: 'text', text: `mcp server "${server.name}" is disconnected` }], isError: true };
-          }
+          // no connected-guard here: callTool lazily reconnects a dead server itself
           try {
             const r = await server.callTool(t.name, (input ?? {}) as Record<string, unknown>);
             return { content: [{ type: 'text', text: r.text }], isError: r.isError };
@@ -437,8 +435,12 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
         const byModel = new Map<string, { model: string; requests: number; input: number; output: number; costUsd: number }>();
         const bySession: { id: string; name: string; costUsd: number; messages: number }[] = [];
         let totalCostUsd = 0;
-        for (const summ of await SessionStore.list(sessionsDir())) {
-          const st = await SessionStore.open(sessionsDir(), summ.id);
+        // cap the scan: huge session dirs must not freeze the event loop for minutes,
+        // and a file that vanishes/corrupts between list and open is skipped, not fatal
+        const allSessions = await SessionStore.list(sessionsDir());
+        for (const summ of allSessions.slice(0, 500)) {
+          const st = await SessionStore.open(sessionsDir(), summ.id).catch(() => null);
+          if (!st) continue;
           let sessionCost = 0;
           for (const m of st.allMessages()) {
             if (m.role !== 'assistant' || !m.usage) continue;
@@ -939,7 +941,19 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
             // config.toml: no TOML parser dependency — a loose scan for trusted command entries
             const tomlPath = cmd.path ? resolve(cwd, String(cmd.path)) : join(homedir(), '.codex', 'config.toml');
             const toml = await rf2(tomlPath, 'utf8');
-            const cmds = [...toml.matchAll(/^command\s*=\s*"([^"]+)"/gm)].map((m) => m[1]);
+            // section-aware: only command entries under trusted-command sections — a bare
+            // global scan would import [mcp_servers.x] launch commands as bash allow rules
+            const cmds: string[] = [];
+            let inTrusted = false;
+            for (const line of toml.split('\n')) {
+              const sec = /^\s*\[+([^\]]+)\]+/.exec(line);
+              if (sec) {
+                inTrusted = /trusted/i.test(sec[1]);
+                continue;
+              }
+              const cmd = inTrusted ? /^\s*command\s*=\s*"([^"]+)"/.exec(line) : null;
+              if (cmd) cmds.push(cmd[1]);
+            }
             const imported0: string[] = [];
             const skipped0: { raw: string; reason: string }[] = [];
             for (const c of cmds) {
@@ -948,9 +962,12 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
               else skipped0.push({ raw: `command = "${c}"`, reason: p.error });
             }
             if (!cmds.length) skipped0.push({ raw: tomlPath, reason: 'no trusted command entries found' });
-            const cfgT = await loadConfig();
-            const allowT = [...new Set([...(cfgT.permissions?.allow ?? []), ...imported0])];
-            await withConfig(async () => saveConfig({ ...(await loadConfig()), permissions: { allow: allowT } }));
+            const allowT = await withConfig(async () => {
+              const cfgT = await loadConfig();
+              const merged = [...new Set([...(cfgT.permissions?.allow ?? []), ...imported0])];
+              await saveConfig({ ...cfgT, permissions: { allow: merged } });
+              return merged;
+            });
             if (perm.rules) perm.rules.allow = allowT;
             reply(cmd, true, { imported: imported0, skipped: skipped0 });
             return;
@@ -1042,9 +1059,14 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
           // a corrupt file is backed up once instead of silently vanishing
           if (e?.code !== 'ENOENT') {
             try {
-              await wf(file + '.corrupt', await rf(file, 'utf8'), 'utf8');
-              process.stderr.write('[presets] corrupt file backed up to presets.json.corrupt\n');
-            } catch {}
+              const { access } = await import('node:fs/promises');
+              await access(file + '.corrupt'); // keep only the FIRST corrupt snapshot
+            } catch {
+              try {
+                await wf(file + '.corrupt', await rf(file, 'utf8'), 'utf8');
+                process.stderr.write('[presets] corrupt file backed up to presets.json.corrupt\n');
+              } catch {}
+            }
           }
         }
         if (cmd.cmd === 'preset_save') {
@@ -1104,6 +1126,8 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
           });
         } catch (e: any) {
           reply(cmd, false, undefined, String(e?.message ?? e));
+        } finally {
+          if (!promptInFlight) runningText = null; // no phantom running entry in /queue
         }
         return;
       }
@@ -1378,6 +1402,8 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
           reply(cmd, true, { text });
         } catch (e: any) {
           reply(cmd, false, undefined, String(e?.message ?? e));
+        } finally {
+          if (!promptInFlight) runningText = null; // no phantom running entry in /queue
         }
         return;
       }

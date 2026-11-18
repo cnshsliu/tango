@@ -2121,3 +2121,56 @@ trust_level = 200
     await rm(work, { recursive: true, force: true });
   }
 });
+
+test('C1 pin: a dead MCP server reconnects through a real serve tool call', async () => {
+  const mock = await startMock();
+  const home = await mkdtemp(join(tmpdir(), 'tango-serve-home-'));
+  const work = await mkdtemp(join(tmpdir(), 'tango-serve-work-'));
+  await writeFile(join(home, 'models.json'), JSON.stringify([
+    { id: 'mock/mock', provider: 'mock', model: 'm', api: 'openai-completions', baseUrl: `http://127.0.0.1:${(mock.server.address() as AddressInfo).port}/v1`, apiKey: 'MOCK_SERVE_KEY', contextWindow: 8000 }
+  ]));
+  await writeFile(join(home, 'config.json'), JSON.stringify({
+    mcpServers: { demo: { command: process.execPath, args: [join(import.meta.dirname, 'fixtures', 'mock-mcp-server.mjs')] } },
+    permissions: { allow: ['tool:mcp_demo_echo'] }
+  }));
+  let n = 0;
+  mock.setScript(() => {
+    n++;
+    if (n === 1 || n === 3) return SSE({ choices: [{ delta: { tool_calls: [{ index: 0, id: 'm' + n, function: { name: 'mcp_demo_echo', arguments: JSON.stringify({ message: 'C1-' + n }) } }] }, finish_reason: 'tool_calls' }] }) + 'data: [DONE]\n\n';
+    return SSE({ choices: [{ delta: { content: 'ok' } }] }) + SSE({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1 } }) + 'data: [DONE]\n\n';
+  });
+  const s = await startServe(home, work, 0);
+  try {
+    await s.next();
+    // turn 1: the echo tool works
+    s.send({ id: 100, cmd: 'prompt', text: 'echo once' });
+    const r1 = await (async () => { for (;;) { const f = await s.next(); if (f.type === 'result' && f.id === 100) return f; } })();
+    assert.ok(r1.ok);
+
+    // kill ALL node processes running the fixture (the serve child's MCP server)
+    spawnSync('pkill', ['-f', 'mock-mcp-server.mjs']);
+    await sleep(400); // let the exit event land (connected=false)
+
+    // turn 2: the same tool call transparently reconnects
+    s.send({ id: 101, cmd: 'prompt', text: 'echo again' });
+    let sawEcho = false;
+    const r2 = await (async () => {
+      for (;;) {
+        const f = await s.next();
+        if (f.type === 'tool_result' && f.call?.name === 'mcp_demo_echo') {
+          assert.ok(!f.isError, String(f.output));
+          sawEcho = true;
+        }
+        if (f.type === 'result' && f.id === 101) return f;
+      }
+    })();
+    assert.ok(r2.ok);
+    assert.ok(sawEcho, 'second call went through a RECONNECTED server (C1 fixed)');
+  } finally {
+    s.child.kill();
+    spawnSync('pkill', ['-f', 'mock-mcp-server.mjs']);
+    mock.server.close();
+    await rm(home, { recursive: true, force: true });
+    await rm(work, { recursive: true, force: true });
+  }
+});

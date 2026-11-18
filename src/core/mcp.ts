@@ -45,6 +45,7 @@ export class McpServer {
   }
 
   async start(): Promise<void> {
+    this.stop(); // a restart replaces any half-dead child
     this.child = spawn(this.spec.command, this.spec.args ?? [], {
       stdio: ['pipe', 'pipe', 'pipe'],
       env: { ...process.env, ...(this.spec.env ?? {}) }
@@ -103,20 +104,30 @@ export class McpServer {
   }
 
   async callTool(name: string, args: Record<string, unknown>): Promise<{ text: string; isError: boolean }> {
-    // lazy reconnect: a dead server restarts on the next call (capped), instead of staying
-    // disconnected for the whole session (batch-4 deferred minor)
+    // lazy reconnect: a dead server restarts on the next call (capped, lock-guarded so two
+    // concurrent calls cannot kill each other's fresh child), instead of staying
+    // disconnected for the whole session
     if (!this.connected || !this.child || this.child.exitCode !== null || this.child.killed) {
-      if (this.reconnects < 3) {
+      if (this.reconnecting) {
+        // another call is already bringing the server back; wait for its outcome
+        await this.reconnecting.catch(() => {});
+      } else if (this.reconnects < 3 || Date.now() - this.lastReconnectAt > 60_000) {
         this.reconnects++;
+        this.lastReconnectAt = Date.now();
+        this.reconnecting = this.start()
+          .then(() => {
+            this.reconnects = 0; // a successful handshake resets the budget
+          })
+          .finally(() => {
+            this.reconnecting = undefined;
+          });
         try {
-          this.stop();
-          await this.start();
-          this.reconnects = 0; // a successful handshake resets the budget
+          await this.reconnecting;
         } catch (e: any) {
           return { text: `mcp ${this.name}: reconnect failed (${e?.message ?? e})`, isError: true };
         }
       } else {
-        return { text: `mcp ${this.name}: reconnect budget exhausted (3 attempts)`, isError: true };
+        return { text: `mcp ${this.name}: reconnect budget exhausted (3 attempts; retries again in a minute)`, isError: true };
       }
     }
     const r = await this.request('tools/call', { name, arguments: args });
@@ -128,6 +139,8 @@ export class McpServer {
 
   /** deterministic collision-free bridged name: mcp_<server>_<tool>, suffixed on collision */
   private reconnects = 0;
+  private reconnecting: Promise<void> | undefined;
+  private lastReconnectAt = 0;
 
   stop(): void {
     this.connected = false;
