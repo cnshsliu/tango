@@ -17,7 +17,7 @@ import { reconcileTasks, startBgTask, stopTask } from './core/bgtask.js';
 import { bridgeName, connectServers } from './core/mcp.js';
 import { worktreeCreate, worktreeList, worktreeMerge, worktreeRemove } from './core/worktrees.js';
 import { parseRule } from './core/permissions.js';
-import { restoreSnapshot } from './core/git-snapshot.js';
+import { restoreSnapshot, snapshotFileList } from './core/git-snapshot.js';
 import { hasKey, keyProblem, loadConfig, loadModels, pickModel, saveConfig, sessionsDir, tangoDir } from './core/config.js';
 import { listDrafts, promoteDraft, saveDraft } from './core/skills.js';
 import { join, resolve } from 'node:path';
@@ -306,7 +306,7 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
     const cps = store
       .indexedEntries()
       .filter(({ entry }) => entry.kind === 'checkpoint')
-      .map(({ entry, index }) => ({ hash: (entry as { hash: string }).hash, index }));
+      .map(({ entry, index }) => ({ hash: (entry as { hash: string; note?: string }).hash, note: (entry as { note?: string }).note, index }));
     // boundary = the FIRST checkpoint logged at/after the cut: the snapshot taken as the
     // dropped range began, which includes files the user made between turns (C1). When the
     // dropped range had no writes at all, no checkpoint exists there — code is untouched.
@@ -318,8 +318,22 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
     }
     if (dropAll) boundaryIdx = cps.length - 1; // redo-to-latest: restore the last known state
     if (boundaryIdx >= 0) {
-      const later = cps.slice(boundaryIdx + 1).map((c) => c.hash);
-      code = await restoreSnapshot(cwd, cps[boundaryIdx].hash, later);
+      const chain = cps.slice(boundaryIdx);
+      const later = chain.slice(1).map((c) => c.hash);
+      // pair-diff protection: files present in a turn's PRE snapshot but absent from the
+      // previous turn's POST snapshot were created BETWEEN turns — by the user, not the
+      // agent — so smart delete must never remove them (scope limitation A)
+      const protect = new Set<string>();
+      for (let i = 1; i < chain.length; i++) {
+        const prev = chain[i - 1];
+        const cur = chain[i];
+        if (prev.note !== 'post' || cur.note === 'post') continue; // post(k) → pre(k+1) pair
+        const prevFiles = await snapshotFileList(cwd, prev.hash);
+        for (const f of await snapshotFileList(cwd, cur.hash)) {
+          if (!prevFiles.has(f)) protect.add(f);
+        }
+      }
+      code = await restoreSnapshot(cwd, chain[0].hash, later, protect);
     }
     await store.rewindTo(cutEntry);
     return { ok: true, data: { codeRestored: boundaryIdx >= 0, turnDropped: k, ...code } };

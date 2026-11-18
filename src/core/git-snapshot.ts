@@ -122,8 +122,10 @@ export interface RestoreReport {
   submodules: number;
 }
 
-/** Restore a snapshot with smart-delete semantics (design spec §3.3). */
-export async function restoreSnapshot(cwd: string, target: string, later: string[]): Promise<RestoreReport> {
+/** Restore a snapshot with smart-delete semantics (design spec §3.3).
+ * `protect`: files never deleted even if a later snapshot knows them (e.g. user files
+ * created between two dropped turns — detected by checkpoint pair-diffs in serve). */
+export async function restoreSnapshot(cwd: string, target: string, later: string[], protect: Set<string> = new Set()): Promise<RestoreReport> {
   const root = repoRoot(cwd) ?? cwd;
   let overwritten: string[] = [];
   const targetFiles = await snapshotFileList(cwd, target);
@@ -170,6 +172,7 @@ export async function restoreSnapshot(cwd: string, target: string, later: string
   const deleted: string[] = [];
   for (const f of laterFiles) {
     if (targetFiles.has(f)) continue;
+    if (protect.has(f)) continue; // user-created between dropped turns — never delete
     const abs = join(root, f);
     if (!existsSync(abs)) continue;
     await rm(abs, { force: true });

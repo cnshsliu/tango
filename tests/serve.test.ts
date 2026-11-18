@@ -2174,3 +2174,53 @@ test('C1 pin: a dead MCP server reconnects through a real serve tool call', asyn
     await rm(work, { recursive: true, force: true });
   }
 });
+
+test('A: a user file created BETWEEN two dropped turns survives the rewind', async () => {
+  const mock = await startMock();
+  const home = await mkdtemp(join(tmpdir(), 'tango-serve-home-'));
+  const work = await mkdtemp(join(tmpdir(), 'tango-serve-work-'));
+  await writeFile(join(home, 'models.json'), JSON.stringify([
+    { id: 'mock/mock', provider: 'mock', model: 'm', api: 'openai-completions', baseUrl: `http://127.0.0.1:${(mock.server.address() as AddressInfo).port}/v1`, apiKey: 'MOCK_SERVE_KEY', contextWindow: 8000 }
+  ]));
+  // t1 writes a.txt, t2 writes b.txt, t3 writes c.txt
+  let n = 0;
+  mock.setScript(() => {
+    n++;
+    if (n % 2 === 1) {
+      const file = 'abc'[Math.floor(n / 2)];
+      return SSE({ choices: [{ delta: { tool_calls: [{ index: 0, id: 'w' + n, function: { name: 'bash', arguments: JSON.stringify({ command: `echo x > ${file}.txt` }) } }] }, finish_reason: 'tool_calls' }] }) + 'data: [DONE]\n\n';
+    }
+    return SSE({ choices: [{ delta: { content: 'done' } }] }) + SSE({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 5, completion_tokens: 2 } }) + 'data: [DONE]\n\n';
+  });
+  const git = (args: string[]) => spawnSync('git', args, { cwd: work, encoding: 'utf8' });
+  git(['init', '-q']); git(['config', 'user.email', 't@t']); git(['config', 'user.name', 't']);
+  await writeFile(join(work, 'seed.txt'), 'seed\n'); git(['add', '.']); git(['commit', '-q', '-m', 'i']);
+
+  const s = await startServe(home, work, 0);
+  try {
+    await s.next();
+    s.send({ id: 100, cmd: 'prompt', text: 't1' });
+    await s.until((f: any) => f.type === 'result' && f.id === 100 && f.ok, 't1');
+    s.send({ id: 101, cmd: 'prompt', text: 't2' });
+    await s.until((f: any) => f.type === 'result' && f.id === 101 && f.ok, 't2');
+    // the user creates a file BETWEEN t2 and t3 — it lands inside the later-dropped range
+    await writeFile(join(work, 'user-between.txt'), 'precious\n');
+    s.send({ id: 102, cmd: 'prompt', text: 't3' });
+    await s.until((f: any) => f.type === 'result' && f.id === 102 && f.ok, 't3');
+
+    s.send({ id: 200, cmd: 'timeline' });
+    const tl = await s.until((f: any) => f.type === 'result' && f.id === 200, 'tl');
+    // rewind to before t2: drops t2 AND t3 — user-between.txt sits inside the dropped range
+    s.send({ id: 201, cmd: 'rewind', entryIndex: tl.data.nodes[1].entryIndex });
+    const rw = await s.until((f: any) => f.type === 'result' && f.id === 201, 'rewind');
+    assert.ok(rw.ok, JSON.stringify(rw));
+    assert.ok(!existsSync(join(work, 'b.txt')), 't2 agent file rolled back');
+    assert.ok(!existsSync(join(work, 'c.txt')), 't3 agent file rolled back');
+    assert.equal(await readFile(join(work, 'user-between.txt'), 'utf8'), 'precious\n', 'A: between-turns user file survives');
+  } finally {
+    s.child.kill();
+    mock.server.close();
+    await rm(home, { recursive: true, force: true });
+    await rm(work, { recursive: true, force: true });
+  }
+});
