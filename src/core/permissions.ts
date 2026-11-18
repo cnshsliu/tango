@@ -70,18 +70,38 @@ export function ruleMatches(rule: AllowRule, call: ToolCallBlock, cwd: string): 
     const prefix = resolve(cwd, rule.value);
     return target === prefix || target.startsWith(prefix + '/');
   }
-  // bash: match the leading command tokens before ; && || |
+  // bash: the rule covers the leading command tokens before ; && || |
   if (call.name !== 'bash') return false;
   const first = String(input.command ?? '').split(/[;|&]/)[0].trim();
   const prefix = rule.value;
   return first === prefix || first.startsWith(prefix + ' ');
 }
 
+/** Segment a bash command into its ; && || | parts (first tokens), for tail re-checks. */
+function bashSegments(command: string): string[] {
+  return command
+    .split(/[;|&]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
 export function decide(mode: PermissionMode, call: ToolCallBlock, cwd: string, rules?: AllowRule[], extraDirs?: string[]): Decision {
   if (mode === 'readonly') return readonlyDecision(call);
   if (mode === 'auto' || READ_TOOLS.has(call.name)) return { action: 'allow' };
-  // persistent allow rules never override readonly (checked above), but beat ask
-  if (rules?.some((r) => ruleMatches(r, call, cwd))) return { action: 'allow' };
+  // persistent allow rules never override readonly (checked above), but beat ask.
+  // bash rules cover only the segments they match: a risky tail still asks (no smuggling).
+  if (rules?.some((r) => ruleMatches(r, call, cwd))) {
+    if (call.name === 'bash') {
+      const segs = bashSegments(String((call.input as Record<string, unknown>)?.command ?? ''));
+      const covered = (seg: string) => rules.some((r) => r.kind === 'bash' && (seg === r.value || seg.startsWith(r.value + ' ')));
+      const riskyTail = segs.find((seg, i) => i > 0 && !covered(seg) && RISKY_BASH.some(([re]) => re.test(seg)));
+      if (riskyTail) {
+        const why = RISKY_BASH.find(([re]) => re.test(riskyTail))![1];
+        return { action: 'ask', reason: `rule covers the prefix, but a later command ${why}: ${riskyTail.slice(0, 60)}` };
+      }
+    }
+    return { action: 'allow' };
+  }
   return decideBase(mode, call, cwd, extraDirs);
 }
 

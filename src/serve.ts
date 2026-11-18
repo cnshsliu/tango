@@ -237,6 +237,15 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
     enqueue({ id: undefined, cmd: 'prompt', text: `继续推进目标：${goal.text}。完成后明确说明。` });
   }
 
+  /** serialize read-modify-write cycles on config.json (fast-lane commands run concurrently) */
+  let configMutex: Promise<void> = Promise.resolve();
+  const withConfig = <T>(fn: () => Promise<T>): Promise<T> => {
+    const run = configMutex.then(fn, fn);
+    // keep the chain alive regardless of failures
+    configMutex = run.then(() => undefined, () => undefined);
+    return run;
+  };
+
   const reply = (cmd: Command, ok: boolean, data?: unknown, error?: string) => {
     if (cmd.id === undefined) return;
     out(ok ? { type: 'result', id: cmd.id, ok: true, data } : { type: 'result', id: cmd.id, ok: false, error });
@@ -899,9 +908,12 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
           isDir = statSync(target).isDirectory();
         } catch {}
         if (!isDir) return reply(cmd, false, undefined, `add_dir: not a directory: ${target}`);
-        const cfg0 = await loadConfig();
-        const dirs = [...new Set([...(cfg0.extraDirs ?? []), target])];
-        await saveConfig({ ...cfg0, extraDirs: dirs });
+        const dirs = await withConfig(async () => {
+          const cfg0 = await loadConfig();
+          const merged = [...new Set([...(cfg0.extraDirs ?? []), target])];
+          await saveConfig({ ...cfg0, extraDirs: merged });
+          return merged;
+        });
         if (perm.extraDirs) perm.extraDirs.dirs = dirs;
         reply(cmd, true, { extraDirs: dirs });
         return;
@@ -952,9 +964,12 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
             skipped.push({ raw, reason: 'unsupported shape' });
           }
         }
-        const cfg0 = await loadConfig();
-        const allow = [...new Set([...(cfg0.permissions?.allow ?? []), ...imported])];
-        await saveConfig({ ...cfg0, permissions: { allow } });
+        const allow = await withConfig(async () => {
+          const cfg0 = await loadConfig();
+          const merged = [...new Set([...(cfg0.permissions?.allow ?? []), ...imported])];
+          await saveConfig({ ...cfg0, permissions: { allow: merged } });
+          return merged;
+        });
         if (perm.rules) perm.rules.allow = allow;
         reply(cmd, true, { imported, skipped });
         return;
@@ -962,28 +977,34 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
       case 'permissions_list':
       case 'permissions_add':
       case 'permissions_remove': {
-        const cfg0 = await loadConfig();
-        const allow = cfg0.permissions?.allow ? [...cfg0.permissions.allow] : [];
         if (cmd.cmd === 'permissions_list') {
-          reply(cmd, true, { allow: allow.map((rule) => ({ rule, note: ruleNote(rule) })) });
+          const cfg0 = await loadConfig();
+          reply(cmd, true, { allow: (cfg0.permissions?.allow ?? []).map((rule) => ({ rule, note: ruleNote(rule) })) });
           return;
         }
-        if (cmd.cmd === 'permissions_add') {
-          const raw = String(cmd.rule ?? '').trim();
-          const p = parseRule(raw);
-          if (!p.ok) return reply(cmd, false, undefined, p.error);
-          if (!allow.includes(raw)) allow.push(raw);
-          await saveConfig({ ...(await loadConfig()), permissions: { allow } });
+        // the read-modify-write runs under the config mutex: concurrent add/remove cannot lose updates
+        try {
+          const allow = await withConfig(async () => {
+            const cfg0 = await loadConfig();
+            const list = cfg0.permissions?.allow ? [...cfg0.permissions.allow] : [];
+            if (cmd.cmd === 'permissions_add') {
+              const raw = String(cmd.rule ?? '').trim();
+              const p = parseRule(raw);
+              if (!p.ok) throw new Error(p.error);
+              if (!list.includes(raw)) list.push(raw);
+            } else {
+              const idx = list.indexOf(String(cmd.rule ?? ''));
+              if (idx < 0) throw new Error(`rule not found: ${cmd.rule}`);
+              list.splice(idx, 1);
+            }
+            await saveConfig({ ...cfg0, permissions: { allow: list } });
+            return list;
+          });
           if (perm.rules) perm.rules.allow = allow;
           reply(cmd, true, { allow });
-          return;
+        } catch (e: any) {
+          reply(cmd, false, undefined, String(e?.message ?? e));
         }
-        const idx = allow.indexOf(String(cmd.rule ?? ''));
-        if (idx < 0) return reply(cmd, false, undefined, `rule not found: ${cmd.rule}`);
-        allow.splice(idx, 1);
-        await saveConfig({ ...(await loadConfig()), permissions: { allow } });
-        if (perm.rules) perm.rules.allow = allow;
-        reply(cmd, true, { allow });
         return;
       }
       case 'preset_save':

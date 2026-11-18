@@ -125,3 +125,16 @@ test('allow rules: tool/path/bash matching with boundary safety, readonly wins',
   assert.ok(parseRule('bash:').error);
   assert.ok(parseRule('path:/absolute').ok === true || parseRule('path:/absolute').error); // absolute allowed but flagged
 });
+
+test('bash rule tail re-check: a matching prefix cannot smuggle risky tails', async () => {
+  const { parseRule, decide } = await import('../src/core/permissions.js');
+  const rules = ['bash:git status'].map(parseRule).map((r: any) => r.rule);
+  const call = (command: string) => ({ type: 'tool_call' as const, id: 'x', name: 'bash', input: { command } });
+  assert.equal(decide('ask', call('git status -s'), '/w', rules).action, 'allow', 'plain match allowed');
+  // the tail contains a risky command — must ask despite the rule
+  assert.equal(decide('ask', call('git status; rm -rf /'), '/w', rules).action, 'ask', 'risky tail re-checked');
+  assert.equal(decide('ask', call('git status && git push'), '/w', rules).action, 'ask', 'push tail re-checked');
+  // a fully covered compound is fine
+  const rules2 = ['bash:git status', 'bash:git push'].map(parseRule).map((r: any) => r.rule);
+  assert.equal(decide('ask', call('git status && git push'), '/w', rules2).action, 'allow', 'both segments covered');
+});
