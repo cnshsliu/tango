@@ -4620,7 +4620,7 @@ impl App {
                 f,
                 popup,
                 &p.name,
-                "y 允许 · n 拒绝 · a 始终允许",
+                "y 允许 · n 拒绝 · a 始终允许 · c 复制命令",
                 self.theme,
             );
             let body = Paragraph::new(vec![
