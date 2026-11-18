@@ -73,8 +73,33 @@ export async function saveConfig(cfg: Config): Promise<void> {
   await writeFile(join(tangoDir(), 'config.json'), JSON.stringify(cfg, null, 2) + '\n', 'utf8');
 }
 
+/**
+ * ~/.tango/env holds KEY=VALUE lines (same file the task daemon sources).
+ * Loaded once before key resolution; real environment variables always win.
+ */
+let envFileLoaded = false;
+async function loadEnvFile(): Promise<void> {
+  if (envFileLoaded) return;
+  envFileLoaded = true;
+  let text: string;
+  try {
+    text = await readFile(join(tangoDir(), 'env'), 'utf8');
+  } catch {
+    return; // no env file
+  }
+  for (const line of text.split('\n')) {
+    if (line.trim().startsWith('#')) continue;
+    const m = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/.exec(line);
+    if (!m) continue;
+    let v = m[2];
+    if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) v = v.slice(1, -1);
+    if (process.env[m[1]] === undefined) process.env[m[1]] = v;
+  }
+}
+
 /** Built-in presets + ~/.tango/models.json; user entries win on id collision. */
 export async function loadModels(): Promise<ModelSpec[]> {
+  await loadEnvFile();
   const byId = new Map(presets.map((p) => [p.id, p]));
   const user = await readJson<ModelSpec[]>(join(tangoDir(), 'models.json'));
   for (const m of user ?? []) byId.set(m.id, { ...byId.get(m.id), ...m });
