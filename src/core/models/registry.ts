@@ -874,10 +874,10 @@ export const presets: ModelSpec[] = [
 ];
 
 // Vision-capable families: the flagship multimodal lines (Claude, Gemini, GPT consumer
-// flagships, Grok-4.7). Coding-specialized variants (codex) and text-only families
-// (deepseek, etc.) stay unmarked. Unmarked ≠ blocked: images still send with a heads-up
-// notice; users can override per-model via ~/.tango/models.json (`"vision": true`).
-const VISION_MODEL = /^(claude-|gemini-|grok-4\.7$|gpt-(?!.*codex))/;
+// flagships, Grok-4.7, qwen4-max). Coding-specialized variants (codex) and text-only
+// families (deepseek, etc.) stay unmarked. Unmarked ≠ blocked: images still send with a
+// heads-up notice; users can override per-model via ~/.tango/models.json (`"vision": true`).
+const VISION_MODEL = /^(claude-|gemini-|grok-4\.7$|gpt-(?!.*codex)|qwen4-max$)/;
 for (const p of presets) if (VISION_MODEL.test(p.model)) p.vision = true;
 
 /** Source platform (tokenhub) a model is reached through; falls back to provider. */

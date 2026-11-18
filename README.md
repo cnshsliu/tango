@@ -310,7 +310,7 @@ the system viewer (macOS `open` / Linux `xdg-open`). On submit the image rides t
 base64 upload (`images` field → `ImageBlock` → vendor `image_url`/`image` content), with the chip text
 `[图片 #N]` left in the message so the model knows where it sits; queued and Alt+Enter-supplemented
 prompts carry their images too. Resumed history replays images as clickable `[图片 <path>]` chips.
-Models flagged `vision: true` (Claude / Gemini / GPT consumer flagships / Grok-4.7 presets) accept
+Models flagged `vision: true` (Claude / Gemini / GPT consumer flagships / Grok-4.7 / qwen4-max presets) accept
 images silently; an unflagged model still receives the image but prints a heads-up notice — override
 per-model with `"vision": true` in `~/.tango/models.json`. The `read` tool likewise returns image files
 as images. Limits: 10MB per file; external-editor (`/editor`) round-trips flatten chips back to path
