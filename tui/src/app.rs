@@ -2964,6 +2964,13 @@ impl App {
                 }
             }
             "message" => self.commit_stream(),
+            // chat-line notices from serve (warnings, goal/subtask status) — never part of a stream
+            "notice" => {
+                if let Some(text) = v["text"].as_str() {
+                    self.push(text, Tone::Muted);
+                    self.jump_to_bottom();
+                }
+            }
             "tool_result" => {
                 let name = v["call"]["name"].as_str().unwrap_or("?");
                 let summary = Self::call_summary(&v["call"]["input"]);
@@ -6408,5 +6415,12 @@ mod tests {
         app.frame(json!({"type": "result", "id": sent["id"], "ok": true,
                 "data": {"plugins": [{"name": "demo", "description": "测试", "enabled": true}]}}));
         assert!(app.viewer.as_ref().unwrap().text.contains("demo"));
+    }
+
+    #[test]
+    fn notice_frames_render_as_chat_lines() {
+        let mut app = App::new();
+        app.frame(json!({"type": "notice", "text": "⚠ 另一个会话正在此目录运行"}));
+        assert!(app.lines.iter().any(|l| l.text.contains("另一个会话")));
     }
 }

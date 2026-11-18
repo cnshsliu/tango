@@ -1562,7 +1562,7 @@ test('goal: auto-continues until achieved, respects interrupt and max rounds', a
     s.send({ id: 100, cmd: 'prompt', text: '开始' });
     await s.until((f: any) => f.type === 'result' && f.id === 100, 'turn1');
     // goal check says NO → one auto continuation happens, then YES → goal clears
-    const done = await s.until((f: any) => f.type === 'message' && JSON.stringify(f).includes('目标完成'), 'goal done notice');
+    const done = await s.until((f: any) => (f.type === 'notice' || f.type === 'message') && JSON.stringify(f).includes('目标完成'), 'goal done notice');
     assert.ok(done);
     assert.equal(prompts, 2, 'exactly one auto continuation: ' + prompts);
     assert.equal(asks, 2);

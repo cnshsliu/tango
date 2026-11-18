@@ -7,9 +7,10 @@
  *
  * commands:  prompt | btw | interrupt | permission | models | set_model | set_mode | set_nvim_viewer
  *            set_theme | set_mouse | diff | compact | sessions | history | save_skill | status
- * frames:    hello | stream | btw_stream | message | tool_result | permission_request | turn_end | error | result
+ * frames:    hello | stream | btw_stream | message | notice (chat line) | tool_result | permission_request | turn_end | error | result
  */
 import { spawnSync } from 'node:child_process';
+import { createRequire as nodeCreateRequire } from 'node:module';
 import { createInterface } from 'node:readline';
 import { randomUUID } from 'node:crypto';
 import { buildContext } from './core/context.js';
@@ -27,6 +28,8 @@ import type { AskFn, PermissionMode } from './core/permissions.js';
 import type { ToolResult } from './core/types.js';
 import { buildTools, loadPluginHooks, openAgent, VERSION, type HostArgs, type PermState } from './host.js';
 import { diffTool } from './core/tools/diff.js';
+
+const nodeRequire = nodeCreateRequire(import.meta.url);
 
 export const PROTOCOL = 1;
 
@@ -84,11 +87,11 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
       if (prev.pid > 1) {
         try {
           process.kill(prev.pid, 0);
-          // a chat-line warning, not an error frame: concurrent UIs are a convention
+          // a notice (chat line), not an error frame: concurrent UIs are a convention
           // violation, not a protocol failure
           out({
-            type: 'message',
-            message: { role: 'assistant', content: [{ type: 'text', text: `⚠ 另一个 tango 会话正在此目录运行（pid ${prev.pid}, session ${String(prev.sessionId).slice(0, 8)}）— 主工作区是单写者约定，回滚/快照可能互相冲突；建议在不同 worktree 里并行（/worktree、/bg）` }] }
+            type: 'notice',
+            text: `⚠ 另一个 tango 会话正在此目录运行（pid ${prev.pid}${prev.sessionId ? ', session ' + String(prev.sessionId).slice(0, 8) : ''}）— 主工作区是单写者约定，回滚/快照可能互相冲突；建议在不同 worktree 里并行（/worktree、/bg）`
           });
         } catch {}
       }
@@ -99,8 +102,9 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
     } catch {}
     process.on('exit', () => {
       try {
-        const cur = require('node:fs').readFileSync(lockFile, 'utf8');
-        if (JSON.parse(cur).pid === process.pid) require('node:fs').unlinkSync(lockFile);
+        const fs = nodeRequire('node:fs') as typeof import('node:fs');
+        const cur = fs.readFileSync(lockFile, 'utf8');
+        if (JSON.parse(cur).pid === process.pid) fs.unlinkSync(lockFile);
       } catch {}
     });
   }
@@ -172,10 +176,10 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
             role: 'assistant',
             content: [{ type: 'text', text: `⑂ subtask ${pending.name} 完成：${summary}` }]
           });
-          out({ type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: `⑂ subtask ${pending.name} 完成（worktree ${t.worktreeName} · /resume ${t.sessionId} 看全程）` }] } as never });
+          out({ type: 'notice', text: `⑂ subtask ${pending.name} 完成（worktree ${t.worktreeName} · /resume ${t.sessionId} 看全程）` });
         } catch {}
       } else {
-        out({ type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: `⑂ subtask ${pending.name} ${t.status === 'failed' ? '失败' : '停止'}` }] } as never });
+        out({ type: 'notice', text: `⑂ subtask ${pending.name} ${t.status === 'failed' ? '失败' : '停止'}` });
       }
     }
   };
@@ -245,7 +249,7 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
   async function maybeContinueGoal(): Promise<void> {
     if (!goal.text || goal.paused) return;
     if (goal.rounds >= goal.maxRounds) {
-      out({ type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: `目标未在 ${goal.maxRounds} 轮内完成，已停止自动继续（/goal max N 调整）` }] } as never });
+      out({ type: 'notice', text: `目标未在 ${goal.maxRounds} 轮内完成，已停止自动继续（/goal max N 调整）` });
       goal.text = null;
       goal.rounds = 0;
       return;
@@ -256,7 +260,7 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
       // the ask may have been aborted or the goal cleared/paused while it was in flight — re-check
       if (!goal.text || goal.paused || check.stopReason === 'aborted' || !ans.trim()) return;
       if (/\bYES\b|是|完成|达成|DONE/.test(ans.toUpperCase())) {
-        out({ type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: `✓ 目标完成：${goal.text}` }] } as never });
+        out({ type: 'notice', text: `✓ 目标完成：${goal.text}` });
         goal.text = null;
         goal.rounds = 0;
         return;
@@ -265,7 +269,7 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
       return; // ask failed (aborted/no key): stop auto-continuing
     }
     goal.rounds++;
-    out({ type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: `● goal 自动继续（第 ${goal.rounds}/${goal.maxRounds} 轮）：${goal.text}` }] } as never });
+    out({ type: 'notice', text: `● goal 自动继续（第 ${goal.rounds}/${goal.maxRounds} 轮）：${goal.text}` });
     enqueue({ id: undefined, cmd: 'prompt', text: `继续推进目标：${goal.text}。完成后明确说明。` });
   }
 
