@@ -66,8 +66,13 @@ export function ruleMatches(rule: AllowRule, call: ToolCallBlock, cwd: string): 
     if (!WRITE_TOOLS.has(call.name)) return false;
     // the rule prefix resolves against cwd (so ../sibling or absolute paths work too);
     // segment boundary: src matches src/a.ts, never src-evil/
-    const target = resolve(cwd, String(input.path ?? ''));
-    const prefix = resolve(cwd, rule.value);
+    let target = resolve(cwd, String(input.path ?? ''));
+    let prefix = resolve(cwd, rule.value);
+    if (process.platform === 'darwin') {
+      // macOS filesystems are case-insensitive by default; rules should match like the fs does
+      target = target.toLowerCase();
+      prefix = prefix.toLowerCase();
+    }
     return target === prefix || target.startsWith(prefix + '/');
   }
   // bash: the rule covers the leading command tokens before ; && || |

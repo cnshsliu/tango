@@ -64,10 +64,13 @@ function runHook(script: string, payload: unknown): void {
   child.stdin.end();
 }
 
-/** Local plugins (~/.tango/plugins/<name>/plugin.json): hooks merge in, enabled:false skips. */
-export function loadPluginHooks(): { plugins: { name: string; description: string; enabled: boolean }[]; hooks: { beforeTool?: string; afterTool?: string } } {
+/** Local plugins (~/.tango/plugins/<name>/plugin.json): hooks chain in, enabled:false skips. */
+export function loadPluginHooks(): {
+  plugins: { name: string; description: string; enabled: boolean }[];
+  hooks: { beforeTool?: string[]; afterTool?: string[] };
+} {
   const plugins: { name: string; description: string; enabled: boolean }[] = [];
-  const hooks: { beforeTool?: string; afterTool?: string } = {};
+  const hooks: { beforeTool?: string[]; afterTool?: string[] } = {};
   const dir = join(tangoDir(), 'plugins');
   let names: string[] = [];
   try {
@@ -86,8 +89,9 @@ export function loadPluginHooks(): { plugins: { name: string; description: strin
     const enabled = meta.enabled !== false;
     plugins.push({ name: meta.name ?? name, description: meta.description ?? '', enabled });
     if (!enabled) continue;
-    if (meta.hooks?.beforeTool && !hooks.beforeTool) hooks.beforeTool = meta.hooks.beforeTool;
-    if (meta.hooks?.afterTool && !hooks.afterTool) hooks.afterTool = meta.hooks.afterTool;
+    // every enabled plugin's hook runs — a chain, not first-wins (limitation D)
+    if (meta.hooks?.beforeTool) (hooks.beforeTool ??= []).push(meta.hooks.beforeTool);
+    if (meta.hooks?.afterTool) (hooks.afterTool ??= []).push(meta.hooks.afterTool);
   }
   return { plugins, hooks };
 }
@@ -116,19 +120,18 @@ export function makeAgent(model: ModelSpec, store: SessionStore, cwd: string, pe
     plan: () => plan.on
   });
   installDiagnostics(events, () => agent.cwd); // /cd moves the checker root too
-  const pluginHooks = loadPluginHooks().hooks;
-  const mergedHooks = {
-    beforeTool: cfg.hooks?.beforeTool ?? pluginHooks.beforeTool,
-    afterTool: cfg.hooks?.afterTool ?? pluginHooks.afterTool
-  };
-  cfg = { ...cfg, hooks: mergedHooks };
-  if (cfg.hooks?.beforeTool) {
-    const script = cfg.hooks.beforeTool;
-    events.on('before_tool', ({ call, tool }) => runHook(script, { phase: 'before', name: call.name, tool: tool.name, input: call.input }));
+  // hook chains: config first, then every enabled plugin in sorted order
+  const beforeChain = [cfg.hooks?.beforeTool, ...(loadPluginHooks().hooks.beforeTool ?? [])].filter(Boolean) as string[];
+  const afterChain = [cfg.hooks?.afterTool, ...(loadPluginHooks().hooks.afterTool ?? [])].filter(Boolean) as string[];
+  if (beforeChain.length) {
+    events.on('before_tool', ({ call, tool }) => {
+      for (const script of beforeChain) runHook(script, { phase: 'before', name: call.name, tool: tool.name, input: call.input });
+    });
   }
-  if (cfg.hooks?.afterTool) {
-    const script = cfg.hooks.afterTool;
-    events.on('after_tool', ({ call, result, ms }) => runHook(script, { phase: 'after', name: call.name, isError: !!result.isError, ms }));
+  if (afterChain.length) {
+    events.on('after_tool', ({ call, result, ms }) => {
+      for (const script of afterChain) runHook(script, { phase: 'after', name: call.name, isError: !!result.isError, ms });
+    });
   }
   if (checkpointEnabled(cfg)) installCheckpoints(events, { cwd: () => agent.cwd, store });
   return agent;

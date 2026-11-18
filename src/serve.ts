@@ -70,6 +70,40 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
   }
   const { agent, store } = opened;
   let cwd = opened.cwd; // /cd moves it (agent.cwd is the same truth)
+
+  // same-repo concurrency guard (single-writer convention): warn when another live serve
+  // holds this cwd — its snapshots/checkpoints could interleave with ours
+  {
+    const { createHash } = await import('node:crypto');
+    const key = createHash('sha1').update(cwd).digest('hex').slice(0, 16);
+    const lockDir = join(tangoDir(), 'locks');
+    const lockFile = join(lockDir, `${key}.json`);
+    const fsp = await import('node:fs/promises');
+    try {
+      const prev = JSON.parse(await fsp.readFile(lockFile, 'utf8'));
+      if (prev.pid > 1) {
+        try {
+          process.kill(prev.pid, 0);
+          // a chat-line warning, not an error frame: concurrent UIs are a convention
+          // violation, not a protocol failure
+          out({
+            type: 'message',
+            message: { role: 'assistant', content: [{ type: 'text', text: `⚠ 另一个 tango 会话正在此目录运行（pid ${prev.pid}, session ${String(prev.sessionId).slice(0, 8)}）— 主工作区是单写者约定，回滚/快照可能互相冲突；建议在不同 worktree 里并行（/worktree、/bg）` }] }
+          });
+        } catch {}
+      }
+    } catch {}
+    try {
+      await fsp.mkdir(lockDir, { recursive: true });
+      await fsp.writeFile(lockFile, JSON.stringify({ pid: process.pid, sessionId: store.id, cwd, at: new Date().toISOString() }), 'utf8');
+    } catch {}
+    process.on('exit', () => {
+      try {
+        const cur = require('node:fs').readFileSync(lockFile, 'utf8');
+        if (JSON.parse(cur).pid === process.pid) require('node:fs').unlinkSync(lockFile);
+      } catch {}
+    });
+  }
   const config = await loadConfig();
   // the persisted threshold (or 'off') must survive restarts
   if (config.autocompact === 'off') agent.compactAt = 0;
