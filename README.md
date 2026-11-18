@@ -161,6 +161,11 @@ tools and checkpoints follow live); `/add_dir <dir>` registers an extra writable
   complete local file path (absolute, `./…`, `~/…`, `:line` suffix tolerated) opens the file
   in the read-only viewer; the permission modal takes `c` to copy the pending command before
   answering y/n/a. `/mouse off` still hands selection back to the terminal natively.
+- **IME auto-switch (macOS)**: single-key dialogs (y/n/a) are unreachable through a CJK
+  input method. When `macism` is on PATH, a permission dialog switches to ABC automatically
+  and restores your previous input method when you answer; already-roman keyboards and a
+  missing macism are left untouched.
+
 - **Prompt queue** (while a turn runs): Enter enqueues locally (sent in order when the turn
   ends); `/queue` opens a clickable dialog (per-item [并入当前]/[删], footer [全部并入]/[清空])
   and also accepts `rm <n>`/`all`/`clear`; **Ctrl+C interrupts only the current reply and keeps the queue**; **Alt+Enter appends the typed
