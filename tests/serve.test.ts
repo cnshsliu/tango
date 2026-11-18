@@ -409,6 +409,7 @@ test('serve: diff returns working-tree and staged patches without mutations', as
   await writeFile(join(work, 'file.txt'), 'old\nnew\n');
 
   const s = await startServe(home, work, 0);
+  let other: Awaited<ReturnType<typeof startServe>> | undefined;
   try {
     await s.next();
     s.send({ id: 1, cmd: 'diff' });
@@ -422,20 +423,19 @@ test('serve: diff returns working-tree and staged patches without mutations', as
     s.send({ id: 3, cmd: 'diff' });
     const clean = await s.until((f) => f.type === 'result' && f.id === 3, 'clean diff');
     assert.equal(clean.data.diff, 'clean — nothing changed');
-  } finally {
-    s.child.kill();
-  }
 
-  const plain = await mkdtemp(join(tmpdir(), 'tango-serve-plain-'));
-  const other = await startServe(home, plain, 0);
-  try {
+    const plain = await mkdtemp(join(tmpdir(), 'tango-serve-plain-'));
+    other = await startServe(home, plain, 0);
     await other.next();
     other.send({ id: 1, cmd: 'diff' });
     const failure = await other.until((f) => f.type === 'result' && f.id === 1, 'non-repo diff');
     assert.equal(failure.data.isError, true);
     assert.match(failure.data.diff, /not a git repository/);
   } finally {
-    other.child.kill();
+    // single finally: the mock server must close on EVERY failure path,
+    // otherwise its listening handle keeps the test runner alive forever
+    s.child.kill();
+    other?.child.kill();
     mock.server.close();
   }
 });

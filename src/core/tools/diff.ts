@@ -2,17 +2,20 @@ import { spawn } from 'node:child_process';
 import type { Tool } from '../types.js';
 import { error, text, truncate } from './registry.js';
 
-function git(args: string[], cwd: string, signal: AbortSignal): Promise<{ out: string; code: number | null }> {
+function git(args: string[], cwd: string, signal: AbortSignal): Promise<{ out: string; err: string; code: number | null }> {
   return new Promise((done) => {
     const child = spawn('git', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+    // stdout and stderr are kept separate: stdout may be consumed as data (e.g. a
+    // repo path), so stray stderr warnings must never pollute it.
     let out = '';
+    let err = '';
     child.stdout.on('data', (b: Buffer) => (out += b.toString()));
-    child.stderr.on('data', (b: Buffer) => (out += b.toString()));
+    child.stderr.on('data', (b: Buffer) => (err += b.toString()));
     const kill = () => child.kill('SIGKILL');
     const timer = setTimeout(kill, 30_000);
     signal.addEventListener('abort', kill, { once: true });
-    child.on('error', (e) => { clearTimeout(timer); done({ out: e.message, code: -1 }); });
-    child.on('close', (code) => { clearTimeout(timer); done({ out, code }); });
+    child.on('error', (e) => { clearTimeout(timer); done({ out: '', err: e.message, code: -1 }); });
+    child.on('close', (code) => { clearTimeout(timer); done({ out, err, code }); });
   });
 }
 
@@ -40,12 +43,16 @@ export const diffTool: Tool<Input> = {
       const repo = root.out.trim();
       if (paths?.length) {
         const r = await git(['diff', ...(staged ? ['--cached'] : []), '--', ...paths], repo, ctx.signal);
+        if (r.code !== 0) return error(truncate(r.err || r.out || 'git diff failed'));
         return text(truncate(r.out || '(no diff for those paths)'));
       }
       const [st, unstaged] = await Promise.all([
         git(['status', '--porcelain'], repo, ctx.signal),
         git(['diff', ...(staged ? ['--cached'] : []), '--stat'], repo, ctx.signal)
       ]);
+      if (st.code !== 0 || unstaged.code !== 0) {
+        return error(truncate(st.err || unstaged.err || 'git diff failed'));
+      }
       const body = [unstaged.out.trim(), st.out.trim() && `status:\n${st.out.trim()}`].filter(Boolean).join('\n\n');
       return text(truncate(body || 'clean — nothing changed'));
     } catch (e: any) {
