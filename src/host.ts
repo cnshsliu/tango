@@ -96,7 +96,7 @@ export function loadPluginHooks(): {
   return { plugins, hooks };
 }
 
-export function makeAgent(model: ModelSpec, store: SessionStore, cwd: string, perm: PermState, cfg: { checkpoint?: string; permissions?: { allow: string[] }; extraDirs?: string[]; hooks?: { beforeTool?: string; afterTool?: string } } = {}): Agent {
+export function makeAgent(model: ModelSpec, store: SessionStore, cwd: string, perm: PermState, cfg: { checkpoint?: string; permissions?: { allow: string[] }; extraDirs?: string[]; hooks?: { beforeTool?: string; afterTool?: string }; maxTurns?: number } = {}): Agent {
   const events = new EventBus();
   // gate first: a vetoed call is never announced as running
   const rules = perm.rules ?? { allow: cfg.permissions?.allow ? [...cfg.permissions.allow] : [] };
@@ -110,7 +110,10 @@ export function makeAgent(model: ModelSpec, store: SessionStore, cwd: string, pe
       .map((r) => parseRule(r))
       .filter((r): r is { ok: true; rule: AllowRule } => r.ok)
       .map((r) => r.rule);
-  const agent = new Agent({ store, tools: buildTools(), model, cwd, events });
+  const maxTurns = Number.isFinite(cfg.maxTurns) && (cfg.maxTurns as number) >= 1 && (cfg.maxTurns as number) <= 500
+    ? Math.floor(cfg.maxTurns as number)
+    : undefined;
+  const agent = new Agent({ store, tools: buildTools(), model, cwd, events, maxTurns });
   installPermissionGate(events, {
     mode: () => perm.mode,
     cwd: () => agent.cwd,
