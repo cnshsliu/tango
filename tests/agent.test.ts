@@ -470,3 +470,49 @@ test('maxTurns is configurable from config and the error explains the way out', 
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test('supplements flush into the running turn before the next model request', async () => {
+  const bodies: any[] = [];
+  const server = createServer((req, res) => {
+    let raw = '';
+    req.on('data', (d) => (raw += d));
+    req.on('end', () => {
+      bodies.push(JSON.parse(raw));
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      if (bodies.length === 1) {
+        // first response asks for a tool; the supplement lands during its execution
+        res.write(chunk({ tool_calls: [{ index: 0, id: 's1', function: { name: 'bash', arguments: '{"command":"sleep 0.4"}' } }] }, 'tool_calls'));
+      } else {
+        res.write(chunk({ content: 'done' }, 'stop'));
+      }
+      res.write(`data: ${JSON.stringify({ choices: [], usage: { prompt_tokens: 5, completion_tokens: 2 } })}\n\n`);
+      res.end('data: [DONE]\n\n');
+    });
+  });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  const port = (server.address() as AddressInfo).port;
+  const dir = await mkdtemp(join(tmpdir(), 'tango-supp-'));
+  try {
+    const store = await SessionStore.create(dir, dir);
+    const registry = new (await import('../src/core/tools/registry.js')).ToolRegistry();
+    registry.register(bashTool);
+    const agent = new Agent({
+      store,
+      tools: registry,
+      cwd: dir,
+      model: { id: 'm/m', provider: 'm', model: 'm', api: 'openai-completions', baseUrl: `http://127.0.0.1:${port}/v1`, apiKey: 'k', contextWindow: 4000 }
+    });
+    const p = agent.prompt('主问题');
+    setTimeout(() => agent.supplement('补充：记得用中文回复'), 150);
+    await p;
+    assert.ok(bodies.length >= 2, 'turn continued after the tool');
+    const second = JSON.stringify(bodies[1]);
+    if (!second.includes('补充：记得用中文回复')) {
+    }
+    assert.ok(second.includes('补充：记得用中文回复'), 'supplement rides the SAME turn');
+    assert.ok(second.includes('主问题'), 'original ask still there');
+  } finally {
+    server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});

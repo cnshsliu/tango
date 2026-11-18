@@ -2248,3 +2248,45 @@ test('B: stopTask validates process identity before killing a process group', as
   assert.ok(true, 'we are still alive: identity check refused to kill(-pid)');
   delete process.env.TANGO_HOME;
 });
+
+test('supplement (Alt+Enter) rides the running turn; ctrl+c keeps the queue', async () => {
+  const mock = await startMock();
+  const home = await mkdtemp(join(tmpdir(), 'tango-serve-home-'));
+  const work = await mkdtemp(join(tmpdir(), 'tango-serve-work-'));
+  await writeFile(join(home, 'models.json'), JSON.stringify([
+    { id: 'mock/mock', provider: 'mock', model: 'm', api: 'openai-completions', baseUrl: `http://127.0.0.1:${(mock.server.address() as AddressInfo).port}/v1`, apiKey: 'MOCK_SERVE_KEY', contextWindow: 8000 }
+  ]));
+  // req1: slow tool (delay 1.5s); req2: finish
+  let n = 0;
+  mock.setScript(() => {
+    n++;
+    if (n === 1) return 'DELAY:1500:' + SSE({ choices: [{ delta: { tool_calls: [{ index: 0, id: 'q1', function: { name: 'bash', arguments: JSON.stringify({ command: 'sleep 0.5' }) } }] }, finish_reason: 'tool_calls' }] }) + 'data: [DONE]\n\n';
+    return SSE({ choices: [{ delta: { content: 'ok' } }] }) + SSE({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 5, completion_tokens: 2 } }) + 'data: [DONE]\n\n';
+  });
+  const s = await startServe(home, work, 0);
+  try {
+    await s.next();
+    s.send({ id: 100, cmd: 'prompt', text: '主任务' });
+    await sleep(700); // the turn is inside the slow tool now
+    s.send({ id: 200, cmd: 'supplement', text: '补充要求：输出用列表' });
+    // supplement has no result frame (notify-like); the proof is in request 2
+    const r = await s.until((f: any) => f.type === 'result' && f.id === 100 && f.ok, 'turn done');
+    assert.ok(r.ok);
+    const second = JSON.stringify(mock.requests[1]);
+    assert.ok(second.includes('主任务'));
+    assert.ok(second.includes('补充要求：输出用列表'), 'supplement merged into the SAME turn');
+
+    // supplement with no running turn → readable error (until treats error frames as
+    // fatal, so assert via the thrown message)
+    s.send({ id: 201, cmd: 'supplement', text: 'x' });
+    await assert.rejects(
+      () => s.until((f: any) => f.type === 'result' && f.id === 201, 'never'),
+      (e: any) => String(e.message).includes('没有进行中的回合')
+    );
+  } finally {
+    s.child.kill();
+    mock.server.close();
+    await rm(home, { recursive: true, force: true });
+    await rm(work, { recursive: true, force: true });
+  }
+});

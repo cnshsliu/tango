@@ -1557,6 +1557,13 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
     } catch {
       return out({ type: 'error', message: `not JSON: ${line.slice(0, 120)}` });
     }
+    if (cmd.cmd === 'supplement') {
+      const text = String(cmd.text ?? '');
+      if (!text.trim()) return out({ type: 'error', message: 'supplement: empty text' });
+      if (!promptInFlight) return out({ type: 'error', message: '当前没有进行中的回合 — 直接发新提问即可' });
+      agent.supplement(text);
+      return;
+    }
     if (cmd.cmd === 'interrupt') {
       // drop the queued prompts (they never run) and abort the running turn; the
       // running turn's own settle path clears runningText/promptInFlight, so time

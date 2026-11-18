@@ -48,6 +48,8 @@ export class Agent {
   effort?: 'low' | 'medium' | 'high';
   /** transient system-prompt suffix (plan mode) — never persisted into history */
   systemSuffix?: string;
+  /** mid-turn supplements (Alt+Enter): appended as user messages before the next model call */
+  private supplements: string[] = [];
   private readonly maxTurns: number;
   /** auto-compact threshold as a share of the context window; 0 disables (/autocompact) */
   compactAt: number;
@@ -65,6 +67,22 @@ export class Agent {
 
   abort(): void {
     this.controller?.abort();
+  }
+
+  /** Add context to the RUNNING turn (Alt+Enter): the next model request sees it. */
+  supplement(text: string): void {
+    if (text.trim()) this.supplements.push(text.trim());
+  }
+
+  /** flush pending supplements into the session as user messages */
+  private async flushSupplements(): Promise<void> {
+    while (this.supplements.length) {
+      const text = this.supplements.shift()!;
+      await this.store.appendMessage({
+        role: 'user',
+        content: [{ type: 'text', text: `（补充）${text}` }]
+      });
+    }
   }
 
   setModel(model: ModelSpec): void {
@@ -90,6 +108,7 @@ export class Agent {
     this.controller = new AbortController();
     try {
       for (let turn = 0; turn < this.maxTurns; turn++) {
+        await this.flushSupplements();
         await this.compactIfNeeded();
 
         const req = await this.request();

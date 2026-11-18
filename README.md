@@ -161,6 +161,12 @@ tools and checkpoints follow live); `/add_dir <dir>` registers an extra writable
   complete local file path (absolute, `./…`, `~/…`, `:line` suffix tolerated) opens the file
   in the read-only viewer; the permission modal takes `c` to copy the pending command before
   answering y/n/a. `/mouse off` still hands selection back to the terminal natively.
+- **Prompt queue** (while a turn runs): Enter enqueues locally (sent in order when the turn
+  ends); `/queue` lists, `/queue rm <n>` drops one, `/queue clear` drops all; **Ctrl+C
+  interrupts only the current reply and keeps the queue**; **Alt+Enter appends the typed
+  text to the RUNNING turn** ("forgot to mention…") — it rides the same turn's next model
+  request as a `（补充）…` user message. The status bar pins the active ask (▶) and each
+  finished turn leaves a `✓ 本轮：…` recap line.
 - `/autocompact [N%|0.N|off]` shows or sets the auto-compaction threshold (default 75% of the
   window); persisted in config.
 - `/statusline '<tpl>'` customizes the bottom bar with `{model} {mode} {cost} {ctx} {pct} {session}

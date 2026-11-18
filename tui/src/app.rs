@@ -314,6 +314,10 @@ const SLASH: &[(&str, &str)] = &[
         "对工作区 diff 做代码评审 · /security-review 安全评审",
     ),
     (
+        "/queue [rm <n>|clear]",
+        "本地排队管理 · Alt+Enter 补充到正在处理的回合",
+    ),
+    (
         "/preset <name>|save <name>",
         "提示模板：保存当前输入 / 填入输入框（不发送）",
     ),
@@ -1566,16 +1570,59 @@ impl App {
                 self.pending.push((id, Pending::Context));
             }
             "/queue" => {
-                let id = serve.command("queue", vec![]);
-                self.pending.push((id, Pending::Queue));
+                let arg = rest.trim();
+                if arg == "clear" {
+                    let n = self.local_queue.len();
+                    self.local_queue.clear();
+                    self.push(format!("已清空 {n} 条排队提示"), Tone::Muted);
+                } else if let Some(num) = arg.strip_prefix("rm ") {
+                    match num.trim().parse::<usize>() {
+                        Ok(idx) if idx >= 1 && idx <= self.local_queue.len() => {
+                            let removed = self.local_queue.remove(idx - 1);
+                            let head: String = removed
+                                .lines()
+                                .next()
+                                .unwrap_or("")
+                                .chars()
+                                .take(40)
+                                .collect();
+                            self.push(format!("已移除排队 #{idx}：{head}"), Tone::Muted);
+                        }
+                        _ => self.push("usage: /queue rm <编号>（/queue 里看编号）", Tone::Muted),
+                    }
+                } else if !arg.is_empty() {
+                    self.push(
+                        "usage: /queue · /queue rm <编号> · /queue clear",
+                        Tone::Muted,
+                    );
+                } else if self.local_queue.is_empty() {
+                    self.push(
+                        "队列为空 · 忙碌时按回车排队、Alt+Enter 补充到当前回合",
+                        Tone::Muted,
+                    );
+                } else {
+                    let mut text = String::from("排队中（依次自动发送）：\n\n");
+                    for (i, q) in self.local_queue.iter().enumerate() {
+                        let head: String =
+                            q.lines().next().unwrap_or("").chars().take(60).collect();
+                        text.push_str(&format!("  {}. {head}\n", i + 1));
+                    }
+                    text.push_str(
+                        "\n/queue rm <编号> 移除 · /queue clear 全清 · ctrl+c 只打断当前",
+                    );
+                    self.viewer = Some(Viewer::read_only("提示队列", text));
+                }
             }
-            "/usage" | "/stats" => {
-                let id = serve.command("usage", vec![]);
-                self.pending.push((id, Pending::Usage));
+            "/config" => {
+                let id = serve.command("config_show", vec![]);
+                self.pending.push((id, Pending::ConfigShow));
             }
-            "/insights" => {
-                let id = serve.command("insights", vec![]);
-                self.pending.push((id, Pending::Insights));
+            "/keymap" => {
+                let mut text = String::from("当前按键映射（config.json 的 keys 可自定义）：\n\n");
+                for (name, key) in self.keys.summary() {
+                    text.push_str(&format!("  {name:<14} {key}\n"));
+                }
+                self.viewer = Some(Viewer::read_only("按键映射", text));
             }
             "/init" => {
                 let force = rest.split_whitespace().any(|p| p == "--force");
@@ -1594,16 +1641,13 @@ impl App {
                 let id = serve.command("debug_zip", vec![]);
                 self.pending.push((id, Pending::DebugZip));
             }
-            "/config" => {
-                let id = serve.command("config_show", vec![]);
-                self.pending.push((id, Pending::ConfigShow));
+            "/usage" | "/stats" => {
+                let id = serve.command("usage", vec![]);
+                self.pending.push((id, Pending::Usage));
             }
-            "/keymap" => {
-                let mut text = String::from("当前按键映射（config.json 的 keys 可自定义）：\n\n");
-                for (name, key) in self.keys.summary() {
-                    text.push_str(&format!("  {name:<14} {key}\n"));
-                }
-                self.viewer = Some(Viewer::read_only("按键映射", text));
+            "/insights" => {
+                let id = serve.command("insights", vec![]);
+                self.pending.push((id, Pending::Insights));
             }
             "/pwd" => {
                 let id = serve.command("pwd", vec![]);
@@ -2897,10 +2941,12 @@ impl App {
                 self.goal_text = None; // serve clears the goal; mirror it immediately
                 if !self.local_queue.is_empty() {
                     self.push(
-                        format!("已清空 {} 条排队提示", self.local_queue.len()),
+                        format!(
+                            "排队保留 {} 条（中断后自动继续）· /queue clear 全清",
+                            self.local_queue.len()
+                        ),
                         Tone::Muted,
                     );
-                    self.local_queue.clear();
                 }
                 self.push("[interrupt requested]", Tone::Muted);
                 return;
@@ -3021,7 +3067,7 @@ impl App {
                 let head: String = text.lines().next().unwrap_or("").chars().take(40).collect();
                 self.push(
                     format!(
-                        "📋 已排队 {}（当前回合结束后自动发送 · ctrl+c 中断并清空）：{head}",
+                        "📋 已排队 {}（依次自动发送 · /queue 管理 · ctrl+c 只打断当前）：{head}",
                         self.local_queue.len()
                     ),
                     Tone::Muted,
@@ -3059,10 +3105,12 @@ impl App {
             self.goal_text = None;
             if !self.local_queue.is_empty() {
                 self.push(
-                    format!("已清空 {} 条排队提示", self.local_queue.len()),
+                    format!(
+                        "排队保留 {} 条（中断后自动继续）· /queue clear 全清",
+                        self.local_queue.len()
+                    ),
                     Tone::Muted,
                 );
-                self.local_queue.clear();
             }
             self.push("[interrupt requested]", Tone::Muted);
             return;
@@ -3187,6 +3235,21 @@ impl App {
                 self.insert_char('\n');
                 self.refresh_popup();
             }
+            // Alt+Enter: append context to the RUNNING turn ("forgot to mention…")
+            KeyCode::Enter
+                if k.modifiers.contains(KeyModifiers::ALT)
+                    && self.busy
+                    && !self.input.is_empty() =>
+            {
+                let text: String = self.input.iter().collect();
+                self.clear_input();
+                let head: String = text.lines().next().unwrap_or("").chars().take(40).collect();
+                serve.command("supplement", vec![("text", Value::String(text))]);
+                self.push(
+                    format!("➕ 已并入当前回合（下一轮请求可见）：{head}"),
+                    Tone::Success,
+                );
+            }
             KeyCode::Enter if !self.busy => self.send_prompt(serve),
             KeyCode::Enter if !self.input.is_empty() => {
                 // actually queue it: sent in order when the running turn finishes;
@@ -3197,7 +3260,7 @@ impl App {
                 let head: String = text.lines().next().unwrap_or("").chars().take(40).collect();
                 self.push(
                     format!(
-                        "📋 已排队 {}（当前回合结束后自动发送 · ctrl+c 中断并清空）：{head}",
+                        "📋 已排队 {}（依次自动发送 · /queue 管理 · ctrl+c 只打断当前）：{head}",
                         self.local_queue.len()
                     ),
                     Tone::Muted,
@@ -6277,34 +6340,31 @@ mod tests {
     }
 
     #[test]
-    fn queue_command_shows_running_and_queued() {
+    fn queue_command_manages_the_local_queue() {
         let mut app = App::new();
         let mut serve = Serve::mock();
+        app.local_queue = vec!["第一问".into(), "第二问".into()];
         app.run_slash("/queue", &mut serve);
-        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
-        assert_eq!(sent["cmd"], "queue");
-        app.frame(json!({
-            "type": "result", "id": sent["id"], "ok": true,
-            "data": {"running": "first prompt", "queued": [{"text": "second prompt", "waitedMs": 4200}]}
-        }), &mut serve);
-        let viewer = app.viewer.as_ref().unwrap();
-        assert!(viewer.read_only);
-        assert!(viewer.text.contains("first prompt"));
-        assert!(viewer.text.contains("second prompt"));
-        assert!(viewer.text.contains("4"));
-        // empty state
-        app.run_slash("/queue", &mut serve);
-        let sent2: Value = serde_json::from_str(&serve.sent[1]).unwrap();
-        app.frame(
-            json!({
-                "type": "result", "id": sent2["id"], "ok": true,
-                "data": {"running": null, "queued": []}
-            }),
-            &mut serve,
-        );
-        assert!(app.viewer.as_ref().unwrap().text.contains("空闲"));
-    }
+        let v = app.viewer.as_ref().unwrap();
+        assert!(v.text.contains("1. 第一问"));
+        assert!(v.text.contains("2. 第二问"));
+        app.viewer = None;
 
+        app.run_slash("/queue rm 1", &mut serve);
+        assert_eq!(app.local_queue, vec!["第二问".to_string()]);
+        assert!(
+            app.lines
+                .iter()
+                .any(|l| l.text.contains("已移除排队 #1：第一问"))
+        );
+
+        app.run_slash("/queue clear", &mut serve);
+        assert!(app.local_queue.is_empty());
+        assert!(
+            serve.sent.is_empty(),
+            "local queue management sends nothing to serve"
+        );
+    }
     #[test]
     fn usage_opens_a_report_viewer_and_insights_reports_path() {
         let mut app = App::new();
@@ -7217,46 +7277,41 @@ mod tests {
     }
 
     #[test]
-    fn queued_prompts_send_in_order_and_interrupt_clears() {
+    fn queued_prompts_send_in_order_and_interrupt_keeps_the_queue() {
         let mut app = App::new();
         let mut serve = Serve::mock();
-        app.busy = true; // a turn is running
-        app.input = "第二个问题".chars().collect();
-        app.cursor = app.input.len();
-        app.key(
-            crossterm::event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-            &mut serve,
-        );
-        assert!(app.input.is_empty(), "queued text leaves the input box");
-        assert_eq!(app.local_queue.len(), 1);
-        assert!(app.lines.iter().any(|l| l.text.contains("已排队 1")));
-        // second Enter queues another — exactly two entries, no fake third
-        app.input = "第三个问题".chars().collect();
-        app.cursor = app.input.len();
-        app.key(
-            crossterm::event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-            &mut serve,
-        );
+        app.busy = true;
+        for text in ["第二个问题", "第三个问题"] {
+            app.input = text.chars().collect();
+            app.cursor = app.input.len();
+            app.key(
+                crossterm::event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+                &mut serve,
+            );
+        }
         assert_eq!(app.local_queue.len(), 2);
 
-        // turn 1 finishes → queue head auto-sends, busy stays true
+        // turn 1 finishes → head auto-sends
         app.frame(
             json!({"type": "result", "id": app.prompt_id, "ok": true, "data": {}}),
             &mut serve,
         );
-        assert!(app.busy, "next queued prompt is now running");
         assert_eq!(serve.sent.len(), 1);
         let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
         assert_eq!(sent["text"], "第二个问题");
 
-        // ctrl+c during that turn: interrupt sent + queue cleared
+        // ctrl+c interrupts the CURRENT turn only — the queue survives
         app.key(
             crossterm::event::KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
             &mut serve,
         );
         let interrupt: Value = serde_json::from_str(&serve.sent[1]).unwrap();
         assert_eq!(interrupt["cmd"], "interrupt");
-        assert!(app.local_queue.is_empty());
-        assert!(app.lines.iter().any(|l| l.text.contains("已清空 1 条排队")));
+        assert_eq!(
+            app.local_queue,
+            vec!["第三个问题".to_string()],
+            "queue survives"
+        );
+        assert!(app.lines.iter().any(|l| l.text.contains("排队保留 1 条")));
     }
 }
