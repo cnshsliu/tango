@@ -28,7 +28,11 @@ const RISKY_BASH: [RegExp, string][] = [
   [/git\s+branch\s+-D/, 'deletes a branch'],
   [/(npm|pnpm|yarn)\s+publish/, 'publishes a package'],
   [/(curl|wget)[^|]*\|\s*(ba|z)?sh/, 'runs a downloaded script'],
-  [/>\s*\/(etc|dev|usr|bin|System)\//, 'writes to a system path']
+  // /dev/null is the universal sink — redirecting there is never a system write.
+  // Raw devices (of=/dev/sda, > /dev/disk…) are the real danger.
+  [/>\s*\/(etc|usr|bin|System)\//, 'writes to a system path'],
+  [/>\s*\/dev\/(?!null\b)\S*/, 'writes to a device'],
+  [/of=\/dev\/(?!null\b)\S*/, 'writes to a raw device']
 ];
 
 export function inside(cwd: string, path: string): boolean {

@@ -138,3 +138,15 @@ test('bash rule tail re-check: a matching prefix cannot smuggle risky tails', as
   const rules2 = ['bash:git status', 'bash:git push'].map(parseRule).map((r: any) => r.rule);
   assert.equal(decide('ask', call('git status && git push'), '/w', rules2).action, 'allow', 'both segments covered');
 });
+
+test('redirecting to /dev/null is not a system-path write (false positive fix)', async () => {
+  const { decide } = await import('../src/core/permissions.js');
+  const call = (command: string) => ({ type: 'tool_call' as const, id: 'x', name: 'bash', input: { command } });
+  // the classic benign idiom must pass without asking
+  assert.notEqual(decide('ask', call('npm test > /dev/null 2>&1'), '/w').action, 'ask');
+  assert.notEqual(decide('ask', call('grep foo bar.txt 2>/dev/null'), '/w').action, 'ask');
+  // real system paths and raw devices still ask
+  assert.equal(decide('ask', call('echo x > /etc/passwd'), '/w').action, 'ask');
+  assert.equal(decide('ask', call('cat disk.img > /dev/sda'), '/w').action, 'ask');
+  assert.equal(decide('ask', call('dd if=a of=/dev/disk2 bs=1m'), '/w').action, 'ask');
+});
