@@ -7959,4 +7959,222 @@ mod tests {
         app.ime_restore_prev(); // cfg(test) → clears only
         assert!(app.ime_restore.is_none());
     }
+
+    // ---------- pasted images ----------
+
+    /// A unique existing .png path for paste tests (content is irrelevant to the TUI).
+    fn temp_image(tag: &str) -> String {
+        let p = std::env::temp_dir().join(format!(
+            "tango-img-{}-{}-{tag}.png",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&p, b"fake-png-bytes").unwrap();
+        p.display().to_string()
+    }
+
+    #[test]
+    fn image_path_detection_rules() {
+        let img = temp_image("detect");
+        assert_eq!(image_path_from_paste(&img), Some(img.clone()));
+        assert_eq!(
+            image_path_from_paste(&format!("  {img} \n")),
+            Some(img.clone()),
+            "trimmed single line"
+        );
+        assert_eq!(
+            image_path_from_paste(&format!("'{img}'")),
+            Some(img.clone()),
+            "quoted drag path"
+        );
+        assert_eq!(image_path_from_paste(&format!("{img}\nmore")), None, "multi-line");
+        assert_eq!(image_path_from_paste("/no/such/file.png"), None, "must exist");
+        assert_eq!(image_path_from_paste("notes.txt"), None, "not an image ext");
+        assert_eq!(image_path_from_paste(""), None);
+        let _ = std::fs::remove_file(&img);
+    }
+
+    #[test]
+    fn pasted_image_becomes_a_clickable_chip_not_a_path() {
+        let mut app = App::new();
+        let img = temp_image("chip");
+        app.insert_paste(&img);
+        // displayed as a chip, raw input keeps the real path
+        assert_eq!(app.rendered_input().text, "[图片 #1]");
+        assert_eq!(app.input.iter().collect::<String>(), img);
+        assert_eq!(app.images.len(), 1);
+        assert_eq!(app.images[0].path, img);
+        assert!(app.lines.iter().any(|l| l.text.contains("已附加图片 #1")));
+        // backspace consumes the whole chip atomically
+        app.cursor = app.input.len();
+        app.backspace_input();
+        assert!(app.input.is_empty());
+        assert!(app.pastes.is_empty());
+        let _ = std::fs::remove_file(&img);
+    }
+
+    #[test]
+    fn non_image_paste_is_unchanged() {
+        let mut app = App::new();
+        app.insert_paste("just some text");
+        assert_eq!(app.rendered_input().text, "just some text");
+        assert!(app.images.is_empty());
+    }
+
+    #[test]
+    fn image_rides_the_next_prompt_as_upload_and_marker() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        let img = temp_image("send");
+        app.insert_paste(&img);
+        for c in "看看这张图".chars() {
+            app.insert_char(c);
+        }
+        app.send_prompt(&mut serve);
+        assert_eq!(serve.sent.len(), 1);
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        assert_eq!(sent["cmd"], "prompt");
+        assert_eq!(sent["images"], json!([img]));
+        let text = sent["text"].as_str().unwrap();
+        assert!(text.contains("[图片 #1]"), "marker in text: {text}");
+        assert!(text.contains("看看这张图"));
+        assert!(!text.contains(&img), "the long path is not sent as text");
+        // input cleared, but the registry keeps the path so the chat chip stays clickable
+        assert!(app.input.is_empty());
+        assert_eq!(app.images.len(), 1);
+        assert!(app.lines.iter().any(|l| l.text.contains("[图片 #1]")));
+        let _ = std::fs::remove_file(&img);
+    }
+
+    #[test]
+    fn image_only_prompt_is_sendable() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        let img = temp_image("only");
+        app.insert_paste(&img);
+        app.send_prompt(&mut serve);
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        assert_eq!(sent["text"], "[图片 #1]");
+        assert_eq!(sent["images"], json!([img]));
+        let _ = std::fs::remove_file(&img);
+    }
+
+    #[test]
+    fn queued_image_prompt_keeps_its_images_until_drained() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.busy = true;
+        let img = temp_image("queue");
+        app.insert_paste(&img);
+        app.key(
+            crossterm::event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut serve,
+        );
+        assert_eq!(app.local_queue.len(), 1);
+        assert_eq!(app.local_queue[0].images, vec![img.clone()]);
+        assert!(serve.sent.is_empty(), "queued, not sent yet");
+        // the running turn finishes → the queued image prompt goes out with its images
+        app.frame(
+            json!({"type": "result", "id": app.prompt_id, "ok": true, "data": {}}),
+            &mut serve,
+        );
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        assert_eq!(sent["cmd"], "prompt");
+        assert_eq!(sent["images"], json!([img]));
+        let _ = std::fs::remove_file(&img);
+    }
+
+    #[test]
+    fn draft_stash_restores_the_image_chip() {
+        let mut app = App::new();
+        let img = temp_image("stash");
+        app.insert_paste(&img);
+        app.toggle_draft_stash();
+        assert!(app.input.is_empty());
+        app.toggle_draft_stash();
+        assert_eq!(app.rendered_input().text, "[图片 #1]");
+        let (text, images) = app.take_submission();
+        assert_eq!(text, "[图片 #1]");
+        assert_eq!(images, vec![img.clone()]);
+        let _ = std::fs::remove_file(&img);
+    }
+
+    #[test]
+    fn clicking_the_input_chip_opens_the_image() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        let img = temp_image("inputclick");
+        app.insert_paste(&img);
+        let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        // chip sits on the first input text row; click inside the label
+        let row = app.input_area.y + 1;
+        app.handle(
+            Event::Mouse(crossterm::event::MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 2,
+                row,
+                modifiers: KeyModifiers::NONE,
+            }),
+            &mut serve,
+        );
+        assert!(
+            app.lines.iter().any(|l| l.text.contains(&format!("打开图片 {img}"))),
+            "click opened the image"
+        );
+        let _ = std::fs::remove_file(&img);
+    }
+
+    #[test]
+    fn clicking_a_chat_chip_opens_the_image() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        let img = temp_image("chatclick");
+        app.insert_paste(&img); // registers image #1
+        app.clear_input();
+        app.push_user("[图片 #1] 这是什么？");
+        let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        // locate the chip row and the label's display column within it
+        let g = app
+            .chat_rows
+            .iter()
+            .position(|r| r.text.contains("[图片 #1]"))
+            .expect("chip row drawn");
+        let row_text = &app.chat_rows[g].text;
+        let label_char = row_text.find("[图片 #1]").unwrap();
+        let col: usize = row_text[..label_char].chars().map(|c| display_width(&c.to_string())).sum();
+        let term_row = app.chat_area.y + (g - app.chat_scroll_offset) as u16;
+        app.handle(
+            Event::Mouse(crossterm::event::MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: (col + 1) as u16,
+                row: term_row,
+                modifiers: KeyModifiers::NONE,
+            }),
+            &mut serve,
+        );
+        assert!(
+            app.lines.iter().any(|l| l.text.contains(&format!("打开图片 {img}"))),
+            "chat chip click opened the image"
+        );
+        let _ = std::fs::remove_file(&img);
+    }
+
+    #[test]
+    fn session_switch_resets_image_ids() {
+        let mut app = App::new();
+        let img = temp_image("reset");
+        app.insert_paste(&img);
+        assert_eq!(app.images.len(), 1);
+        app.switch_session(None);
+        assert!(app.images.is_empty());
+        assert_eq!(app.next_image, 1);
+        let _ = std::fs::remove_file(&img);
+    }
 }

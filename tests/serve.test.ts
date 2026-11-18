@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createServer } from 'node:http';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { existsSync, readdirSync } from 'node:fs';
+import { existsSync, readdirSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AddressInfo } from 'node:net';
@@ -2283,6 +2283,150 @@ test('supplement (Alt+Enter) rides the running turn; ctrl+c keeps the queue', as
       () => s.until((f: any) => f.type === 'result' && f.id === 201, 'never'),
       (e: any) => String(e.message).includes('没有进行中的回合')
     );
+  } finally {
+    s.child.kill();
+    mock.server.close();
+    await rm(home, { recursive: true, force: true });
+    await rm(work, { recursive: true, force: true });
+  }
+});
+
+test('serve: prompt with images uploads them, warns on non-vision models, history shows a chip', async () => {
+  const mock = await startMock();
+  const home = await mkdtemp(join(tmpdir(), 'tango-serve-img-home-'));
+  const work = await mkdtemp(join(tmpdir(), 'tango-serve-img-work-'));
+  await writeFile(
+    join(home, 'models.json'),
+    JSON.stringify([
+      { id: 'mock/mock', provider: 'mock', model: 'mock-model', api: 'openai-completions', baseUrl: `http://127.0.0.1:${(mock.server.address() as AddressInfo).port}/v1`, apiKey: 'MOCK_SERVE_KEY', contextWindow: 200000 }
+    ])
+  );
+  // a real 1x1 PNG in the workspace
+  const png = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==',
+    'base64'
+  );
+  const imgPath = join(work, 'shot.png');
+  await writeFile(imgPath, png);
+  mock.setScript(() =>
+    SSE({ choices: [{ delta: { content: '这是一张图' } }] }) +
+    SSE({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 40, completion_tokens: 5 } }) +
+    'data: [DONE]\n\n'
+  );
+  const s = await startServe(home, work, 0);
+  try {
+    const hello = await s.next();
+    assert.equal(hello.type, 'hello');
+    // mock/mock has no vision flag → a heads-up notice, but the image still sends
+    s.send({ id: 1, cmd: 'prompt', text: '[图片 #1] 这是什么？', images: [imgPath] });
+    const notice = await s.until((f: any) => f.type === 'notice', 'vision notice');
+    assert.match(notice.text, /未标注视觉能力/);
+    const res = await s.until((f: any) => f.type === 'result' && f.id === 1, 'prompt result');
+    assert.equal(res.ok, true);
+    // the model request carried the image as a data URL
+    const userMsg = mock.requests[0].messages.find((m: any) => m.role === 'user');
+    const img = userMsg.content.find((c: any) => c.type === 'image_url');
+    assert.ok(img, 'image_url present in the request');
+    assert.match(img.image_url.url, /^data:image\/png;base64,/);
+    // history replays the image as a clickable chip with its path
+    s.send({ id: 2, cmd: 'history' });
+    const history = await s.until((f: any) => f.type === 'result' && f.id === 2, 'history result');
+    const chip = history.data.items.find((i: any) => i.kind === 'user' && String(i.text).includes('shot.png'));
+    assert.ok(chip, 'image chip in history');
+    assert.ok(chip.text.includes(imgPath) || chip.text.includes(realpathSync(imgPath)), `chip carries the path for reopening: ${chip.text} vs ${imgPath} / ${realpathSync(imgPath)}`);
+    // a bad image path fails the prompt with a readable error, no request sent
+    const before = mock.requests.length;
+    s.send({ id: 3, cmd: 'prompt', text: 'x', images: [join(work, 'missing.png')] });
+    const bad = await s.until((f: any) => f.type === 'result' && f.id === 3, 'bad image result');
+    assert.equal(bad.ok, false);
+    assert.match(bad.error, /不存在/);
+    assert.equal(mock.requests.length, before, 'no request for a broken attachment');
+  } finally {
+    s.child.kill();
+    mock.server.close();
+    await rm(home, { recursive: true, force: true });
+    await rm(work, { recursive: true, force: true });
+  }
+});
+
+test('warming: off by default; on = periodic context-riding keep-alives that never touch history', async () => {
+  const mk = async (warming: unknown) => {
+    const mock = await startMock();
+    const home = await mkdtemp(join(tmpdir(), 'tango-serve-home-'));
+    const work = await mkdtemp(join(tmpdir(), 'tango-serve-work-'));
+    await writeFile(join(home, 'models.json'), JSON.stringify([
+      { id: 'mock/mock', provider: 'mock', model: 'm', api: 'openai-completions', baseUrl: `http://127.0.0.1:${(mock.server.address() as AddressInfo).port}/v1`, apiKey: 'MOCK_SERVE_KEY', contextWindow: 8000 }
+    ]));
+    if (warming !== undefined) await writeFile(join(home, 'config.json'), JSON.stringify({ warming }));
+    return { mock, home, work };
+  };
+
+  // 1) off by default: idle → no extra requests
+  {
+    const { mock, home, work } = await mk(undefined);
+    mock.setScript(() => SSE({ choices: [{ delta: { content: 'OK' } }] }) + SSE({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 10, completion_tokens: 1 } }) + 'data: [DONE]\n\n');
+    const s = await startServe(home, work, 0);
+    try {
+      await s.next();
+      const before = mock.requests.length;
+      await sleep(2500);
+      assert.equal(mock.requests.length, before, 'no warming when disabled');
+    } finally { s.child.kill(); mock.server.close(); await rm(home, { recursive: true, force: true }); await rm(work, { recursive: true, force: true }); }
+  }
+
+  // 2) on: keep-alives ride the conversation context, history untouched, window expires
+  {
+    const { mock, home, work } = await mk({ interval: 1, duration: 4 });
+    mock.setScript(() => SSE({ choices: [{ delta: { content: 'OK' } }] }) + SSE({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 10, completion_tokens: 1 } }) + 'data: [DONE]\n\n');
+    const s = await startServe(home, work, 0);
+    try {
+      await s.next();
+      s.send({ id: 1, cmd: 'prompt', text: 'REALASK 真实问题' });
+      await s.until((f: any) => f.type === 'result' && f.id === 1 && f.ok, 'real turn');
+      const afterReal = mock.requests.length;
+      await sleep(2600); // ~2 warming fires at 1s interval
+      const warmed = mock.requests.length - afterReal;
+      assert.ok(warmed >= 1 && warmed <= 3, `expected 1-3 warming calls, got ${warmed}`);
+      const warmBody = mock.requests[mock.requests.length - 1];
+      assert.ok(JSON.stringify(warmBody.messages).includes('REALASK'), 'warming carries the conversation context');
+      // history never gains the keep-alive
+      s.send({ id: 2, cmd: 'history' });
+      const h = await s.until((f: any) => f.type === 'result' && f.id === 2, 'history');
+      assert.ok(!JSON.stringify(h.data.items).includes('保活'), 'keep-alive prompts never enter history');
+      // window expiry: idle past duration → no further fires
+      const atExpiry = mock.requests.length;
+      await sleep(2500);
+      assert.equal(mock.requests.length, atExpiry, 'warming stops after the duration window');
+    } finally { s.child.kill(); mock.server.close(); await rm(home, { recursive: true, force: true }); await rm(work, { recursive: true, force: true }); }
+  }
+});
+
+test('warming: a cache miss halts warming until the next real request', async () => {
+  const mock = await startMock();
+  const home = await mkdtemp(join(tmpdir(), 'tango-serve-home-'));
+  const work = await mkdtemp(join(tmpdir(), 'tango-serve-work-'));
+  await writeFile(join(home, 'models.json'), JSON.stringify([
+    { id: 'mock/mock', provider: 'mock', model: 'm', api: 'openai-completions', baseUrl: `http://127.0.0.1:${(mock.server.address() as AddressInfo).port}/v1`, apiKey: 'MOCK_SERVE_KEY', contextWindow: 8000 }
+  ]));
+  await writeFile(join(home, 'config.json'), JSON.stringify({ warming: { interval: 1, duration: 30 } }));
+  let real = true;
+  mock.setScript(() => {
+    // real turns report healthy cache reads; warming turns MISS (cacheRead 0 ≪ input)
+    const usage = real
+      ? { prompt_tokens: 1000, completion_tokens: 2, cached_tokens: 900 }
+      : { prompt_tokens: 1000, completion_tokens: 1, cached_tokens: 0 };
+    real = false;
+    return SSE({ choices: [{ delta: { content: 'OK' } }] }) + SSE({ choices: [{ delta: {}, finish_reason: 'stop' }], usage }) + 'data: [DONE]\n\n';
+  });
+  const s = await startServe(home, work, 0);
+  try {
+    await s.next();
+    s.send({ id: 1, cmd: 'prompt', text: 'real' });
+    await s.until((f: any) => f.type === 'result' && f.id === 1 && f.ok, 'real');
+    await sleep(2600); // first warming fires and MISSES (turn reset pushes it to ~2s)
+    const afterMiss = mock.requests.length;
+    await sleep(2600); // further intervals would fire — but warming halted
+    assert.equal(mock.requests.length, afterMiss, 'cache miss stopped the warming loop');
   } finally {
     s.child.kill();
     mock.server.close();

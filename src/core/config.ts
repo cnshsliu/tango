@@ -34,6 +34,13 @@ export interface Config {
   autocompact?: number | 'off';
   /** Max model round-trips per prompt (runaway tool-loop fuse). 1-500, default 64. */
   maxTurns?: number;
+  /** Keep provider prompt caches warm between prompts. Off unless set. */
+  warming?: boolean | {
+    /** seconds between warming requests; "auto" = 240s (no per-model TTL data yet) */
+    interval?: number | 'auto';
+    /** seconds of inactivity after the last real request during which warming runs */
+    duration?: number;
+  };
   /** Custom status bar template with {model} {mode} {cost} {ctx} {pct} {session} {tokens}; missing = default bar */
   statusline?: string;
   /** Persistent allow rules: tool:<name> | path:<prefix> | bash:<prefix> */

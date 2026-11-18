@@ -196,6 +196,7 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
   // token-plan users watch tokens more than dollars (qwen4 plan T5)
   const sessionTokens = { input: 0, output: 0, cacheRead: 0 };
   agent.events.on('turn_end', (e) => {
+    if (!warmInFlight) warmLastRealAt = Date.now(); // warming never extends its own window
     sessionCostUsd += e.costUsd;
     sessionTokens.input += e.usage.input;
     sessionTokens.output += e.usage.output;
@@ -322,6 +323,60 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
   }
 
   let promptInFlight = false;
+  // warming state: keep provider prompt caches warm between real prompts (opencode parity).
+  // Real activity (a prompt turn) restarts the window; warming itself never extends it.
+  const warmingCfg = (() => {
+    const w = (config as { warming?: boolean | { interval?: number | 'auto'; duration?: number } }).warming;
+    if (!w || w === true) return w ? { intervalMs: 240_000, durationMs: 1_800_000 } : null;
+    const intervalSec = w.interval === 'auto' || w.interval === undefined ? 240 : w.interval;
+    const durationSec = w.duration ?? 1800;
+    if (!(intervalSec > 0) || intervalSec >= durationSec) return null; // nonsense: skip
+    return { intervalMs: intervalSec * 1000, durationMs: durationSec * 1000 };
+  })();
+  let warmLastRealAt = Date.now();
+  let warmInFlight = false;
+  let warmTimer: NodeJS.Timeout | null = null;
+  const stopWarming = () => {
+    if (warmTimer) clearTimeout(warmTimer);
+    warmTimer = null;
+  };
+  if (warmingCfg) {
+    const tick = () => {
+      warmTimer = null;
+      const idle = Date.now() - warmLastRealAt;
+      if (!promptInFlight && !warmInFlight && idle >= warmingCfg.intervalMs && idle <= warmingCfg.durationMs) {
+        warmInFlight = true;
+        // ask() rides the full context with no tools and writes nothing to the session —
+        // exactly a keep-alive; the response is discarded
+        agent
+          .ask('（保活）请只回复 OK，不要调用任何工具。', undefined)
+          .then((msg) => {
+            // cache-miss guard: reads far below input means the cache is gone —
+            // stop burning tokens until the next real request
+            const usage = msg.usage;
+            if (usage && usage.input > 0 && (usage.cacheRead ?? 0) * 2 < usage.input) {
+              warmLastRealAt = -Infinity; // halt the window; a real turn_end reopens it
+            }
+          })
+          .catch(() => {})
+          .finally(() => {
+            warmInFlight = false;
+            schedule();
+          });
+        return;
+      }
+      schedule();
+    };
+    const schedule = () => {
+      if (warmTimer || promptInFlight) return;
+      const idle = Date.now() - warmLastRealAt;
+      const next = Math.max(200, Math.min(warmingCfg.intervalMs, warmingCfg.durationMs - idle));
+      warmTimer = setTimeout(tick, next);
+      warmTimer.unref?.();
+    };
+    schedule();
+  }
+
   // queue introspection: what's running and what is waiting behind it
   let runningText: string | null = null;
   const queuedTexts: { text: string; images?: string[]; enqueuedAt: number }[] = [];
@@ -1652,6 +1707,7 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
   rl.on('close', () => {
     // stdin EOF (a pipe, not a UI): finish queued work, then leave; never cut a running prompt short
     stopLoop(); // no orphan timers
+    stopWarming();
     void queue.then(() => process.exit(0));
   });
 }

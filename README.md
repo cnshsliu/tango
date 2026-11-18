@@ -205,6 +205,23 @@ state is snapshotted too. Snapshots live in the session log; the JSONL log is th
   the timeline marks those turns 无代码快照. Non-git directories fall back to tar snapshots under
   `~/.tango/snapshots/`. Set `"checkpoint": "off"` in `~/.tango/config.json` to disable.
 
+## Session warming
+
+`"warming"` in config keeps provider prompt caches warm between prompts (opencode parity):
+while the session idles, tango sends a tool-free keep-alive that rides the full
+conversation context and is discarded — nothing enters history. Default off.
+
+```json
+{ "warming": { "interval": "auto", "duration": 1800 } }
+```
+
+`interval` seconds between keep-alives (`"auto"` = 240s — tango has no per-model cache-TTL
+data yet); `duration` seconds of inactivity after the last real request during which warming
+runs (default 1800). Any real turn restarts the window; warming never extends it and never
+runs during a live request. A cache **miss** (reads < ½ of input) halts warming until the
+next real request, so an expired cache never burns tokens. Keep-alives are real billable
+calls — enable when cache savings outweigh the usage.
+
 ## Scheduled tasks
 
 `tango task add 新闻摘要 2h 搜集今天的 AI 新闻，写成摘要发飞书 [--mode auto]` stores a task in
