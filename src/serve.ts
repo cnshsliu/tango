@@ -20,6 +20,7 @@ import { worktreeCreate, worktreeList, worktreeMerge, worktreeRemove } from './c
 import { parseRule } from './core/permissions.js';
 import { restoreSnapshot, snapshotFileList } from './core/git-snapshot.js';
 import { hasKey, keyProblem, loadConfig, loadModels, pickModel, saveConfig, sessionsDir, tangoDir } from './core/config.js';
+import { loadImages } from './core/images.js';
 import { listDrafts, promoteDraft, saveDraft } from './core/skills.js';
 import { join, resolve } from 'node:path';
 import { SessionStore } from './core/session.js';
@@ -323,7 +324,7 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
   let promptInFlight = false;
   // queue introspection: what's running and what is waiting behind it
   let runningText: string | null = null;
-  const queuedTexts: { text: string; enqueuedAt: number }[] = [];
+  const queuedTexts: { text: string; images?: string[]; enqueuedAt: number }[] = [];
 
   /**
    * Drop turns[k..]: restore code to the workspace state at the boundary just
@@ -456,15 +457,23 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
     switch (cmd.cmd) {
       case 'prompt': {
         let text = String(cmd.text ?? '');
-        if (!text.trim()) return reply(cmd, false, undefined, 'prompt: empty text');
+        const imagePaths = Array.isArray(cmd.images) ? cmd.images.map(String) : [];
+        if (!text.trim() && !imagePaths.length) return reply(cmd, false, undefined, 'prompt: empty text');
         // plan instruction rides the system prompt, not the stored user text
         agent.systemSuffix = perm.plan?.on
           ? '\n# Plan mode\n当前处于 plan 模式：只做研究和计划，不要尝试写入或执行修改；产出清晰执行计划，等用户批准后 /plan off 再执行。'
           : undefined;
         try {
+          const images = imagePaths.length ? await loadImages(imagePaths, cwd) : undefined;
+          if (images?.length && agent.model.vision !== true) {
+            out({
+              type: 'notice',
+              text: `🖼 当前模型 ${agent.model.id} 未标注视觉能力，图片仍会随消息发送；若接口报错，请 /model 切换支持图片的模型`
+            });
+          }
           const msg = await agent.prompt(text, (ev) => {
             if (ev.type !== 'done') out({ type: 'stream', event: ev });
-          });
+          }, images);
           reply(cmd, true, { stopReason: msg.stopReason ?? 'stop' });
         } catch (e: any) {
           reply(cmd, false, undefined, String(e?.message ?? e));
@@ -1214,6 +1223,9 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
         for (const m of all)
           for (const b of m.content) {
             if (b.type === 'text' && b.text.trim()) items.push({ kind: m.role, text: b.text });
+            else if (b.type === 'image')
+              // a clickable chip in the UI: the path lets it reopen the original file
+              items.push({ kind: m.role, text: b.path ? `[图片 ${b.path}]` : `[图片 ${b.mimeType}]` });
             else if (b.type === 'tool_call')
               items.push({ kind: 'tool', name: b.name, input: b.input, ...(results.get(b.id) ?? { isError: false, output: '' }) });
           }
@@ -1559,9 +1571,16 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
     }
     if (cmd.cmd === 'supplement') {
       const text = String(cmd.text ?? '');
-      if (!text.trim()) return out({ type: 'error', message: 'supplement: empty text' });
+      const imagePaths = Array.isArray(cmd.images) ? cmd.images.map(String) : [];
+      if (!text.trim() && !imagePaths.length) return out({ type: 'error', message: 'supplement: empty text' });
       if (!promptInFlight) return out({ type: 'error', message: '当前没有进行中的回合 — 直接发新提问即可' });
-      agent.supplement(text);
+      if (imagePaths.length) {
+        loadImages(imagePaths, cwd)
+          .then((images) => agent.supplement(text, images))
+          .catch((e) => out({ type: 'error', message: String(e?.message ?? e) }));
+      } else {
+        agent.supplement(text);
+      }
       return;
     }
     if (cmd.cmd === 'interrupt') {
@@ -1606,10 +1625,12 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
     let wasQueued = false;
     if (cmd.cmd === 'prompt') {
       const text = String(cmd.text ?? '');
-      if (promptInFlight && text.trim()) {
-        queuedTexts.push({ text, enqueuedAt: Date.now() });
+      const images = Array.isArray(cmd.images) ? cmd.images.map(String) : undefined;
+      const hasContent = text.trim() || images?.length;
+      if (promptInFlight && hasContent) {
+        queuedTexts.push({ text, images, enqueuedAt: Date.now() });
         wasQueued = true;
-      } else if (text.trim()) {
+      } else if (hasContent) {
         promptInFlight = true;
         runningText = text;
       }

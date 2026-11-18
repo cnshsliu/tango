@@ -2,14 +2,7 @@ import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import type { Tool } from '../types.js';
 import { error, text, truncate } from './registry.js';
-
-const IMAGE_MIME: Record<string, string> = {
-  '.png': 'image/png',
-  '.jpg': 'image/jpeg',
-  '.jpeg': 'image/jpeg',
-  '.gif': 'image/gif',
-  '.webp': 'image/webp'
-};
+import { IMAGE_MIME } from '../images.js';
 
 export const readTool: Tool<{ path: string; offset?: number; limit?: number }> = {
   name: 'read',
@@ -30,7 +23,7 @@ export const readTool: Tool<{ path: string; offset?: number; limit?: number }> =
     try {
       if (IMAGE_MIME[ext]) {
         const data = (await readFile(p)).toString('base64');
-        return { content: [{ type: 'image', mimeType: IMAGE_MIME[ext], data }] };
+        return { content: [{ type: 'image', mimeType: IMAGE_MIME[ext], data, path: p }] };
       }
       const lines = (await readFile(p, 'utf8')).split('\n');
       const slice = lines.slice(offset - 1, offset - 1 + limit);

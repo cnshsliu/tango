@@ -13,6 +13,44 @@ use serde_json::{Value, json};
 use std::cmp::min;
 use std::fs;
 use std::path::Path;
+use std::process::{Command, Stdio};
+
+/// Recognize a pasted image: terminals drop a clipboard image to a temp file and paste
+/// its path (e.g. `/var/folders/…/orca-paste-….png`). A single-line paste that names an
+/// existing image file becomes an attachment chip instead of raw path text.
+fn image_path_from_paste(text: &str) -> Option<String> {
+    let t = text.trim();
+    if t.is_empty() || t.contains('\n') {
+        return None;
+    }
+    // drag-and-drop from some file managers wraps the path in quotes
+    let t = t.trim_matches(|c| c == '\'' || c == '"');
+    let lower = t.to_lowercase();
+    if ![".png", ".jpg", ".jpeg", ".gif", ".webp"]
+        .iter()
+        .any(|ext| lower.ends_with(ext))
+    {
+        return None;
+    }
+    let expanded = if let Some(rest) = t.strip_prefix("~/") {
+        match std::env::var("HOME") {
+            Ok(home) => format!("{home}/{rest}"),
+            Err(_) => t.to_string(),
+        }
+    } else {
+        t.to_string()
+    };
+    Path::new(&expanded).is_file().then_some(expanded)
+}
+
+/// Command extras for a prompt/supplement: text plus optional image paths to upload.
+fn prompt_extras(text: String, images: Vec<String>) -> Vec<(&'static str, Value)> {
+    let mut extras = vec![("text", Value::String(text))];
+    if !images.is_empty() {
+        extras.push(("images", json!(images)));
+    }
+    extras
+}
 
 /// Rough cell width: CJK/fullwidth codepoints take 2 cells. Good enough for scroll math and the cursor.
 pub fn display_width(s: &str) -> usize {
@@ -229,6 +267,32 @@ struct PastedSpan {
     end: usize,
     id: usize,
     extra_lines: usize,
+    /// Some(image id) when this span is a pasted image chip rather than collapsed text
+    image: Option<usize>,
+}
+
+/// A pasted image: the original local path, kept so the chip can reopen it and the
+/// next prompt can upload it. Ids are session-stable (the chat click registry uses them).
+#[derive(Clone)]
+struct ImageAttachment {
+    id: usize,
+    path: String,
+}
+
+/// A prompt waiting in the local queue: text plus any image paths riding with it.
+#[derive(Clone, Debug, PartialEq)]
+struct QueuedPrompt {
+    text: String,
+    images: Vec<String>,
+}
+
+impl QueuedPrompt {
+    fn text_only(text: &str) -> Self {
+        Self {
+            text: text.to_string(),
+            images: Vec::new(),
+        }
+    }
 }
 
 struct InputDraft {
@@ -240,6 +304,8 @@ struct InputDraft {
 struct RenderedInput {
     text: String,
     cursor: usize,
+    /// (display_start, display_end, image_id) for each image chip — mouse hit testing
+    image_ranges: Vec<(usize, usize, usize)>,
 }
 
 struct InputLayout {
@@ -570,12 +636,17 @@ pub struct App {
     pub cursor: usize,
     pastes: Vec<PastedSpan>,
     next_paste: usize,
+    /// every image attached this session (chat chips reopen them by id); never cleared on submit
+    images: Vec<ImageAttachment>,
+    next_image: usize,
     prompt_history: Vec<String>,
     stashed_draft: Option<InputDraft>,
     popup: Option<Popup>,
     picker: Option<Picker>,
     viewer: Option<Viewer>,
     chat_area: Rect,
+    /// input box rect, captured each draw so chip clicks map back to image ids
+    input_area: Rect,
     picker_area: Rect,
     /// visible picker window rows → item index (None = group header row)
     picker_rows: Vec<Option<usize>>,
@@ -615,7 +686,7 @@ pub struct App {
     /// switching between many agents never loses track of "which ask is this"
     current_prompt: Option<String>,
     /// prompts entered while a turn runs: sent locally in order when it finishes
-    local_queue: Vec<String>,
+    local_queue: Vec<QueuedPrompt>,
     /// /queue dialog open (clickable per-item actions)
     queue_dialog: bool,
     /// the IME we switched away from for a single-key dialog (macOS macism)
@@ -664,12 +735,15 @@ impl App {
             cursor: 0,
             pastes: Vec::new(),
             next_paste: 1,
+            images: Vec::new(),
+            next_image: 1,
             prompt_history: Vec::new(),
             stashed_draft: None,
             popup: None,
             picker: None,
             viewer: None,
             chat_area: Rect::default(),
+            input_area: Rect::default(),
             picker_area: Rect::default(),
             picker_rows: Vec::new(),
             popup_area: Rect::default(),
@@ -766,6 +840,9 @@ impl App {
         self.pending_viewer = None;
         self.edited = None;
         self.nvim_request = None;
+        // image chip ids are per-session: stale ids must not reopen another session's files
+        self.images.clear();
+        self.next_image = 1;
         self.busy = false;
         self.cost = 0.0;
         self.context_tokens = 0;
@@ -830,11 +907,32 @@ impl App {
     fn chat_press(&mut self, row: u16, column: u16, chat_y: u16) {
         if let Some(g) = self.global_row(row, chat_y) {
             if let Some(li) = self.chat_rows.get(g).map(|r| r.line) {
+                // rebuild the source line and map the click to a char index within it
                 let mut full = String::new();
-                for r in &self.chat_rows {
-                    if r.line == li {
-                        full.push_str(&r.text);
+                let mut click_idx = 0usize;
+                for (i, r) in self.chat_rows.iter().enumerate() {
+                    if r.line != li {
+                        continue;
                     }
+                    if i < g {
+                        click_idx += r.text.chars().count();
+                    } else if i == g {
+                        let mut col = 0usize;
+                        for ch in r.text.chars() {
+                            let w = display_width(&ch.to_string());
+                            if (column as usize) < col + w {
+                                break;
+                            }
+                            col += w;
+                            click_idx += 1;
+                        }
+                    }
+                    full.push_str(&r.text);
+                }
+                // an image chip under the cursor opens the image itself
+                if let Some(path) = self.image_chip_at(&full, click_idx) {
+                    self.open_image(&path);
+                    return;
                 }
                 if let Some(path) = find_existing_file_path(&full) {
                     self.open_file_viewer(&path);
@@ -844,6 +942,72 @@ impl App {
         }
         self.sel_anchor_pos = Some((row, column));
         self.sel_end_pos = Some((row, column));
+    }
+
+    /// The attached image whose `[图片 #N]` chip covers char index `click_idx` of a line.
+    fn image_chip_at(&self, full: &str, click_idx: usize) -> Option<String> {
+        let chars: Vec<char> = full.chars().collect();
+        for img in &self.images {
+            let label: Vec<char> = format!("[图片 #{}]", img.id).chars().collect();
+            let mut start = 0;
+            while start + label.len() <= chars.len() {
+                if chars[start..start + label.len()] == label[..]
+                    && click_idx >= start
+                    && click_idx < start + label.len()
+                {
+                    return Some(img.path.clone());
+                }
+                start += 1;
+            }
+        }
+        None
+    }
+
+    /// Map a click in the input box to an image chip, if it lands on one. Uses the same
+    /// wrap/scroll math as the draw pass so hits line up with what is on screen.
+    fn input_image_at(&self, row: u16, column: u16) -> Option<String> {
+        if self.images.is_empty() || self.input_area.width == 0 {
+            return None;
+        }
+        let width = self.input_area.width as usize;
+        let layout = self.input_layout(self.input_area.width);
+        let visible = self.input_area.height.saturating_sub(1).max(1) as usize;
+        let scroll = layout.cursor_row.saturating_sub(visible - 1);
+        let text_top = self.input_area.y + 1;
+        if row < text_top {
+            return None;
+        }
+        let target_row = (row - text_top) as usize + scroll;
+        let rendered = self.rendered_input();
+        let mut r = 0usize;
+        let mut c = 0usize;
+        let mut hit = None;
+        for (i, ch) in rendered.text.chars().enumerate() {
+            if ch == '\n' {
+                r += 1;
+                c = 0;
+                continue;
+            }
+            let w = display_width(&ch.to_string());
+            if c >= width || (c > 0 && c + w > width) {
+                r += 1;
+                c = 0;
+            }
+            if r == target_row && (column as usize) >= c && (column as usize) < c + w {
+                hit = Some(i);
+                break;
+            }
+            c += w;
+        }
+        let idx = hit?;
+        let (_, _, id) = rendered
+            .image_ranges
+            .iter()
+            .find(|(s, e, _)| idx >= *s && idx < *e)?;
+        self.images
+            .iter()
+            .find(|img| img.id == *id)
+            .map(|img| img.path.clone())
     }
 
     fn chat_drag(&mut self, row: u16, column: u16) {
@@ -880,10 +1044,10 @@ impl App {
             );
             return;
         }
-        if let Some(text) = self.local_queue.get(idx).cloned() {
+        if let Some(q) = self.local_queue.get(idx).cloned() {
             self.local_queue.remove(idx);
-            let head: String = text.lines().next().unwrap_or("").chars().take(40).collect();
-            serve.command("supplement", vec![("text", Value::String(text))]);
+            let head: String = q.text.lines().next().unwrap_or("").chars().take(40).collect();
+            serve.command("supplement", prompt_extras(q.text, q.images));
             self.push(
                 format!("➕ 排队 #{} 已并入当前回合：{head}", idx + 1),
                 Tone::Success,
@@ -904,10 +1068,33 @@ impl App {
         if n == 0 {
             return;
         }
-        for text in std::mem::take(&mut self.local_queue) {
-            serve.command("supplement", vec![("text", Value::String(text))]);
+        for q in std::mem::take(&mut self.local_queue) {
+            serve.command("supplement", prompt_extras(q.text, q.images));
         }
         self.push(format!("➕ 已把 {n} 条排队全部并入当前回合"), Tone::Success);
+    }
+
+    /// Open an image in the system viewer (macOS Preview / xdg-open). The TUI shows a
+    /// chip; clicking it is the deliberate "let me see it" gesture.
+    fn open_image(&mut self, path: &str) {
+        if cfg!(test) {
+            self.push(format!("🖼 打开图片 {path}"), Tone::Muted);
+            return;
+        }
+        #[cfg(target_os = "macos")]
+        let program = "open";
+        #[cfg(not(target_os = "macos"))]
+        let program = "xdg-open";
+        match Command::new(program)
+            .arg(path)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        {
+            Ok(_) => self.push(format!("🖼 已用系统查看器打开图片：{path}"), Tone::Muted),
+            Err(e) => self.push(format!("无法打开图片 {path}：{e}"), Tone::Error),
+        }
     }
 
     fn open_file_viewer(&mut self, path: &str) {
@@ -919,6 +1106,11 @@ impl App {
         } else {
             trimmed
         };
+        // images open in the system viewer, never as binary "text" in the viewer
+        if image_path_from_paste(target).is_some() {
+            self.open_image(target);
+            return;
+        }
         match std::fs::read_to_string(target) {
             Ok(body) => {
                 let capped = if body.len() > 200_000 {
@@ -1686,6 +1878,7 @@ impl App {
                         Ok(idx) if idx >= 1 && idx <= self.local_queue.len() => {
                             let removed = self.local_queue.remove(idx - 1);
                             let head: String = removed
+                                .text
                                 .lines()
                                 .next()
                                 .unwrap_or("")
@@ -2454,6 +2647,12 @@ impl App {
 
     fn insert_paste(&mut self, text: &str) {
         let text = text.replace("\r\n", "\n").replace('\r', "\n");
+        // a pasted image (the terminal drops clipboard images to a temp file and pastes
+        // its path) becomes a clickable chip, not a wall of path text
+        if let Some(path) = image_path_from_paste(&text) {
+            self.insert_image_paste(path);
+            return;
+        }
         let chars: Vec<char> = text.chars().collect();
         if chars.is_empty() {
             return;
@@ -2480,8 +2679,69 @@ impl App {
             end: hidden_end,
             id: self.next_paste,
             extra_lines,
+            image: None,
         });
         self.next_paste += 1;
+    }
+
+    /// Attach a pasted image: the raw input keeps the path (so copy/edit see real text),
+    /// but the span renders as a `[图片 #N]` chip and rides the next prompt as an upload.
+    fn insert_image_paste(&mut self, path: String) {
+        let id = self.next_image;
+        self.next_image += 1;
+        self.images.push(ImageAttachment {
+            id,
+            path: path.clone(),
+        });
+        let chars: Vec<char> = path.chars().collect();
+        let start = self.cursor;
+        self.replace_input_range(start, start, &chars);
+        let end = start + chars.len();
+        self.pastes.push(PastedSpan {
+            start,
+            end,
+            id: self.next_paste,
+            extra_lines: 0,
+            image: Some(id),
+        });
+        self.next_paste += 1;
+        self.push(
+            format!("🖼 已附加图片 #{id} · 点击查看 · 随下一条消息发送"),
+            Tone::Muted,
+        );
+    }
+
+    /// Build the outgoing prompt from the input: image chips become `[图片 #N]` markers
+    /// in the text and their paths collect into the upload list (in chip order).
+    fn take_submission(&self) -> (String, Vec<String>) {
+        let mut pastes = self.pastes.clone();
+        pastes.sort_by_key(|p| p.start);
+        let mut text = String::new();
+        let mut images = Vec::new();
+        let mut raw = 0;
+        for p in pastes {
+            while raw < p.start {
+                text.push(self.input[raw]);
+                raw += 1;
+            }
+            if let Some(id) = p.image {
+                text.push_str(&format!("[图片 #{id}]"));
+                if let Some(img) = self.images.iter().find(|i| i.id == id) {
+                    images.push(img.path.clone());
+                }
+            } else {
+                while raw < p.end {
+                    text.push(self.input[raw]);
+                    raw += 1;
+                }
+            }
+            raw = p.end;
+        }
+        while raw < self.input.len() {
+            text.push(self.input[raw]);
+            raw += 1;
+        }
+        (text, images)
     }
 
     fn clear_input(&mut self) {
@@ -2538,6 +2798,7 @@ impl App {
         pastes.sort_by_key(|paste| paste.start);
         let mut text = String::new();
         let mut positions = vec![0; self.input.len() + 1];
+        let mut image_ranges = Vec::new();
         let mut raw = 0;
         let mut display = 0;
         for paste in pastes {
@@ -2548,13 +2809,19 @@ impl App {
                 display += 1;
             }
             positions[raw] = display;
-            let label = if paste.extra_lines > 0 {
+            let label = if let Some(id) = paste.image {
+                format!("[图片 #{id}]")
+            } else if paste.extra_lines > 0 {
                 format!("[Pasted text #{} +{} lines]", paste.id, paste.extra_lines)
             } else {
                 format!("[Pasted text #{}]", paste.id)
             };
+            let label_start = display;
             display += label.chars().count();
             text.push_str(&label);
+            if let Some(id) = paste.image {
+                image_ranges.push((label_start, display, id));
+            }
             while raw < paste.end {
                 positions[raw] = display;
                 raw += 1;
@@ -2571,6 +2838,7 @@ impl App {
         RenderedInput {
             text,
             cursor: positions[self.cursor],
+            image_ranges,
         }
     }
 
@@ -2667,9 +2935,10 @@ impl App {
                         match action {
                             QueueAction::Supplement(i) => self.queue_supplement_one(serve, i),
                             QueueAction::Remove(i) => {
-                                if let Some(text) = self.local_queue.get(i).cloned() {
+                                if let Some(q) = self.local_queue.get(i).cloned() {
                                     self.local_queue.remove(i);
-                                    let head: String = text
+                                    let head: String = q
+                                        .text
                                         .lines()
                                         .next()
                                         .unwrap_or("")
@@ -2765,6 +3034,13 @@ impl App {
                         // clickable file path → text selection start (drag+release copies)
                         MouseEventKind::Down(MouseButton::Left) => {
                             let pos = Position::new(m.column, m.row);
+                            // a click on an input-box image chip opens the image
+                            if self.input_area.contains(pos) {
+                                if let Some(path) = self.input_image_at(m.row, m.column) {
+                                    self.open_image(&path);
+                                    return false;
+                                }
+                            }
                             if self.jump_area.contains(pos) {
                                 self.jump_to_bottom();
                             } else if self.chat_area.contains(pos) {
@@ -2918,7 +3194,7 @@ impl App {
                             if self.busy {
                                 serve.notify(json!({ "cmd": "interrupt" }));
                             }
-                            self.submit_text(serve, text);
+                            self.submit_text(serve, text, Vec::new());
                         }
                     }
                 }
@@ -2926,7 +3202,7 @@ impl App {
         }
     }
 
-    fn submit_text(&mut self, serve: &mut Serve, text: String) {
+    fn submit_text(&mut self, serve: &mut Serve, text: String, images: Vec<String>) {
         // pin what we're working on: first line, capped for the status bar
         let first = text.lines().next().unwrap_or("").to_string();
         let shown: String = first.chars().take(48).collect();
@@ -2934,7 +3210,7 @@ impl App {
         self.push_user(&text);
         self.jump_to_bottom();
         self.busy = true;
-        self.prompt_id = serve.command("prompt", vec![("text", Value::String(text))]);
+        self.prompt_id = serve.command("prompt", prompt_extras(text, images));
         if let Some(line) = self.lines.last_mut() {
             line.prompt_state = Some(PromptState::Running);
         }
@@ -3206,9 +3482,12 @@ impl App {
         }
         if ctrl && k.code == KeyCode::Char('s') && self.picker.is_none() && self.popup.is_none() {
             if self.busy && !self.input.is_empty() {
-                let text: String = self.input.iter().collect();
+                let (text, images) = self.take_submission();
                 self.clear_input();
-                self.local_queue.push(text.clone());
+                self.local_queue.push(QueuedPrompt {
+                    text: text.clone(),
+                    images,
+                });
                 let head: String = text.lines().next().unwrap_or("").chars().take(40).collect();
                 self.push(
                     format!(
@@ -3399,9 +3678,12 @@ impl App {
             KeyCode::Enter if !self.input.is_empty() => {
                 // actually queue it: sent in order when the running turn finishes;
                 // ctrl+c interrupts the turn AND drops the queue
-                let text: String = self.input.iter().collect();
+                let (text, images) = self.take_submission();
                 self.clear_input();
-                self.local_queue.push(text.clone());
+                self.local_queue.push(QueuedPrompt {
+                    text: text.clone(),
+                    images,
+                });
                 let head: String = text.lines().next().unwrap_or("").chars().take(40).collect();
                 self.push(
                     format!(
@@ -3449,8 +3731,8 @@ impl App {
     }
 
     fn send_prompt(&mut self, serve: &mut Serve) {
-        let text: String = self.input.iter().collect();
-        if text.trim().is_empty() {
+        let (text, images) = self.take_submission();
+        if text.trim().is_empty() && images.is_empty() {
             return;
         }
         self.clear_input();
@@ -3471,7 +3753,7 @@ impl App {
         self.push_user(&text);
         self.jump_to_bottom();
         self.busy = true;
-        self.prompt_id = serve.command("prompt", vec![("text", Value::String(expanded))]);
+        self.prompt_id = serve.command("prompt", prompt_extras(expanded, images));
         if let Some(line) = self.lines.last_mut() {
             line.prompt_state = Some(PromptState::Running);
         }
@@ -3595,7 +3877,7 @@ impl App {
                     // the local queue drains in order: the next ask goes out now
                     if let Some(next) = self.local_queue.first().cloned() {
                         self.local_queue.remove(0);
-                        self.submit_text(serve, next);
+                        self.submit_text(serve, next.text, next.images);
                     }
                     // auto recap: first line of the answer, so a glance reconstructs
                     // what this long turn actually produced
@@ -4770,6 +5052,7 @@ impl App {
         .areas(area);
 
         self.chat_area = chat_a;
+        self.input_area = input_a;
 
         // status bar
         let spans = self.status_spans();
@@ -4875,6 +5158,7 @@ impl App {
                     break;
                 }
                 let head: String = q
+                    .text
                     .lines()
                     .next()
                     .unwrap_or("")
@@ -6324,6 +6608,7 @@ mod tests {
             end: 9,
             id: 1,
             extra_lines: 2,
+            image: None,
         });
         app.cursor = 3;
         app.move_input_vertical(true);
@@ -6344,6 +6629,7 @@ mod tests {
             end: 8,
             id: 1,
             extra_lines: 0,
+            image: None,
         });
         app.replace_input_range(3, 5, &['x']);
         assert_eq!(app.input.iter().collect::<String>(), "abxcd");
@@ -6571,7 +6857,11 @@ mod tests {
         let mut app = App::new();
         let mut serve = Serve::mock();
         app.busy = true;
-        app.local_queue = vec!["第一问".into(), "第二问".into(), "第三问".into()];
+        app.local_queue = vec![
+            QueuedPrompt::text_only("第一问"),
+            QueuedPrompt::text_only("第二问"),
+            QueuedPrompt::text_only("第三问"),
+        ];
 
         // /queue opens the clickable dialog; buttons are laid out at draw time
         app.run_slash("/queue", &mut serve);
@@ -6606,7 +6896,10 @@ mod tests {
         );
         assert_eq!(
             app.local_queue,
-            vec!["第二问".to_string(), "第三问".to_string()]
+            vec![
+                QueuedPrompt::text_only("第二问"),
+                QueuedPrompt::text_only("第三问")
+            ]
         );
         {
             use ratatui::{Terminal, backend::TestBackend};
@@ -6631,7 +6924,7 @@ mod tests {
             }),
             &mut serve,
         );
-        assert_eq!(app.local_queue, vec!["第三问".to_string()]);
+        assert_eq!(app.local_queue, vec![QueuedPrompt::text_only("第三问")]);
         let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
         assert_eq!(sent["cmd"], "supplement");
         assert_eq!(sent["text"], "第二问");
@@ -6667,7 +6960,7 @@ mod tests {
         }
 
         // queue more, click [清空]
-        app.local_queue = vec!["x".into()];
+        app.local_queue = vec![QueuedPrompt::text_only("x")];
         let (clr, _): (Rect, QueueAction) = app
             .queue_buttons
             .iter()
@@ -7636,7 +7929,7 @@ mod tests {
         assert_eq!(interrupt["cmd"], "interrupt");
         assert_eq!(
             app.local_queue,
-            vec!["第三个问题".to_string()],
+            vec![QueuedPrompt::text_only("第三个问题")],
             "queue survives"
         );
         assert!(app.lines.iter().any(|l| l.text.contains("排队保留 1 条")));

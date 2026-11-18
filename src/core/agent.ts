@@ -6,6 +6,7 @@ import type { ToolRegistry } from './tools/registry.js';
 import type {
   CompletionRequest,
   ContentBlock,
+  ImageBlock,
   Message,
   ModelSpec,
   StreamEvent,
@@ -49,7 +50,7 @@ export class Agent {
   /** transient system-prompt suffix (plan mode) — never persisted into history */
   systemSuffix?: string;
   /** mid-turn supplements (Alt+Enter): appended as user messages before the next model call */
-  private supplements: string[] = [];
+  private supplements: { text: string; images?: ImageBlock[] }[] = [];
   private readonly maxTurns: number;
   /** auto-compact threshold as a share of the context window; 0 disables (/autocompact) */
   compactAt: number;
@@ -70,17 +71,19 @@ export class Agent {
   }
 
   /** Add context to the RUNNING turn (Alt+Enter): the next model request sees it. */
-  supplement(text: string): void {
-    if (text.trim()) this.supplements.push(text.trim());
+  supplement(text: string, images?: ImageBlock[]): void {
+    if (text.trim() || images?.length) {
+      this.supplements.push({ text: text.trim(), images: images?.length ? images : undefined });
+    }
   }
 
   /** flush pending supplements into the session as user messages */
   private async flushSupplements(): Promise<void> {
     while (this.supplements.length) {
-      const text = this.supplements.shift()!;
+      const s = this.supplements.shift()!;
       await this.store.appendMessage({
         role: 'user',
-        content: [{ type: 'text', text: `（补充）${text}` }]
+        content: [{ type: 'text', text: `（补充）${s.text}` }, ...(s.images ?? [])]
       });
     }
   }
@@ -100,8 +103,11 @@ export class Agent {
   }
 
   /** Append a user message and loop (model → tools → model) until the model stops. */
-  async prompt(text: string, onStream?: (ev: StreamEvent) => void): Promise<Message> {
-    const user: Message = { role: 'user', content: [{ type: 'text', text }] };
+  async prompt(text: string, onStream?: (ev: StreamEvent) => void, images?: ImageBlock[]): Promise<Message> {
+    const user: Message = {
+      role: 'user',
+      content: [{ type: 'text', text }, ...(images ?? [])]
+    };
     await this.store.appendMessage(user);
     await this.events.emit('prompt_start', { text });
 

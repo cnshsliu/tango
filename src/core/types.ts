@@ -6,7 +6,13 @@
 // ---------- Messages ----------
 
 export type TextBlock = { type: 'text'; text: string };
-export type ImageBlock = { type: 'image'; mimeType: string; data: string }; // base64
+export type ImageBlock = {
+  type: 'image';
+  mimeType: string;
+  data: string; // base64
+  /** original local file path, when known — UIs reopen the image from it; never sent to vendors */
+  path?: string;
+};
 export type ToolCallBlock = {
   type: 'tool_call';
   id: string;
@@ -72,6 +78,8 @@ export interface ModelSpec {
   contextWindow?: number;
   maxTokens?: number;
   reasoning?: boolean;
+  /** accepts image input (vision). Unset = unknown: images are still sent, with a heads-up notice */
+  vision?: boolean;
   /** streaming field carrying reasoning deltas; defaults to "reasoning_content" (qwen/dashscope/deepseek style) */
   reasoningField?: string;
   /**

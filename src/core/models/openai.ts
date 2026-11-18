@@ -27,8 +27,12 @@ export function parseUsage(u: any): Usage {
 }
 
 /** Flatten our message model into OpenAI chat-completions shape. */
-export function toOpenAIMessages(system: string, messages: Message[]) {
-  const out: any[] = [{ role: 'system', content: system }];
+export function toOpenAIMessages(system: string, messages: Message[], systemRole: 'system' | 'developer' = 'system') {
+  // the system prompt always rides the cacheable message prefix; OpenAI-native routes
+  // use the `developer` role newer models (o-series, GPT-5/6) are documented to expect
+  // (opencode 2.3.2 parity — Responses `instructions` is billed uncached on GPT-6.2,
+  // so nobody should carry a system prompt outside the message prefix)
+  const out: any[] = [{ role: systemRole, content: system }];
   for (const m of messages) {
     if (m.role === 'user') {
       // tool results become separate "tool" messages; other content becomes one user message
@@ -90,7 +94,11 @@ export const openaiAdapter: ModelAdapter = {
   async *stream(spec: ModelSpec, req: CompletionRequest): AsyncIterable<StreamEvent> {
     const body: Record<string, unknown> = {
       model: spec.model,
-      messages: toOpenAIMessages(req.system, req.messages),
+      messages: toOpenAIMessages(
+        req.system,
+        req.messages,
+        /api\.openai\.com/.test(spec.baseUrl) ? 'developer' : 'system'
+      ),
       stream: true,
       stream_options: { include_usage: true }
     };

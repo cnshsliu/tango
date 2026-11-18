@@ -125,8 +125,11 @@ isolation), MCP server→client capabilities (sampling/roots), plugin marketplac
 
 ## Lean by design (token plans)
 
-On metered/token plans the harness's own overhead is quota: tango keeps the per-request
-prompt assembly small — system prompt ≈ 240 tokens, tool schemas ≈ 1.7k, so a bare project
+On metered/token plans the harness's own overhead is quota: the system prompt always rides
+the cacheable message prefix on every route (OpenAI-native endpoints use the `developer`
+role newer models expect — GPT-6.2 bills out-of-prefix instructions uncached, so tango
+never sends one; the anthropic route adds an explicit `cache_control` breakpoint). Tango
+keeps the per-request prompt assembly small — system prompt ≈ 240 tokens, tool schemas ≈ 1.7k, so a bare project
 starts under 2k tokens before any conversation (audit with `/context`). Vendor specifics are
 first-class: per-model `reasoningField` (qwen/dashscope `reasoning_content` by default),
 `prompt_tokens_details.cached_tokens` cache accounting in `/status` (缓存命中 %) and

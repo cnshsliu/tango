@@ -516,3 +516,16 @@ test('supplements flush into the running turn before the next model request', as
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test('system prompt rides as a leading developer message on OpenAI routes (GPT-6.2 caching parity), system elsewhere', async () => {
+  const { toOpenAIMessages } = await import('../src/core/models/openai.js');
+  // gateway/compatible routes keep the classic role
+  const gateway = toOpenAIMessages('SYS', []);
+  assert.equal(gateway[0].role, 'system');
+  assert.equal(gateway[0].content, 'SYS');
+  // OpenAI-native routes use the developer role — same cacheable-prefix position,
+  // and the role newer models (o-series, GPT-5/6) are documented to expect
+  const openai = toOpenAIMessages('SYS', [], 'developer');
+  assert.equal(openai[0].role, 'developer');
+  assert.equal(openai[0].content, 'SYS');
+});
