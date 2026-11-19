@@ -582,6 +582,8 @@ struct Choices {
     preview: Vec<String>,
     options: Vec<ChoiceOption>,
     sel: usize, // highlighted row (↑↓ + enter, or click)
+    /// set when this panel offers 接受/忽略 for a ?suggest (its text), not a real ?choice
+    suggest: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -1153,9 +1155,50 @@ impl App {
             self.choices = Some(c);
             return;
         };
+        // a suggest panel's options are fixed: 接受 executes, 忽略 just retires it
+        if let Some(text) = &c.suggest {
+            self.todos
+                .retain(|t| !matches!(&t.kind, TodoKind::Suggest { text: s } if s == text));
+            if pick.label == "接受" {
+                self.submit_text(serve, format!("请执行这条建议：{text}"), vec![]);
+            } else {
+                self.arm_pending_panel();
+            }
+            return;
+        }
         self.todos.retain(|t| !matches!(&t.kind,
             TodoKind::Choice { question, options, .. } if *question == c.question && *options == c.options));
         self.submit_text(serve, pick.label, vec![]);
+    }
+
+    /// At turn end, the first un-handled suggestion takes the panel with a
+    /// 接受/忽略 pair — suggestions get the same immediate affordance as choices.
+    fn arm_pending_panel(&mut self) {
+        if self.busy || self.choices.is_some() {
+            return;
+        }
+        if let Some(text) = self.todos.iter().find_map(|t| match &t.kind {
+            TodoKind::Suggest { text } => Some(text.clone()),
+            _ => None,
+        }) {
+            self.choices = Some(Choices {
+                question: format!("建议：{text}"),
+                preview: Vec::new(),
+                options: vec![
+                    ChoiceOption {
+                        label: "接受".into(),
+                        note: None,
+                    },
+                    ChoiceOption {
+                        label: "忽略".into(),
+                        note: None,
+                    },
+                ],
+                sel: 0,
+                suggest: Some(text),
+            });
+            self.choices_collapsed = false;
+        }
     }
 
     /// Re-open the option panel for an unanswered choice parked in todo.
@@ -1171,6 +1214,7 @@ impl App {
                 preview,
                 options,
                 sel: 0,
+                suggest: None,
             });
             self.choices_collapsed = false;
             self.todo_dialog = false;
@@ -1773,6 +1817,7 @@ impl App {
                 preview: choice_preview.clone(),
                 options: choice_options.clone(),
                 sel: 0,
+                suggest: None,
             });
             self.choices_collapsed = false;
             // unanswered choices are findable forever: park one per ask in todo
@@ -4358,6 +4403,11 @@ impl App {
                         if line.prompt_state == Some(PromptState::Running) {
                             line.prompt_state = Some(PromptState::Completed);
                         }
+                    }
+                    // turn done and nothing queued: an un-handled suggestion takes
+                    // the panel with 接受/忽略
+                    if !self.busy {
+                        self.arm_pending_panel();
                     }
                     self.refresh_popup();
                     if !ok {
@@ -8805,6 +8855,71 @@ mod tests {
         assert_eq!(app.chat_line_hit(0, 3, 0).map(|(_, _, i)| i), Some(2));
         assert_eq!(app.chat_line_hit(0, 4, 0).map(|(_, _, i)| i), Some(2));
         assert_eq!(app.chat_line_hit(0, 5, 0).map(|(_, _, i)| i), Some(3));
+    }
+
+    #[test]
+    fn suggest_arms_panel_at_turn_end() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.busy = true;
+        app.prompt_id = 7;
+        app.stream = "备份已开启。?suggest 把 BACKUP_DIR 指到外接盘".into();
+        app.commit_stream();
+        assert!(
+            app.choices.is_none(),
+            "mid-turn the suggestion must not steal the panel"
+        );
+        app.frame(
+            serde_json::json!({"type": "result", "id": 7, "ok": true}),
+            &mut serve,
+        );
+        let c = app.choices.as_ref().expect("panel armed at turn end");
+        assert!(c.question.contains("外接盘"), "{}", c.question);
+        let labels: Vec<&str> = c.options.iter().map(|o| o.label.as_str()).collect();
+        assert_eq!(labels, vec!["接受", "忽略"]);
+        assert_eq!(app.todos.len(), 1, "the todo entry still exists");
+    }
+
+    #[test]
+    fn accept_on_suggest_panel_sends_and_retires() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.busy = true;
+        app.prompt_id = 7;
+        app.stream = "?suggest 换个备份盘".into();
+        app.commit_stream();
+        app.frame(
+            serde_json::json!({"type": "result", "id": 7, "ok": true}),
+            &mut serve,
+        );
+        app.pick_choice(&mut serve, 0);
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        assert_eq!(sent["text"], "请执行这条建议：换个备份盘");
+        assert!(app.todos.is_empty(), "accepted suggestion retires");
+        assert!(app.choices.is_none());
+    }
+
+    #[test]
+    fn ignore_on_suggest_panel_chains_to_next() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.busy = true;
+        app.prompt_id = 7;
+        app.stream = "?suggest 第一条\n又 ?suggest 第二条".into();
+        app.commit_stream();
+        assert_eq!(app.todos.len(), 2);
+        app.frame(
+            serde_json::json!({"type": "result", "id": 7, "ok": true}),
+            &mut serve,
+        );
+        app.pick_choice(&mut serve, 1); // 忽略 the first
+        assert!(serve.sent.is_empty(), "ignoring sends nothing");
+        assert_eq!(app.todos.len(), 1, "ignored suggestion retires");
+        let c = app
+            .choices
+            .as_ref()
+            .expect("next suggestion takes the panel");
+        assert!(c.question.contains("第二条"), "{}", c.question);
     }
 
     #[test]
