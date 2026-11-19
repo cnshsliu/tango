@@ -53,25 +53,13 @@ fn prompt_extras(text: String, images: Vec<String>) -> Vec<(&'static str, Value)
 }
 
 /// Rough cell width: CJK/fullwidth codepoints take 2 cells. Good enough for scroll math and the cursor.
+/// Display width in terminal columns. Delegates to unicode-width — the same
+/// crate ratatui uses to lay out text — so click/selection mapping can never
+/// drift from what's actually on screen (emoji counted 1 by the old hand-rolled
+/// table rendered as 2 columns, shifting every mapping right of the cursor).
 pub fn display_width(s: &str) -> usize {
-    s.chars()
-        .map(|c| {
-            let u = c as u32;
-            if (0x1100..=0x115F).contains(&u)
-                || (0x2E80..=0xA4CF).contains(&u)
-                || (0xAC00..=0xD7A3).contains(&u)
-                || (0xF900..=0xFAFF).contains(&u)
-                || (0xFE30..=0xFE6F).contains(&u)
-                || (0xFF00..=0xFF60).contains(&u)
-                || (0xFFE0..=0xFFE6).contains(&u)
-                || (0x20000..=0x3FFFD).contains(&u)
-            {
-                2
-            } else {
-                1
-            }
-        })
-        .sum()
+    use unicode_width::UnicodeWidthStr;
+    s.width()
 }
 
 struct ChatLine {
@@ -8790,6 +8778,33 @@ mod tests {
             kind: TodoKind::Suggest { text: "x".into() },
         });
         assert!(app.status_segments_text().contains("❓"));
+    }
+
+    #[test]
+    fn display_width_matches_the_renderer() {
+        // ratatui lays text out with unicode-width; the mapping must agree or
+        // clicks/selection drift right on lines carrying emoji
+        assert_eq!(display_width("❓"), 2);
+        assert_eq!(display_width("💡"), 2);
+        assert_eq!(display_width("✅"), 2);
+        assert_eq!(display_width("🔧"), 2);
+        // ambiguous-width symbols stay 1 in the renderer — must stay 1 here too
+        assert_eq!(display_width("⚙"), 1);
+        assert_eq!(display_width("❯"), 1);
+        assert_eq!(display_width("中"), 2);
+        assert_eq!(display_width("a"), 1);
+    }
+
+    #[test]
+    fn emoji_columns_map_to_exact_chars() {
+        let mut app = App::new();
+        app.chat_inner_w = 40;
+        app.chat_scroll_offset = 0;
+        app.chat_rows = wrap_chat_rows(&["💡 已完成，继续".to_string()], 40);
+        // screen cols: 💡=0-1, space=2, 已=3-4, 完=5-6
+        assert_eq!(app.chat_line_hit(0, 3, 0).map(|(_, _, i)| i), Some(2));
+        assert_eq!(app.chat_line_hit(0, 4, 0).map(|(_, _, i)| i), Some(2));
+        assert_eq!(app.chat_line_hit(0, 5, 0).map(|(_, _, i)| i), Some(3));
     }
 
     #[test]
