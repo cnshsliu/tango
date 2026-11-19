@@ -16,6 +16,8 @@ pub enum Event {
     /// bracketed paste: the whole clipboard as one event, newlines kept, never "Enter"
     Paste(String),
     Gone(u64), // the serve child of this epoch exited
+    /// once a second, so elapsed timers / rotating tips redraw during silent turns
+    Tick,
 }
 
 /// Owns the `tango serve` child process: JSONL out, frames in.

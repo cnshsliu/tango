@@ -532,6 +532,18 @@ enum QueueAction {
     ClearAll,          // drop every queued item
 }
 
+/// Shortcut tips rotated on the input rule while a turn runs (20s per tip).
+const TIPS: &[&str] = &[
+    "ctrl+v 粘贴剪贴板图片，自动变成 [图片] chip",
+    "alt+enter 把补充文字并入当前进行中的回合",
+    "忙碌时回车自动排队 · /queue 管理队列",
+    "/todo 处理模型的选项与建议（❓ 和 ?suggest 收在这里）",
+    "选项面板按 tab 改写自答 · esc 只收起面板",
+    "ctrl+o 展开最近工具输出 · /focus 安静模式",
+    "ctrl+r 历史提示 · ctrl+p 命令面板 · ctrl+e 编辑草稿",
+    "/rewind 时间轴回滚代码+对话 · /export 导出会话",
+];
+
 /// Something the model left for the user to act on: a blocking choice (?choice) the
 /// user hasn't answered, or a side suggestion (?suggest). Per-item: it leaves the
 /// list only when the user explicitly handles it.
@@ -764,6 +776,13 @@ pub struct App {
     todo_dialog: bool,
     /// clickable button rects of the /todo dialog, rebuilt every draw
     todo_buttons: Vec<(Rect, TodoAction)>,
+    /// when the running turn started — drives the elapsed readout and tip rotation
+    turn_started: Option<std::time::Instant>,
+    /// chars received this turn (text + thinking deltas) — the ↓ readout
+    turn_chars: u64,
+    /// full serve session id (the status bar shows the 8-char prefix; the exit
+    /// note needs the whole thing for `tango --resume`)
+    session_full: String,
     /// plan mode badge (/plan)
     plan_mode: bool,
     /// active /goal text (badge)
@@ -850,6 +869,9 @@ impl App {
             todos: Vec::new(),
             todo_dialog: false,
             todo_buttons: Vec::new(),
+            turn_started: None,
+            turn_chars: 0,
+            session_full: String::new(),
             ime_restore: None,
             queue_buttons: Vec::new(),
             plan_mode: false,
@@ -3271,6 +3293,8 @@ impl App {
                 return true;
             }
             Event::Stderr(l) => self.push(format!("! {l}"), Tone::Muted),
+            // 1s heartbeat: nothing to handle, the main loop just redraws
+            Event::Tick => {}
             Event::Resized(_, _) => self.last_visual_total = 0,
             Event::Paste(s) => {
                 if self.permission.is_none()
@@ -3596,6 +3620,8 @@ impl App {
     }
 
     fn submit_text(&mut self, serve: &mut Serve, text: String, images: Vec<String>) {
+        self.turn_started = Some(std::time::Instant::now());
+        self.turn_chars = 0;
         // a new prompt answers whatever was on screen; an unanswered choice stays
         // parked in todo for explicit handling, but heuristic trailing questions
         // count any prompt as their answer
@@ -4228,6 +4254,7 @@ impl App {
                     .chars()
                     .take(8)
                     .collect();
+                self.session_full = v["sessionId"].as_str().unwrap_or("").to_string();
                 self.cost = v["totalCostUsd"].as_f64().unwrap_or(0.0);
                 self.context_tokens = v["contextTokens"].as_u64().unwrap_or(0);
                 self.context_window = v["contextWindow"].as_u64().unwrap_or(0);
@@ -4241,8 +4268,14 @@ impl App {
                 let ev = &v["event"];
                 let d = ev["delta"].as_str().unwrap_or("");
                 match ev["type"].as_str() {
-                    Some("text") => self.stream.push_str(d),
-                    Some("thinking") => self.thinking.push_str(d),
+                    Some("text") => {
+                        self.stream.push_str(d);
+                        self.turn_chars += d.chars().count() as u64;
+                    }
+                    Some("thinking") => {
+                        self.thinking.push_str(d);
+                        self.turn_chars += d.chars().count() as u64;
+                    }
                     Some("tool_call_start") => self.push(
                         format!("⚙ {} …", ev["name"].as_str().unwrap_or("?")),
                         Tone::Muted,
@@ -4316,6 +4349,8 @@ impl App {
                 let ok = v["ok"].as_bool().unwrap_or(false);
                 if id == self.prompt_id {
                     self.busy = false;
+                    self.turn_started = None;
+                    self.turn_chars = 0;
                     self.current_prompt = None; // the pin retires with the turn
                     // the local queue drains in order: the next ask goes out now
                     if let Some(next) = self.local_queue.first().cloned() {
@@ -5875,9 +5910,35 @@ impl App {
             f.render_widget(Paragraph::new(rows), inner);
         }
 
-        // input
+        // input rule; on long turns a rotating tip rides the rule itself
+        // (Claude Code-style "⌞ Tip:" without spending a layout row)
+        let tip = if self.busy
+            && let Some(t0) = self.turn_started
+            && t0.elapsed().as_secs() >= 30
+        {
+            Some(Self::tip_for(t0.elapsed().as_secs()))
+        } else {
+            None
+        };
+        let rule_row = match tip {
+            Some(t) => {
+                let text = format!(" {t} ");
+                let tw = display_width(&text) as u16;
+                let left = area.width.saturating_sub(tw + 2);
+                let dash = self.theme.style(Tone::Muted);
+                Line::from(vec![
+                    Span::styled("─".repeat(left as usize), dash),
+                    Span::styled(text, dash),
+                    Span::styled("──".to_string(), dash),
+                ])
+            }
+            None => Line::from(Span::styled(
+                "─".repeat(area.width as usize),
+                self.theme.style(Tone::Muted),
+            )),
+        };
         f.render_widget(
-            Paragraph::new("─".repeat(area.width as usize)).style(self.theme.style(Tone::Muted)),
+            Paragraph::new(rule_row),
             Rect {
                 x: 0,
                 y: input_a.y,
@@ -6134,7 +6195,23 @@ impl App {
 
     /// Status bar spans; a custom {placeholder} template replaces the whole bar.
     fn status_spans(&mut self) -> Vec<Span<'static>> {
-        let work = if self.busy { "● working" } else { "idle" };
+        // while a turn runs, replace the dumb "working" with live numbers: how long
+        // it's been and how much has arrived — the "is it stuck?" check at a glance
+        let work = if self.busy {
+            match self.turn_started {
+                Some(t0) => {
+                    let secs = t0.elapsed().as_secs();
+                    format!(
+                        "● {} · ↓{}",
+                        Self::fmt_elapsed(secs),
+                        Self::fmt_tokens(self.turn_chars)
+                    )
+                }
+                None => "● working".to_string(),
+            }
+        } else {
+            "idle".to_string()
+        };
         if let Some(template) = self.statusline.clone() {
             let percent = if self.context_window > 0 {
                 self.context_tokens.saturating_mul(100) / self.context_window
@@ -6159,7 +6236,7 @@ impl App {
                     ),
                 )
                 .replace("{pct}", &format!("{percent}%"))
-                .replace("{work}", work);
+                .replace("{work}", &work);
             return vec![Span::styled(
                 format!(" {} ", raw.chars().take(200).collect::<String>()),
                 self.theme.style(Tone::Badge),
@@ -6232,6 +6309,46 @@ impl App {
             ));
         }
         spans
+    }
+
+    /// 42s · 13m22s · 1h30m
+    fn fmt_elapsed(secs: u64) -> String {
+        if secs < 60 {
+            format!("{secs}s")
+        } else if secs < 3600 {
+            format!("{}m{:02}s", secs / 60, secs % 60)
+        } else {
+            format!("{}h{:02}m", secs / 3600, (secs % 3600) / 60)
+        }
+    }
+
+    /// 500 · 14.0k · 1.5M
+    fn fmt_tokens(n: u64) -> String {
+        if n < 1000 {
+            format!("{n}")
+        } else if n < 1_000_000 {
+            format!("{:.1}k", n as f64 / 1000.0)
+        } else {
+            format!("{:.1}M", n as f64 / 1_000_000.0)
+        }
+    }
+
+    /// The tip showing right now: pool member rotating every 20s of the turn.
+    fn tip_for(elapsed_secs: u64) -> &'static str {
+        TIPS[((elapsed_secs / 20) as usize) % TIPS.len()]
+    }
+
+    /// Printed to the plain terminal after the TUI tears down: how to get back.
+    /// None when serve never handshook (no session to resume).
+    pub fn exit_note(&self) -> Option<String> {
+        if self.session_full.is_empty() {
+            None
+        } else {
+            Some(format!(
+                "session {} · 恢复：tango --resume {}",
+                self.session_full, self.session_full
+            ))
+        }
     }
 
     /// plain text of the status bar (tests and /statusline preview)
@@ -8673,6 +8790,69 @@ mod tests {
             kind: TodoKind::Suggest { text: "x".into() },
         });
         assert!(app.status_segments_text().contains("❓"));
+    }
+
+    #[test]
+    fn elapsed_and_token_formats() {
+        assert_eq!(App::fmt_elapsed(42), "42s");
+        assert_eq!(App::fmt_elapsed(59), "59s");
+        assert_eq!(App::fmt_elapsed(60), "1m00s");
+        assert_eq!(App::fmt_elapsed(802), "13m22s");
+        assert_eq!(App::fmt_elapsed(5432), "1h30m");
+        assert_eq!(App::fmt_tokens(0), "0");
+        assert_eq!(App::fmt_tokens(500), "500");
+        assert_eq!(App::fmt_tokens(999), "999");
+        assert_eq!(App::fmt_tokens(14_000), "14.0k");
+        assert_eq!(App::fmt_tokens(1_500_000), "1.5M");
+    }
+
+    #[test]
+    fn busy_status_shows_elapsed_and_received() {
+        let mut app = App::new();
+        app.busy = true;
+        app.turn_started = Some(std::time::Instant::now());
+        app.turn_chars = 14_000;
+        let s = app.status_segments_text();
+        assert!(s.contains("↓14.0k"), "received chars shown while busy: {s}");
+        assert!(s.contains('s'), "elapsed shown: {s}");
+        // idle stays clean
+        app.busy = false;
+        app.turn_started = None;
+        assert!(!app.status_segments_text().contains("↓"));
+    }
+
+    #[test]
+    fn stream_deltas_count_into_turn_chars() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.frame(
+            serde_json::json!({"type": "stream", "event": {"type": "text", "delta": "hello 世界"}}),
+            &mut serve,
+        );
+        app.frame(
+            serde_json::json!({"type": "stream", "event": {"type": "thinking", "delta": "!!"}}),
+            &mut serve,
+        );
+        assert_eq!(app.turn_chars, 10, "text and thinking deltas both count");
+    }
+
+    #[test]
+    fn tip_line_rotates_every_20s() {
+        assert!(TIPS.len() >= 4, "a real pool, not a one-liner");
+        assert_eq!(App::tip_for(0), App::tip_for(19), "stable within a window");
+        assert_eq!(App::tip_for(20), App::tip_for(39));
+        assert_ne!(App::tip_for(0), App::tip_for(20), "rotates across windows");
+        assert!(TIPS.contains(&App::tip_for(37)), "always a pool member");
+    }
+
+    #[test]
+    fn exit_note_carries_session_and_resume_command() {
+        let mut app = App::new();
+        assert!(app.exit_note().is_none(), "no handshake → no note");
+        app.session_full = "a1b2c3d4e5f67890".into();
+        let note = app.exit_note().expect("note once serve handshook");
+        assert!(note.contains("a1b2c3d4e5f67890"), "full session id: {note}");
+        assert!(note.contains("tango --resume a1b2c3d4e5f67890"), "{note}");
     }
 
     #[test]

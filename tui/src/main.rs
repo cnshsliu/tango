@@ -49,14 +49,22 @@ fn main() -> Result<(), Box<dyn Error>> {
         LeaveAlternateScreen
     )?;
     terminal.show_cursor()?;
-    if let Err(e) = result {
-        eprintln!("tango-tui: {e}");
-        std::process::exit(1);
+    match result {
+        Err(e) => {
+            eprintln!("tango-tui: {e}");
+            std::process::exit(1);
+        }
+        Ok(Some(note)) => {
+            println!("{note}");
+        }
+        Ok(None) => {}
     }
     Ok(())
 }
 
-fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<(), Box<dyn Error>> {
+fn run(
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+) -> Result<Option<String>, Box<dyn Error>> {
     let (tx, rx) = mpsc::channel::<Event>();
     let mut serve = Serve::spawn(tx.clone(), 0, None, None, None)?;
     let input_enabled = Arc::new(AtomicBool::new(true));
@@ -66,7 +74,14 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<(), Box<dyn 
         let tx = tx.clone();
         let input_enabled = input_enabled.clone();
         move || {
+            let mut last_tick = std::time::Instant::now();
             loop {
+                // 1s heartbeat: elapsed timers and rotating tips redraw even when the
+                // turn is silent (a tool grinding away for minutes)
+                if last_tick.elapsed() >= Duration::from_secs(1) {
+                    last_tick = std::time::Instant::now();
+                    let _ = tx.send(Event::Tick);
+                }
                 if !input_enabled.load(Ordering::Relaxed) {
                     thread::sleep(Duration::from_millis(50));
                     continue;
@@ -196,6 +211,7 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<(), Box<dyn 
     if let Some(e) = app.err {
         Err(e.into())
     } else {
-        Ok(())
+        // hand the user the way back before the process goes away
+        Ok(app.exit_note())
     }
 }
