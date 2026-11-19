@@ -469,7 +469,8 @@ fn ime_should_switch(current: &str) -> bool {
 }
 
 /// Scan a rendered chat line for the first token that looks like and IS an existing
-/// local file (absolute, ./…, ../… or ~/…). Clicking it opens the file viewer.
+/// local file or directory (absolute, ./…, ../… or ~/…). Clicking a file opens
+/// the read-only viewer; a directory opens the system file manager.
 /// Position-aware: the click must land on the path's own characters — a path
 /// elsewhere in the line is not a click target.
 fn find_existing_file_path(text: &str, click_idx: usize) -> Option<String> {
@@ -499,7 +500,10 @@ fn find_existing_file_path(text: &str, click_idx: usize) -> Option<String> {
             } else {
                 no_line.to_string()
             };
-            if expanded.len() > 1 && std::path::Path::new(&expanded).is_file() {
+            if expanded.len() > 1
+                && (std::path::Path::new(&expanded).is_file()
+                    || std::path::Path::new(&expanded).is_dir())
+            {
                 best = Some(expanded);
             }
         }
@@ -1310,7 +1314,37 @@ impl App {
         }
     }
 
+    /// Open a directory in the system file manager: Finder on macOS, Explorer on
+    /// Windows, xdg-open elsewhere.
+    fn open_dir(&mut self, path: &str) {
+        if cfg!(test) {
+            self.push(format!("📂 打开目录 {path}"), Tone::Muted);
+            return;
+        }
+        #[cfg(target_os = "macos")]
+        let program = "open";
+        #[cfg(target_os = "windows")]
+        let program = "explorer";
+        #[cfg(all(unix, not(target_os = "macos")))]
+        let program = "xdg-open";
+        match Command::new(program)
+            .arg(path)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        {
+            Ok(_) => self.push(format!("📂 已在文件管理器打开：{path}"), Tone::Muted),
+            Err(e) => self.push(format!("无法打开目录 {path}：{e}"), Tone::Error),
+        }
+    }
+
     fn open_file_viewer(&mut self, path: &str) {
+        // directories open in the system file manager, never as text
+        if std::path::Path::new(path).is_dir() {
+            self.open_dir(path);
+            return;
+        }
         let trimmed = path.trim_end_matches(|c: char| ".,;:!?\"')]".contains(c));
         let line_free = trimmed.trim_end_matches(|c: char| c.is_ascii_digit() || c == ':');
         let candidate = std::path::Path::new(line_free);
@@ -8920,6 +8954,46 @@ mod tests {
             .as_ref()
             .expect("next suggestion takes the panel");
         assert!(c.question.contains("第二条"), "{}", c.question);
+    }
+
+    #[test]
+    fn directory_path_click_opens_file_manager() {
+        let mut app = App::new();
+        let dir = std::env::temp_dir().join("tango-dir-click");
+        std::fs::create_dir_all(&dir).unwrap();
+        app.chat_inner_w = 200;
+        app.chat_scroll_offset = 0;
+        app.chat_rows = wrap_chat_rows(&[format!("Files in {}/ and more", dir.display())], 200);
+        // click (press+release) on the directory path itself
+        let on_path = 9 + dir.display().to_string().chars().count() / 2;
+        app.chat_press(0, on_path as u16);
+        app.chat_release(0, 0, on_path as u16);
+        assert!(
+            app.viewer.is_none(),
+            "directories never open as text in the viewer"
+        );
+        assert!(
+            app.lines.iter().any(|l| l.text.contains("打开目录")),
+            "the directory opens in the system file manager"
+        );
+        // a click off the path (position rule) must not open anything
+        let opened = app
+            .lines
+            .iter()
+            .filter(|l| l.text.contains("打开目录"))
+            .count();
+        let off = 2u16;
+        app.chat_press(0, off);
+        app.chat_release(0, 0, off);
+        assert_eq!(
+            app.lines
+                .iter()
+                .filter(|l| l.text.contains("打开目录"))
+                .count(),
+            opened,
+            "off-path click opens nothing"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
