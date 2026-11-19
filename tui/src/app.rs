@@ -539,7 +539,8 @@ enum QueueAction {
 enum TodoKind {
     Choice {
         question: String,
-        options: Vec<String>,
+        preview: Vec<String>,
+        options: Vec<ChoiceOption>,
     },
     Suggest {
         text: String,
@@ -549,6 +550,14 @@ enum TodoKind {
     Question {
         text: String,
     },
+}
+
+/// One ?choice option: the scannable label plus an optional muted annotation
+/// (the indented line under it) explaining consequences.
+#[derive(Clone, Debug, PartialEq)]
+struct ChoiceOption {
+    label: String,
+    note: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -569,7 +578,9 @@ enum TodoAction {
 #[derive(Clone)]
 struct Choices {
     question: String,
-    options: Vec<String>,
+    /// bar-indented preview block ("| " lines) — commands/paths the ask is about
+    preview: Vec<String>,
+    options: Vec<ChoiceOption>,
     sel: usize, // highlighted row (↑↓ + enter, or click)
 }
 
@@ -745,8 +756,8 @@ pub struct App {
     choices: Option<Choices>,
     /// Esc collapses the panel; the todo entry (and badge) keep it findable
     choices_collapsed: bool,
-    /// clickable option rows of the choices panel, rebuilt every draw
-    choice_rows: Vec<Rect>,
+    /// clickable option rows of the choices panel (rect → option index), rebuilt every draw
+    choice_rows: Vec<(Rect, usize)>,
     /// unanswered choices + side suggestions, handled per-item via /todo
     todos: Vec<TodoItem>,
     /// /todo dialog open
@@ -1133,17 +1144,21 @@ impl App {
             return;
         };
         self.todos.retain(|t| !matches!(&t.kind,
-            TodoKind::Choice { question, options } if *question == c.question && *options == c.options));
-        self.submit_text(serve, pick, vec![]);
+            TodoKind::Choice { question, options, .. } if *question == c.question && *options == c.options));
+        self.submit_text(serve, pick.label, vec![]);
     }
 
     /// Re-open the option panel for an unanswered choice parked in todo.
     fn expand_choice(&mut self, idx: usize) {
-        if let Some(TodoKind::Choice { question, options }) =
-            self.todos.get(idx).map(|t| t.kind.clone())
+        if let Some(TodoKind::Choice {
+            question,
+            preview,
+            options,
+        }) = self.todos.get(idx).map(|t| t.kind.clone())
         {
             self.choices = Some(Choices {
                 question,
+                preview,
                 options,
                 sel: 0,
             });
@@ -1637,7 +1652,8 @@ impl App {
         // ?choice block: lines after the marker up to the first non-option line become
         // the option panel instead of transcript text
         let mut in_choice = false;
-        let mut choice_options: Vec<String> = Vec::new();
+        let mut choice_options: Vec<ChoiceOption> = Vec::new();
+        let mut choice_preview: Vec<String> = Vec::new();
         let mut last_text = String::new();
         let mut i = 0;
         while i < lines.len() {
@@ -1663,10 +1679,25 @@ impl App {
                 i += 1;
                 continue;
             }
-            // an open ?choice block keeps eating "N. option" lines
+            // an open ?choice block eats options, "| " preview lines and indented
+            // annotations for the option above
             if in_choice {
                 if let Some(rest) = Self::option_label(line) {
-                    choice_options.push(rest.to_string());
+                    choice_options.push(ChoiceOption {
+                        label: rest.to_string(),
+                        note: None,
+                    });
+                    i += 1;
+                    continue;
+                }
+                if let Some(rest) = line.strip_prefix("| ") {
+                    choice_preview.push(rest.to_string());
+                    i += 1;
+                    continue;
+                }
+                let indented = line.starts_with("   ") || line.starts_with('\t');
+                if indented && let Some(last) = choice_options.last_mut() {
+                    last.note = Some(line.trim().to_string());
                     i += 1;
                     continue;
                 }
@@ -1729,17 +1760,19 @@ impl App {
             };
             self.choices = Some(Choices {
                 question: question.clone(),
+                preview: choice_preview.clone(),
                 options: choice_options.clone(),
                 sel: 0,
             });
             self.choices_collapsed = false;
             // unanswered choices are findable forever: park one per ask in todo
             let already = self.todos.iter().any(|t| matches!(&t.kind,
-                TodoKind::Choice { question: q, options: o } if *q == question && *o == choice_options));
+                TodoKind::Choice { question: q, options: o, .. } if *q == question && *o == choice_options));
             if !already {
                 self.todos.push(TodoItem {
                     kind: TodoKind::Choice {
                         question,
+                        preview: choice_preview,
                         options: choice_options,
                     },
                 });
@@ -3326,7 +3359,12 @@ impl App {
                     && let MouseEventKind::Down(MouseButton::Left) = m.kind
                 {
                     let pos = Position::new(m.column, m.row);
-                    if let Some(idx) = self.choice_rows.iter().position(|rect| rect.contains(pos)) {
+                    if let Some((_, idx)) = self
+                        .choice_rows
+                        .iter()
+                        .find(|(rect, _)| rect.contains(pos))
+                        .cloned()
+                    {
                         self.pick_choice(serve, idx);
                         return false;
                     }
@@ -3852,6 +3890,18 @@ impl App {
                     return;
                 }
                 KeyCode::Esc if !self.busy => {
+                    self.choices_collapsed = true;
+                    return;
+                }
+                // tab = amend: the options are suggestions, the user's own words win
+                KeyCode::Tab => {
+                    let question = self
+                        .choices
+                        .as_ref()
+                        .map(|c| c.question.clone())
+                        .unwrap_or_default();
+                    self.input = question.chars().collect();
+                    self.cursor = self.input.len();
                     self.choices_collapsed = true;
                     return;
                 }
@@ -5702,8 +5752,9 @@ impl App {
             && !self.choices_collapsed
         {
             self.choice_rows.clear();
-            let ph = (c.options.len() as u16) + 3; // question + options + hint
-            let w = 64u16.min(area.width);
+            let note_rows: u16 = c.options.iter().filter(|o| o.note.is_some()).count() as u16;
+            let ph = (c.options.len() as u16) + (c.preview.len() as u16) + note_rows + 3;
+            let w = 72u16.min(area.width);
             let pop = Rect {
                 x: (area.width.saturating_sub(w)) / 2,
                 y: input_a.y.saturating_sub(ph),
@@ -5714,7 +5765,7 @@ impl App {
                 f,
                 pop,
                 "❓ 模型在等你选择",
-                "↑↓/点击 选择 · enter 确认 · esc 收起（/todo 找回）",
+                "↑↓/点击 选择 · enter 确认 · tab 改写自答 · esc 收起（/todo 找回）",
                 self.theme,
             );
             let q: String = c.question.chars().take(inner.width as usize).collect();
@@ -5727,16 +5778,36 @@ impl App {
                     height: 1,
                 },
             );
+            let mut y = inner.y + 1;
+            // bar-indented preview block: what the ask is about (commands, paths)
+            let bar = self.theme.style(Tone::Muted);
+            for line in &c.preview {
+                let text: String = line
+                    .chars()
+                    .take(inner.width.saturating_sub(4) as usize)
+                    .collect();
+                f.render_widget(
+                    Paragraph::new(format!("│ {text}")).style(bar),
+                    Rect {
+                        x: inner.x + 2,
+                        y,
+                        width: inner.width.saturating_sub(2),
+                        height: 1,
+                    },
+                );
+                y += 1;
+            }
             for (i, opt) in c.options.iter().enumerate() {
                 let row = Rect {
                     x: inner.x,
-                    y: inner.y + 1 + i as u16,
+                    y,
                     width: inner.width,
                     height: 1,
                 };
                 let label: String = opt
+                    .label
                     .chars()
-                    .take(inner.width.saturating_sub(4) as usize)
+                    .take(inner.width.saturating_sub(6) as usize)
                     .collect();
                 let style = if i == c.sel {
                     self.theme.style(Tone::Badge)
@@ -5748,7 +5819,27 @@ impl App {
                     Paragraph::new(format!("{}. {marker} {label}", i + 1)).style(style),
                     row,
                 );
-                self.choice_rows.push(row);
+                self.choice_rows.push((row, i));
+                y += 1;
+                // muted annotation row — clicking it picks the option above too
+                if let Some(note) = &opt.note {
+                    let note_row = Rect {
+                        x: inner.x + 4,
+                        y,
+                        width: inner.width.saturating_sub(4),
+                        height: 1,
+                    };
+                    let note: String = note
+                        .chars()
+                        .take(inner.width.saturating_sub(8) as usize)
+                        .collect();
+                    f.render_widget(
+                        Paragraph::new(note).style(self.theme.style(Tone::Muted)),
+                        note_row,
+                    );
+                    self.choice_rows.push((note_row, i));
+                    y += 1;
+                }
             }
         }
 
@@ -8390,7 +8481,8 @@ mod tests {
         app.stream = "修复方法如上。\n?choice\n1. 现在就改\n2. 先看测试再改\n3. 不改".into();
         app.commit_stream();
         let c = app.choices.as_ref().expect("choice panel armed");
-        assert_eq!(c.options, vec!["现在就改", "先看测试再改", "不改"]);
+        let labels: Vec<&str> = c.options.iter().map(|o| o.label.as_str()).collect();
+        assert_eq!(labels, vec!["现在就改", "先看测试再改", "不改"]);
         assert!(!app.choices_collapsed, "panel visible on arrival");
         assert_eq!(app.todos.len(), 1, "unanswered choice also lands in todo");
         // the marker block never shows as raw chat text
@@ -8402,6 +8494,57 @@ mod tests {
         assert!(
             !app.lines.iter().any(|l| l.text.contains("1. 现在就改")),
             "options live in the panel, not the transcript"
+        );
+    }
+
+    #[test]
+    fn choice_annotations_and_preview_parse() {
+        let mut app = App::new();
+        app.stream = "要去执行吗？?choice\n| cd ~/x && tools/run.sh\n| TV_HOST=h tools/run.sh 2>&1 | tail -20\n1. 执行\n   跑完直接提交\n2. 只跑不提交\n3. 不执行".into();
+        app.commit_stream();
+        let c = app.choices.as_ref().expect("choice panel armed");
+        assert_eq!(
+            c.preview,
+            vec![
+                "cd ~/x && tools/run.sh",
+                "TV_HOST=h tools/run.sh 2>&1 | tail -20"
+            ],
+            "| lines become the bar-indented preview block"
+        );
+        assert_eq!(c.options[0].label, "执行");
+        assert_eq!(
+            c.options[0].note.as_deref(),
+            Some("跑完直接提交"),
+            "indented line annotates the option above"
+        );
+        assert_eq!(c.options[1].note, None, "annotations are per-option");
+        // preview and annotations never leak into the transcript as raw text
+        assert!(!app.lines.iter().any(|l| l.text.contains("| cd ~/x")));
+        assert!(!app.lines.iter().any(|l| l.text.contains("跑完直接提交")));
+    }
+
+    #[test]
+    fn tab_amends_choice_into_input() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.stream = "要改吗？\n?choice\n1. 现在就改\n2. 不改".into();
+        app.commit_stream();
+        app.key(
+            crossterm::event::KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
+            &mut serve,
+        );
+        let typed: String = app.input.iter().collect();
+        assert_eq!(
+            typed, "要改吗？",
+            "tab preloads the question for a custom answer"
+        );
+        assert!(
+            app.choices_collapsed,
+            "panel steps aside while the user writes"
+        );
+        assert!(
+            app.choices.is_some() && app.todos.len() == 1,
+            "the ask itself is not answered by amending"
         );
     }
 
@@ -8603,7 +8746,8 @@ mod tests {
         assert!(app.choices.is_none());
         app.expand_choice(0);
         let c = app.choices.as_ref().expect("panel re-opened from todo");
-        assert_eq!(c.options, vec!["提交", "再看看"]);
+        let labels: Vec<&str> = c.options.iter().map(|o| o.label.as_str()).collect();
+        assert_eq!(labels, vec!["提交", "再看看"]);
     }
 
     #[test]

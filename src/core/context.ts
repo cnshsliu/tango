@@ -93,12 +93,18 @@ question. Two markers, both understood by the terminal:
 When you need the user's decision before proceeding, end your reply with a choice block:
 
 ?choice
+| <optional preview line: the command or path the ask is about>
+| <more preview lines as needed>
 1. <concise option — put your recommendation first>
+   <optional indented line: a short muted annotation explaining what this choice does>
 2. <option>
 3. <option>
 
-Use 2-4 options. The terminal renders them as a clickable panel; the picked option comes
-back to you as the user's next message, so treat it as their answer and continue.
+Use 2-4 options. "| " lines render as a bar-indented preview block; a line indented by
+three spaces annotates the option above it. The terminal renders all of this as a
+clickable panel; the picked option comes back to you as the user's next message, so
+treat it as their answer and continue. The user may also press tab to write their own
+answer instead of picking — never design options that assume they can't.
 
 For minor suggestions raised while other work continues (nothing blocking), emit one line:
 
