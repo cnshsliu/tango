@@ -544,6 +544,11 @@ enum TodoKind {
     Suggest {
         text: String,
     },
+    /// heuristic: the reply ended on a plain question with no marker — answered by
+    /// whatever the user sends next, so it auto-retires on any prompt
+    Question {
+        text: String,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -556,6 +561,7 @@ struct TodoItem {
 enum TodoAction {
     Expand(usize), // re-open this unanswered choice's option panel
     Run(usize),    // act on a suggestion: send "执行这条建议" as the next prompt
+    Reply(usize),  // preload a heuristic question into the input box for answering
     Drop(usize),   // dismiss without acting
 }
 
@@ -747,8 +753,6 @@ pub struct App {
     todo_dialog: bool,
     /// clickable button rects of the /todo dialog, rebuilt every draw
     todo_buttons: Vec<(Rect, TodoAction)>,
-    /// last reply ended on a plain question with no ?choice — show ❓
-    ask_badge: bool,
     /// plan mode badge (/plan)
     plan_mode: bool,
     /// active /goal text (badge)
@@ -835,7 +839,6 @@ impl App {
             todos: Vec::new(),
             todo_dialog: false,
             todo_buttons: Vec::new(),
-            ask_badge: false,
             ime_restore: None,
             queue_buttons: Vec::new(),
             plan_mode: false,
@@ -1155,6 +1158,17 @@ impl App {
         if let Some(TodoKind::Suggest { text }) = self.todos.get(idx).map(|t| t.kind.clone()) {
             self.todos.remove(idx);
             self.submit_text(serve, format!("请执行这条建议：{text}"), vec![]);
+        }
+    }
+
+    /// Answer a heuristic question: preload its text into the input box for editing.
+    fn reply_question(&mut self, idx: usize) {
+        if let Some(TodoKind::Question { text }) = self.todos.get(idx).map(|t| t.kind.clone()) {
+            self.todos.remove(idx);
+            self.input = text.chars().collect();
+            self.cursor = self.input.len();
+            self.todo_dialog = false;
+            self.todo_buttons.clear();
         }
     }
 
@@ -1730,10 +1744,20 @@ impl App {
                     },
                 });
             }
-            self.ask_badge = false;
         } else if s.trim_end().ends_with('？') || s.trim_end().ends_with('?') {
-            // plain question, no structured block — the badge is the only nudge
-            self.ask_badge = true;
+            // plain question, no marker — heuristic: park it as an answerable todo row
+            // (any next prompt counts as the answer, so it can never go stale)
+            let text = s.trim_end().lines().last().unwrap_or("").trim().to_string();
+            if !text.is_empty()
+                && !self
+                    .todos
+                    .iter()
+                    .any(|t| matches!(&t.kind, TodoKind::Question { text: q } if *q == text))
+            {
+                self.todos.push(TodoItem {
+                    kind: TodoKind::Question { text },
+                });
+            }
         }
     }
 
@@ -3284,6 +3308,7 @@ impl App {
                         match action {
                             TodoAction::Expand(i) => self.expand_choice(i),
                             TodoAction::Run(i) => self.run_suggestion(serve, i),
+                            TodoAction::Reply(i) => self.reply_question(i),
                             TodoAction::Drop(i) => {
                                 if i < self.todos.len() {
                                     self.todos.remove(i);
@@ -3534,9 +3559,11 @@ impl App {
 
     fn submit_text(&mut self, serve: &mut Serve, text: String, images: Vec<String>) {
         // a new prompt answers whatever was on screen; an unanswered choice stays
-        // parked in todo for explicit handling
+        // parked in todo for explicit handling, but heuristic trailing questions
+        // count any prompt as their answer
         self.choices = None;
-        self.ask_badge = false;
+        self.todos
+            .retain(|t| !matches!(t.kind, TodoKind::Question { .. }));
         // pin what we're working on: first line, capped for the status bar
         let first = text.lines().next().unwrap_or("").to_string();
         let shown: String = first.chars().take(48).collect();
@@ -5627,6 +5654,14 @@ impl App {
                         TodoAction::Run(i),
                         TodoAction::Drop(i),
                     ),
+                    TodoKind::Question { text } => (
+                        "？",
+                        text.clone(),
+                        "[答复]",
+                        "[忽略]",
+                        TodoAction::Reply(i),
+                        TodoAction::Drop(i),
+                    ),
                 };
                 let head: String = head.chars().take(iw.saturating_sub(22)).collect();
                 let text_area = Rect {
@@ -6082,8 +6117,6 @@ impl App {
                 format!(" ❓{}待 /todo ", self.todos.len()),
                 self.theme.style(Tone::Warning),
             ));
-        } else if self.ask_badge {
-            spans.push(Span::styled(" ❓待答复 ", self.theme.style(Tone::Warning)));
         }
         if self.focus {
             spans.push(Span::styled(" focus ", self.theme.style(Tone::Badge)));
@@ -8425,16 +8458,69 @@ mod tests {
     }
 
     #[test]
-    fn trailing_question_sets_ask_badge() {
+    fn trailing_question_lands_in_todo_and_retires_on_any_reply() {
         let mut app = App::new();
         let mut serve = Serve::mock();
         app.stream = "所以要把这个修掉吗？".into();
         app.commit_stream();
-        assert!(app.ask_badge, "plain question turns on the ❓ badge");
-        assert!(app.choices.is_none());
-        assert!(app.todos.is_empty(), "heuristic badge adds no todo noise");
+        assert!(app.choices.is_none(), "a plain question is not a ?choice");
+        assert!(app.status_segments_text().contains("❓"), "badge via todo");
+        assert!(matches!(
+            &app.todos[0].kind,
+            TodoKind::Question { text } if text == "所以要把这个修掉吗？"
+        ));
+        // a heuristic question is answered by whatever the user sends next…
         app.submit_text(&mut serve, "修吧".into(), vec![]);
-        assert!(!app.ask_badge, "badge retires on the next prompt");
+        assert!(
+            app.todos.is_empty(),
+            "any reply answers a trailing question"
+        );
+        // …while strict items (choice/suggest) still need per-item handling
+        app.stream = "?choice\n1. 改\n2. 不改".into();
+        app.commit_stream();
+        app.stream = "另外 ?suggest 补个测试".into();
+        app.commit_stream();
+        app.submit_text(&mut serve, "别的事".into(), vec![]);
+        assert_eq!(
+            app.todos.len(),
+            2,
+            "strict markers survive an unrelated prompt"
+        );
+    }
+
+    #[test]
+    fn todo_dialog_reply_button_loads_question_into_input() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.stream = "要继续吗？".into();
+        app.commit_stream();
+        app.run_slash("/todo", &mut serve);
+        {
+            let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();
+            terminal.draw(|f| app.draw(f)).unwrap();
+        }
+        let (reply, _): (Rect, TodoAction) = app
+            .todo_buttons
+            .iter()
+            .find(|(_, act)| matches!(act, TodoAction::Reply(_)))
+            .cloned()
+            .unwrap();
+        app.handle(
+            Event::Mouse(crossterm::event::MouseEvent {
+                kind: crossterm::event::MouseEventKind::Down(MouseButton::Left),
+                column: reply.x + 2,
+                row: reply.y,
+                modifiers: KeyModifiers::NONE,
+            }),
+            &mut serve,
+        );
+        let typed: String = app.input.iter().collect();
+        assert_eq!(
+            typed, "要继续吗？",
+            "reply preloads the question for editing"
+        );
+        assert!(app.todos.is_empty(), "replying retires the question");
     }
 
     #[test]
