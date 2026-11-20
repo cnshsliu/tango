@@ -20,6 +20,7 @@ import { editTool, readTool, writeTool } from './core/tools/fs.js';
 import { officeReadTool, officeWriteTool } from './core/tools/office/index.js';
 import { notifyTool } from './core/tools/notify.js';
 import { findTool, grepTool, lsTool } from './core/tools/search.js';
+import { sessionSearchTool } from './core/tools/session-search.js';
 import { webFetchTool } from './core/tools/web-fetch.js';
 import { webSearchTool } from './core/tools/web-search.js';
 import type { ModelSpec } from './core/types.js';
@@ -28,7 +29,7 @@ export const VERSION = '0.1.0';
 
 export function buildTools(): ToolRegistry {
   const tools = new ToolRegistry();
-  for (const t of [readTool, writeTool, editTool, bashTool, grepTool, findTool, lsTool, webSearchTool, webFetchTool, officeReadTool, officeWriteTool, notifyTool, diffTool])
+  for (const t of [readTool, writeTool, editTool, bashTool, grepTool, findTool, lsTool, webSearchTool, webFetchTool, officeReadTool, officeWriteTool, notifyTool, diffTool, sessionSearchTool])
     tools.register(t);
   return tools;
 }

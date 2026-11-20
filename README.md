@@ -9,7 +9,7 @@ out of the box with a single API key, no proxy.
 
 Core loop is working: agent loop, JSONL sessions with compaction, Anthropic + OpenAI-compatible
 adapters, built-in tools (read / write / edit / bash / grep / find / ls / web_search / web_fetch /
-office_read / office_write / notify / diff), a permission gate, AGENTS.md + skills context assembly,
+office_read / office_write / notify / diff / session_search), a permission gate, AGENTS.md + skills context assembly,
 typed event bus, cost tracking with long-prompt price tiers, `/save-as-skill`, scheduled tasks
 (`tango task`) with Feishu webhook delivery, auto type diagnostics after edits, a JSONL
 serve protocol (`tango serve`), and a Rust TUI client (`tui/`) on top of it.
@@ -391,6 +391,15 @@ China but can break if Bing changes its markup. Force one with `TANGO_SEARCH=bin
 `web_fetch` reads an http(s) URL and turns HTML into markdown-like text (headings, links, lists),
 decoding GBK pages correctly. It refuses binary content, stops at 5 MB and times out after 30 s.
 Both tools count as reads for permissions.
+
+## Past conversations
+
+`session_search` greps the user's earlier sessions in `~/.tango/sessions` (user and assistant
+text, compaction summaries and handoff briefs; not thinking or raw tool output) and returns
+matching sessions newest first, with id, date, cwd, topic and up to three snippets. It skips the
+calling session and counts as a read. The system prompt tells the model to call it whenever the
+user refers to an earlier conversation ("did we talk about…", "之前/上次/我们聊过"), before saying
+it can't remember.
 
 ## Office files
 

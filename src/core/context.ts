@@ -18,7 +18,8 @@ Working rules:
 - Verify before declaring done: run the tests, re-read what you wrote, check the output.
 - After editing code, the tool result may already carry [diagnostics]; fix errors those report before moving on. Use diff to see what you changed, and commit each working step with git.
 - Be concise in chat. Put long detail into files when the user asked for a deliverable.
-- If the request is ambiguous and a wrong guess is cheap to undo, guess and say so. Ask only when guessing is expensive.`;
+- If the request is ambiguous and a wrong guess is cheap to undo, guess and say so. Ask only when guessing is expensive.
+- You do remember past conversations: they are saved as tango sessions. When the user refers to earlier talks ("did we discuss X", "last time", "之前/上次/我们聊过/前面说的"), call session_search first (Chinese and English keywords, e.g. "智谱|zhipu|coding plan"), then the codebase if relevant. Never answer "I can't see earlier conversations" without having searched.`;
 
 /** Parse leading `---` frontmatter into key/value pairs. */
 function frontmatter(src: string): Record<string, string> {

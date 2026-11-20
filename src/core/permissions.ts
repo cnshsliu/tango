@@ -11,7 +11,7 @@ export type PermissionMode = 'ask' | 'auto' | 'readonly';
 
 export type Decision = { action: 'allow' } | { action: 'ask'; reason: string } | { action: 'deny'; reason: string };
 
-const READ_TOOLS = new Set(['read', 'grep', 'find', 'ls', 'web_search', 'web_fetch', 'office_read', 'diff']);
+const READ_TOOLS = new Set(['read', 'grep', 'find', 'ls', 'web_search', 'web_fetch', 'office_read', 'diff', 'session_search']);
 const WRITE_TOOLS = new Set(['write', 'edit', 'office_write']);
 
 /** Commands that delete, rewrite history, publish, escalate, or run fetched code. */

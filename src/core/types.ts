@@ -136,6 +136,8 @@ export interface ModelAdapter {
 export interface ToolContext {
   cwd: string;
   signal: AbortSignal;
+  /** id of the session making the call (session_search skips it) */
+  sessionId?: string;
 }
 
 export interface ToolResult {
