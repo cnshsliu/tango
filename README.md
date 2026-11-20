@@ -346,7 +346,8 @@ routing. Ctrl+R searches original prompt history, and Alt+S stashes/restores the
 (including collapsed paste metadata) without submitting it. File references accept inclusive line
 ranges: `@path#20-45`, `@path#L20-L45`, or `@path#20`. Scrolling up pauses auto-follow and keeps the
 reading position stable; new output shows an unread badge, and clicking it or Ctrl+End resumes
-following. Ctrl+T opens a transcript with `/` search, `n/N` matches, `{`/`}` prompt navigation,
+following. While scrolled up, a dim top row names the latest prompt above the view (it changes as
+you scroll); click it to jump to that prompt. Ctrl+T opens a transcript with `/` search, `n/N` matches, `{`/`}` prompt navigation,
 and `c` to copy. Tool failures show key output inline; `/focus` hides successful tools and thinking
 but never errors. The status bar includes context tokens/window/percentage with 60%/80% warning
 thresholds. `/diff` opens a read-only working-tree patch (`--staged` and optional paths supported).

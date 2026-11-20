@@ -62,6 +62,26 @@ pub fn display_width(s: &str) -> usize {
     s.width()
 }
 
+/// Cut `s` to at most `width` columns, ending in … when anything was dropped.
+fn clip_to_width(s: &str, width: usize) -> String {
+    use unicode_width::UnicodeWidthChar;
+    if display_width(s) <= width {
+        return format!("{s}{}", " ".repeat(width - display_width(s)));
+    }
+    let mut out = String::new();
+    let mut w = 0;
+    for c in s.chars() {
+        let cw = c.width().unwrap_or(0);
+        if w + cw + 1 > width {
+            break;
+        }
+        out.push(c);
+        w += cw;
+    }
+    out.push('…');
+    out
+}
+
 struct ChatLine {
     text: String,
     tone: Tone,
@@ -960,6 +980,8 @@ pub struct App {
     picker_rows: Vec<Option<usize>>,
     popup_area: Rect,
     jump_area: Rect,
+    /// scrolled up: dim top row naming the latest prompt above the view; click → (area, scroll_back to set)
+    prompt_header: Option<(Rect, usize)>,
     /// 0 = pinned to the newest line (follow mode); increases when scrolling back
     scroll_back: usize,
     last_visual_total: usize,
@@ -1096,6 +1118,7 @@ impl App {
             picker_rows: Vec::new(),
             popup_area: Rect::default(),
             jump_area: Rect::default(),
+            prompt_header: None,
             scroll_back: 0,
             last_visual_total: 0,
             unread_rows: 0,
@@ -4002,7 +4025,11 @@ impl App {
                                     return false;
                                 }
                             }
-                            if self.jump_area.contains(pos) {
+                            if let Some((area, back)) = self.prompt_header
+                                && area.contains(pos)
+                            {
+                                self.scroll_back = back;
+                            } else if self.jump_area.contains(pos) {
                                 self.jump_to_bottom();
                             } else if self.chat_area.contains(pos) {
                                 self.chat_press(m.row, m.column);
@@ -6424,6 +6451,27 @@ impl App {
             .collect()
     }
 
+    /// The newest user prompt whose first row is above the view (global row `offset`),
+    /// and the scroll_back that puts that row just under the header row.
+    fn prompt_above(&self, offset: usize, tones: &[Tone], chat_h: usize) -> Option<(String, usize)> {
+        let mut found: Option<(usize, usize)> = None; // (line, first row)
+        let mut prev_line = usize::MAX;
+        for (g, row) in self.chat_rows.iter().enumerate().take(offset) {
+            if row.line != prev_line {
+                prev_line = row.line;
+                if tones.get(row.line) == Some(&Tone::User) {
+                    found = Some((row.line, g));
+                }
+            }
+        }
+        let (line, first) = found?;
+        let text = self.chat_lines().get(line)?.text.lines().next()?.to_string();
+        let total = self.chat_rows.len();
+        // the header covers the top row, so land the prompt's first row on row 1
+        let back = total.saturating_sub(chat_h + first.saturating_sub(1)).max(1);
+        Some((text, back))
+    }
+
     fn visual_lines(lines: &[ChatLine], width: usize) -> usize {
         let w = width.max(1);
         lines
@@ -6608,6 +6656,19 @@ impl App {
             }
         }
         f.render_widget(Paragraph::new(Text::from(shown)), chat_a);
+        self.prompt_header = None;
+        if self.scroll_back > 0
+            && chat_a.height > 1
+            && let Some((text, back)) = self.prompt_above(offset, &tones, chat_h)
+        {
+            let area = Rect { height: 1, ..chat_a };
+            let label = clip_to_width(&format!("{text}  · 点击跳到这条提示"), area.width as usize);
+            f.render_widget(
+                Paragraph::new(label).style(self.theme.style(Tone::Muted).reversed()),
+                area,
+            );
+            self.prompt_header = Some((area, back));
+        }
         self.jump_area = Rect::default();
         if self.unread_rows > 0 && chat_a.height > 0 {
             let label = format!(" ↓ {} 行新内容 · ctrl+end 回到底部 ", self.unread_rows);
@@ -11621,6 +11682,60 @@ mod tests {
         assert_eq!(text, "[图片 #1]");
         assert_eq!(images, vec![img.clone()]);
         let _ = std::fs::remove_file(&img);
+    }
+
+    #[test]
+    fn scrolled_up_header_names_the_prompt_above_and_click_jumps_to_it() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.push_user("first question");
+        for i in 0..30 {
+            app.push(format!("answer one line {i}"), Tone::Text);
+        }
+        app.push_user("second question");
+        for i in 0..30 {
+            app.push(format!("answer two line {i}"), Tone::Text);
+        }
+        let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+        let screen = |t: &Terminal<TestBackend>| {
+            let b = t.backend().buffer();
+            (0..b.area.height)
+                .map(|y| (0..b.area.width).map(|x| b[(x, y)].symbol()).collect::<String>())
+                .collect::<Vec<_>>()
+        };
+
+        terminal.draw(|f| app.draw(f)).unwrap();
+        assert!(app.prompt_header.is_none(), "following the bottom: no header");
+
+        // scroll into answer two: header names the second prompt
+        app.scroll_back = 10;
+        terminal.draw(|f| app.draw(f)).unwrap();
+        let top = &screen(&terminal)[app.chat_area.y as usize];
+        assert!(top.contains("❯ second question") && top.replace(' ', "").contains("点击跳到"), "{top}");
+
+        // further up into answer one: it changes to the first prompt
+        app.scroll_back = 45;
+        terminal.draw(|f| app.draw(f)).unwrap();
+        let top = &screen(&terminal)[app.chat_area.y as usize];
+        assert!(top.contains("❯ first question"), "{top}");
+
+        // click it: the prompt itself shows right below the header, header goes away
+        let (area, _) = app.prompt_header.unwrap();
+        app.handle(
+            Event::Mouse(crossterm::event::MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: area.x + 2,
+                row: area.y,
+                modifiers: KeyModifiers::NONE,
+            }),
+            &mut serve,
+        );
+        terminal.draw(|f| app.draw(f)).unwrap();
+        let rows = screen(&terminal);
+        let at = rows.iter().position(|r| r.contains("❯ first question")).expect("prompt visible");
+        assert!(at <= app.chat_area.y as usize + 2, "prompt lands at the top, row {at}");
+        assert!(app.scroll_back > 0, "still scrolled up, not jumped to bottom");
     }
 
     #[test]

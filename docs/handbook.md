@@ -45,6 +45,7 @@ git diff | tango "review this patch"
 | Park a half-written draft | Alt+S (press again to restore) |
 | Edit a draft in Neovim | Ctrl+E, or `/nvim` |
 | See a full tool output | Ctrl+O, or click the tool line |
+| Get back to the prompt you're reading about | Scrolled up, the dim top row shows that prompt; click it to jump there |
 | Search the whole transcript | Ctrl+T, then `/` |
 | Ask a side question | `/btw <question>`. The answer doesn't enter the session |
 | Answer the model's ❓ panel | ↑↓ + Enter, click, or type the option number + Enter. Esc hides it; `/todo` brings it back |
