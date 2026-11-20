@@ -24,7 +24,7 @@ import { loadImages } from './core/images.js';
 import { listDrafts, promoteDraft, saveDraft } from './core/skills.js';
 import { join, resolve } from 'node:path';
 import { SessionStore, relativeTime } from './core/session.js';
-import { cancelHandoff, drainHandoffs, listHandoffs, queueHandoff } from './core/handoff.js';
+import { cancelHandoff, drainHandoffs, listHandoffs, purgeExpiredHandoffs, queueHandoff } from './core/handoff.js';
 import { holdSessionLock, sessionHolder } from './core/session-lock.js';
 import { costUsd, displayPlatform, groupModels } from './core/models/registry.js';
 import type { AskFn, PermissionMode } from './core/permissions.js';
@@ -1610,7 +1610,14 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
         return;
       }
       case 'handoff_list': {
-        // every queued brief (any target); merged ones are gone from the inbox
+        // every queued brief (any target); merged ones are gone from the inbox. Expired ones are
+        // deleted here too, else briefs for sessions never reopened would stay on disk forever.
+        const purged = await purgeExpiredHandoffs().catch(() => []);
+        if (purged.length)
+          out({
+            type: 'notice',
+            text: `⌛ 已删除 ${purged.length} 条过期交接摘要（超过 7 天未并入）：${purged.map((h) => `${h.queueId} ⇢ ${h.target.slice(0, 8)}`).join('，')}`
+          });
         const items = await listHandoffs();
         reply(cmd, true, {
           handoffs: items.map((h) => ({ queueId: h.queueId, from: h.from, target: h.target, queuedAt: h.queuedAt, expired: h.expired, preview: h.summary.slice(0, 200) }))

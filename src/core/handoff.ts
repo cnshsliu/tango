@@ -99,6 +99,27 @@ export async function listHandoffs(now = Date.now()): Promise<PendingHandoff[]> 
   return out.sort((a, b) => a.queuedAt.localeCompare(b.queuedAt));
 }
 
+/**
+ * Delete every expired brief in any inbox; returns what was deleted. Without this, a brief for a
+ * session that is never reopened would sit on disk forever (drain only runs in the owner).
+ * Races: a concurrent drain claims by rename first, so our unlink of the .json just misses.
+ */
+export async function purgeExpiredHandoffs(now = Date.now()): Promise<PendingHandoff[]> {
+  const root = join(tangoDir(), 'handoffs');
+  const gone: PendingHandoff[] = [];
+  for (const h of await listHandoffs(now)) {
+    if (!h.expired) continue;
+    const dir = handoffInbox(h.target);
+    const file = (await readdir(dir).catch(() => [] as string[])).find((n) => n.endsWith(`-${h.queueId}.json`));
+    if (!file) continue;
+    try {
+      await unlink(join(root, h.target, file));
+      gone.push(h);
+    } catch {}
+  }
+  return gone;
+}
+
 /** Delete one queued brief by queue id (or unique prefix); returns what was removed. */
 export async function cancelHandoff(ref: string): Promise<PendingHandoff> {
   const hits = (await listHandoffs()).filter((h) => h.queueId.startsWith(ref));

@@ -2576,9 +2576,16 @@ test('handoff list/cancel and expiry: queued briefs can be listed, withdrawn, an
     const old = new Date(Date.now() - 8 * 24 * 3600 * 1000).toISOString();
     await writeFile(join(inbox, `1-deadbeef.json`), JSON.stringify({ from: aId, summary: 'STALE-BRIEF', queuedAt: old }));
 
+    // listing deletes expired briefs (with a notice) and shows only live ones
     a.send({ id: 4, cmd: 'handoff_list' });
+    const purge = await a.until((f: any) => f.type === 'notice' && String(f.text).includes('过期'), 'purge notice');
+    assert.match(purge.text, /deadbeef/);
     const list = (await result(a, 4, 'list')).data.handoffs;
-    assert.deepEqual(list.map((h: any) => [h.queueId, h.target, h.expired]), [['deadbeef', bId, true], [ho.data.queueId, bId, false]]);
+    assert.deepEqual(list.map((h: any) => [h.queueId, h.target, h.expired]), [[ho.data.queueId, bId, false]]);
+    assert.ok(!readdirSync(inbox).some((n) => n.includes('deadbeef')), 'stale file deleted from disk');
+
+    // not listed since: the owner still drops it on open
+    await writeFile(join(inbox, `2-0ddba11.json`), JSON.stringify({ from: aId, summary: 'STALE-BRIEF', queuedAt: old }));
 
     a.send({ id: 5, cmd: 'handoff_cancel', queueId: ho.data.queueId.slice(0, 4) });
     assert.ok((await result(a, 5, 'cancel')).ok);
