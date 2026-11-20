@@ -922,6 +922,8 @@ pub struct App {
     serve_branch: String,
     /// the current session's display name (/name) — status bar shows it over the id
     session_name: String,
+    /// the status-bar sess span's rect — clicking copies the full id
+    session_id_area: Rect,
     /// plan mode badge (/plan)
     plan_mode: bool,
     /// active /goal text (badge)
@@ -1015,6 +1017,7 @@ impl App {
             session_full: String::new(),
             serve_branch: String::new(),
             session_name: String::new(),
+            session_id_area: Rect::default(),
             ime_restore: None,
             queue_buttons: Vec::new(),
             plan_mode: false,
@@ -3748,6 +3751,18 @@ impl App {
                         // release so a drag from anywhere can select text)
                         MouseEventKind::Down(MouseButton::Left) => {
                             let pos = Position::new(m.column, m.row);
+                            // clicking the status-bar sess span copies the full id
+                            if self.session_id_area.width > 0 && self.session_id_area.contains(pos)
+                            {
+                                let id = self.session_full.clone();
+                                match self.copy_to_clipboard(&id) {
+                                    Ok(()) => {
+                                        self.push(format!("已复制会话 id：{id}"), Tone::Success)
+                                    }
+                                    Err(e) => self.push(format!("复制失败：{e}"), Tone::Error),
+                                }
+                                return false;
+                            }
                             // a click on an input-box image chip opens the image
                             if self.input_area.contains(pos) {
                                 if let Some(path) = self.input_image_at(m.row, m.column) {
@@ -6104,6 +6119,24 @@ impl App {
 
         // status bar
         let spans = self.status_spans();
+        // the " sess … " span is clickable (copies the full id): find it and its offset
+        self.session_id_area = Rect::default();
+        if !self.session_full.is_empty() {
+            let mut x = 0u16;
+            for sp in &spans {
+                let w = display_width(sp.content.as_ref()) as u16;
+                if sp.content.starts_with(" sess ") {
+                    self.session_id_area = Rect {
+                        x: status_a.x + x,
+                        y: status_a.y,
+                        width: w,
+                        height: 1,
+                    };
+                    break;
+                }
+                x = x.saturating_add(w);
+            }
+        }
         f.render_widget(Paragraph::new(Line::from(spans)), status_a);
 
         // chat with bottom-anchored scrolling (scroll_back=0 follows the newest line).
@@ -8412,6 +8445,34 @@ mod tests {
             &mut serve,
         );
         assert_eq!(visible(&app), vec!["a-main", "a-dev", "b-one"]);
+    }
+
+    #[test]
+    fn status_session_id_click_copies_to_clipboard() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.session_full = "a1b2c3d4e5f67890".into();
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        let area = app.session_id_area;
+        assert!(area.width > 0, "the sess span is a click target");
+        assert_eq!(area.y, 23, "on the status row");
+        app.handle(
+            Event::Mouse(crossterm::event::MouseEvent {
+                kind: crossterm::event::MouseEventKind::Down(MouseButton::Left),
+                column: area.x + 2,
+                row: area.y,
+                modifiers: KeyModifiers::NONE,
+            }),
+            &mut serve,
+        );
+        assert!(
+            app.lines
+                .iter()
+                .any(|l| l.text.contains("已复制会话 id") && l.text.contains("a1b2c3d4e5f67890")),
+            "click confirms the copy"
+        );
     }
 
     #[test]
