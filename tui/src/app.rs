@@ -372,6 +372,10 @@ struct InputLayout {
     cursor_col: usize,
 }
 
+/// /help, Tab-completion and the Ctrl+P palette. One entry per command word (aliases too).
+/// Adding, renaming or removing a run_slash arm? Update this table, the reference section of
+/// docs/handbook.md and README's command list; `slash_commands_stay_in_sync_with_help_and_docs`
+/// fails until they agree.
 const SLASH: &[(&str, &str)] = &[
     (
         "/branch",
@@ -7336,6 +7340,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
 
     #[test]
     fn retained_chat_lines_use_semantic_tones() {
@@ -9468,34 +9473,102 @@ mod tests {
         assert_eq!(new.text, new2.text);
     }
 
-    #[test]
-    fn slash_table_lists_every_command_and_alias() {
-        // each must be its own entry so Tab-completion (first-word prefix match) reaches it
-        let words: Vec<&str> = SLASH
-            .iter()
-            .map(|(c, _)| c.split(' ').next().unwrap())
-            .collect();
-        for cmd in [
-            "/autocompact",
-            "/bg",
-            "/cd",
-            "/config",
-            "/debug-zip",
-            "/feedback",
-            "/permissions",
-            "/plan",
-            "/plugins",
-            "/pwd",
-            "/redo",
-            "/save-as-skill",
-            "/security-review",
-            "/sessions",
-            "/stats",
-            "/stop",
-            "/tasks",
-        ] {
-            assert!(words.contains(&cmd), "{cmd} missing from SLASH");
+    /// `/word` tokens in `text`: a slash followed by [a-z_-], at a token start
+    fn slash_words(text: &str) -> BTreeSet<String> {
+        let mut out = BTreeSet::new();
+        let b = text.as_bytes();
+        for (i, _) in text.match_indices('/') {
+            let start_ok = i == 0 || matches!(b[i - 1], b'`' | b' ' | b'(' | b'"' | b'|');
+            let word: String = text[i + 1..]
+                .chars()
+                .take_while(|c| c.is_ascii_lowercase() || *c == '_' || *c == '-')
+                .collect();
+            if start_ok && !word.is_empty() {
+                out.insert(format!("/{word}"));
+            }
         }
+        out
+    }
+
+    /// commands run_slash actually dispatches: its `"/x" | "/y" =>` match arms
+    fn handled_commands() -> BTreeSet<String> {
+        let src = include_str!("app.rs");
+        let body = src.split("    fn run_slash(").nth(1).unwrap();
+        let body = body.split("\n    fn ").next().unwrap();
+        body.lines()
+            .map(str::trim)
+            .filter(|l| l.starts_with("\"/") && l.contains("=>"))
+            .flat_map(|l| slash_words(l.split("=>").next().unwrap()))
+            .collect()
+    }
+
+    #[test]
+    fn slash_commands_stay_in_sync_with_help_and_docs() {
+        let handled = handled_commands();
+        assert!(
+            handled.len() > 40 && handled.contains("/help"),
+            "parser broke: {handled:?}"
+        );
+        let fmt = |s: &BTreeSet<String>| s.iter().cloned().collect::<Vec<_>>().join(" ");
+
+        // 1. /help + Tab-completion: every handled command (aliases too) is its own SLASH entry
+        let slash: BTreeSet<String> = SLASH
+            .iter()
+            .map(|(c, _)| c.split(' ').next().unwrap().to_string())
+            .collect();
+        let missing: BTreeSet<_> = handled.difference(&slash).cloned().collect();
+        let stale: BTreeSet<_> = slash.difference(&handled).cloned().collect();
+        assert!(
+            missing.is_empty(),
+            "add to SLASH in tui/src/app.rs: {}",
+            fmt(&missing)
+        );
+        assert!(
+            stale.is_empty(),
+            "remove from SLASH (no handler): {}",
+            fmt(&stale)
+        );
+
+        // 2. handbook reference section: complete and nothing stale
+        let handbook = include_str!("../../docs/handbook.md");
+        let reference = handbook.split("## Slash-command reference").nth(1).unwrap();
+        let firsts: BTreeSet<String> = reference
+            .lines()
+            .filter(|l| l.starts_with("| `/"))
+            .flat_map(|l| slash_words(l.split(" | ").next().unwrap()))
+            .collect();
+        let missing: BTreeSet<_> = handled.difference(&firsts).cloned().collect();
+        let stale: BTreeSet<_> = firsts.difference(&handled).cloned().collect();
+        assert!(
+            missing.is_empty(),
+            "document in docs/handbook.md reference: {}",
+            fmt(&missing)
+        );
+        assert!(
+            stale.is_empty(),
+            "remove from docs/handbook.md reference: {}",
+            fmt(&stale)
+        );
+
+        // 3. README's command list: may be a subset, but must not name removed commands
+        let readme = include_str!("../../README.md");
+        let list = readme
+            .split("TUI commands:")
+            .nth(1)
+            .unwrap()
+            .split("\n\n")
+            .next()
+            .unwrap();
+        let stale: BTreeSet<_> = slash_words(list).difference(&handled).cloned().collect();
+        assert!(
+            stale.is_empty(),
+            "remove from README.md command list: {}",
+            fmt(&stale)
+        );
+    }
+
+    #[test]
+    fn tab_completion_reaches_single_word_commands() {
         let mut app = App::new();
         app.input = "/ta".chars().collect();
         app.cursor = app.input.len();
