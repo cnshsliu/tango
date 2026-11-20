@@ -7373,14 +7373,15 @@ impl App {
         let work = if self.busy {
             match self.turn_started {
                 Some(t0) => {
-                    let secs = t0.elapsed().as_secs();
+                    let ms = t0.elapsed().as_millis();
                     format!(
-                        "● {} · ↓{}",
-                        Self::fmt_elapsed(secs),
+                        "{} {} · ↓{}",
+                        Self::tango_frame(ms),
+                        Self::fmt_elapsed(ms as u64 / 1000),
                         Self::fmt_tokens(self.turn_chars)
                     )
                 }
-                None => "● working".to_string(),
+                None => "♪ working".to_string(),
             }
         } else {
             "idle".to_string()
@@ -7500,6 +7501,14 @@ impl App {
         } else {
             format!("{}h{:02}m", secs / 3600, (secs % 3600) / 60)
         }
+    }
+
+    /// The working dot, dancing: a couple swaying and dipping the tango, one frame
+    /// once per heartbeat tick off the turn clock, so every step is actually drawn.
+    /// Every frame is 3 columns wide so the rest of the status bar never shifts.
+    fn tango_frame(ms: u128) -> &'static str {
+        const FRAMES: [&str; 8] = ["\\o/", "_o/", "_o_", "\\o_", "\\o/", "/o_", "_o_", "/o\\"];
+        FRAMES[(ms / 1000) as usize % FRAMES.len()]
     }
 
     /// 500 · 14.0k · 1.5M
@@ -11707,6 +11716,24 @@ mod tests {
         assert_eq!(text, "[图片 #1]");
         assert_eq!(images, vec![img.clone()]);
         let _ = std::fs::remove_file(&img);
+    }
+
+    #[test]
+    fn working_dot_dances_the_tango_in_fixed_width_frames() {
+        let frames: Vec<&str> = (0..8).map(|i| App::tango_frame(i * 1000)).collect();
+        assert!(frames.iter().all(|f| display_width(f) == 3), "{frames:?}");
+        assert!(frames.windows(2).any(|w| w[0] != w[1]), "it moves");
+        assert_eq!(App::tango_frame(0), App::tango_frame(8 * 1000), "loops");
+        assert_eq!(App::tango_frame(100), App::tango_frame(999), "holds within a frame");
+
+        let mut app = App::new();
+        app.busy = true;
+        app.turn_started = Some(std::time::Instant::now());
+        app.turn_chars = 14_000;
+        let s = app.status_segments_text();
+        assert!(s.contains("↓14.0k") && !s.contains('●'), "dancer replaces the dot: {s}");
+        app.busy = false;
+        assert!(app.status_segments_text().contains("idle"));
     }
 
     #[test]

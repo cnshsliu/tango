@@ -295,7 +295,8 @@ and later web/IDE shells — plug into; the core never knows which face is attac
 `tango` (`tango -c` / `tango -r <id>` open a previous session). It spawns `tango serve` and speaks the protocol above — fullscreen
 alternate screen, mouse wheel scrolling, streaming answers, thinking lines, tool status lines with
 durations, a centered permission modal (y/n/a), a bottom status bar below the input (model · mode ·
-cost · session) and a multi-line input with Tab-completed `/` commands and `@file` inlining (contents ride along in the
+cost · session, with the busy dot dancing the tango — `\o/ _o/ _o_ \o_ …` — one step per second)
+and a multi-line input with Tab-completed `/` commands and `@file` inlining (contents ride along in the
 prompt, 6KB cap), fences render as indented gray blocks, and long pasted prompts collapse to a
 short summary (over 600 chars or 8 lines). Ctrl+O opens the latest full prompt/tool output in an
 independent scrollable viewer; clicking a specific summary/tool line opens that item. Closing the
