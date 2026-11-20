@@ -31,6 +31,13 @@ const COMPACT_INSTRUCTION =
   'Keep: the user goals and constraints, decisions made and why, file paths touched, current state, ' +
   'open questions. Be dense and factual. This is data for another model, not a reply to a human.';
 
+const HANDOFF_INSTRUCTION =
+  'Write a handoff brief for a NEW session that will continue this work without seeing the messages above. ' +
+  'Use these markdown sections: ## Goal, ## Done so far, ## Key decisions (with reasons), ' +
+  '## Files touched (paths and what changed), ## Current state (what works, what is broken, last command results), ' +
+  '## Next steps (ordered, concrete), ## Open questions. Omit empty sections. Be dense and factual; ' +
+  'quote exact paths, commands, ids and error messages. Write in the language the user used.';
+
 /**
  * The agent loop: append user message, then model → tools → model until the
  * model stops without tool calls. Every step is persisted and evented.
@@ -305,6 +312,33 @@ export class Agent {
     if (this.compactAt <= 0) return;
     const window = this.model.contextWindow ?? 128_000;
     if (this.estimateTokens() >= window * this.compactAt) await this.compact();
+  }
+
+  /**
+   * Tool-free brief for a fresh session that continues this work (/handoff).
+   * `note` is the user's steer for the successor (e.g. what to do next).
+   * Returns '' when there is nothing to hand over.
+   */
+  async handoffBrief(note?: string): Promise<string> {
+    const messages = this.store.messages();
+    if (messages.length === 0) return '';
+    const steer = note?.trim() ? `\n\nThe user's note for the next session: ${note.trim()}` : '';
+    const req: CompletionRequest = {
+      system: 'You write handoff briefs so another model session can continue unfinished work.',
+      messages: [{ role: 'user', content: [{ type: 'text', text: this.transcript(messages) + '\n\n' + HANDOFF_INSTRUCTION + steer }] }],
+      tools: [],
+      maxTokens: 2000,
+      signal: this.controller?.signal
+    };
+    let brief = '';
+    for await (const ev of adapterFor(this.model).stream(this.model, req)) {
+      if (ev.type === 'done')
+        brief = ev.message.content
+          .filter((b) => b.type === 'text')
+          .map((b) => (b as { text: string }).text)
+          .join('');
+    }
+    return brief.trim();
   }
 
   /** Flatten the conversation to plain text for the summarizer call. */

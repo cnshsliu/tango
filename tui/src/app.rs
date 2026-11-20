@@ -100,6 +100,7 @@ enum Pending {
     Undo,
     Redo,
     Fork,
+    Handoff,
     Branch,
     Tree,
     Find,
@@ -334,6 +335,10 @@ const SLASH: &[(&str, &str)] = &[
     ("/focus", "安静模式：隐藏成功工具与思考，保留错误"),
     ("/usage /stats", "跨会话聚合：按模型/会话的请求与花费"),
     ("/fork <name>", "从当前（或 /rewind 选中）位置复制出新会话"),
+    (
+        "/handoff [note]",
+        "生成交接摘要，开新会话从摘要继续（note 可写下一步）",
+    ),
     (
         "/goal <text>|off|max N",
         "持续目标：每轮自动判断达成与否并续跑（上限轮数可调）",
@@ -2290,6 +2295,16 @@ impl App {
                 }
                 let id = serve.command("fork", extra);
                 self.pending.push((id, Pending::Fork));
+            }
+            "/handoff" => {
+                let note = rest.trim().to_string();
+                let mut extra = vec![];
+                if !note.is_empty() {
+                    extra.push(("note", Value::String(note)));
+                }
+                let id = serve.command("handoff", extra);
+                self.pending.push((id, Pending::Handoff));
+                self.push("⇢ 正在生成交接摘要…", Tone::Muted);
             }
             "/branch" => {
                 let id = serve.command("branch", vec![]);
@@ -4785,6 +4800,12 @@ impl App {
                                 self.switch_session(Some(id.to_string()));
                             }
                         }
+                        (Pending::Handoff, true) => {
+                            if let Some(id) = d["sessionId"].as_str() {
+                                self.push(format!("⇢ handoff → {id} …"), Tone::Success);
+                                self.switch_session(Some(id.to_string()));
+                            }
+                        }
                         (Pending::Branch, true) => {
                             self.push(
                                 "⑂ 已就地分叉 · 被放弃的未来保留在日志里，/redo 可找回",
@@ -5468,6 +5489,12 @@ impl App {
                             self.nvim_preference = d["nvimViewer"].as_str().unwrap_or("ask").into();
                             self.push("Neovim 只读偏好已保存", Tone::Muted);
                         }
+                        (Pending::Handoff, false) => {
+                            self.push(
+                                format!("handoff error: {}", v["error"].as_str().unwrap_or("?")),
+                                Tone::Error,
+                            );
+                        }
                         (Pending::Recap, false) => {
                             self.btw_id = None;
                             self.btw_title = None;
@@ -5537,6 +5564,13 @@ impl App {
                     }
                 }
                 Some("assistant") => {
+                    self.stream = text.to_string();
+                    self.commit_stream();
+                }
+                Some("handoff") => {
+                    let from = it["from"].as_str().unwrap_or("?");
+                    let short: String = from.chars().take(8).collect();
+                    self.push(format!("⇢ 交接自会话 {short} · 摘要："), Tone::Muted);
                     self.stream = text.to_string();
                     self.commit_stream();
                 }
@@ -7634,6 +7668,57 @@ mod tests {
         );
         // a respawn is requested with the fork's session id, like /resume switching
         assert_eq!(app.respawn, Some(Some("forked-123".into())));
+    }
+
+    #[test]
+    fn handoff_sends_note_and_respawns_into_the_new_session() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.run_slash("/handoff next: add tests", &mut serve);
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        assert_eq!(sent["cmd"], "handoff");
+        assert_eq!(sent["note"], "next: add tests");
+        let id = sent["id"].as_u64().unwrap();
+        app.frame(
+            json!({
+                "type": "result", "id": id, "ok": true,
+                "data": {"sessionId": "handoff-456", "from": "old-1", "brief": "## Goal\\nx"}
+            }),
+            &mut serve,
+        );
+        assert_eq!(app.respawn, Some(Some("handoff-456".into())));
+    }
+
+    #[test]
+    fn handoff_error_stays_in_the_current_session() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.run_slash("/handoff", &mut serve);
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        assert!(sent.get("note").is_none());
+        let id = sent["id"].as_u64().unwrap();
+        app.frame(
+            json!({"type": "result", "id": id, "ok": false, "error": "handoff: nothing to hand over yet"}),
+            &mut serve,
+        );
+        assert_eq!(app.respawn, None);
+        assert!(app.lines.iter().any(|l| l.text.contains("nothing to hand over")));
+    }
+
+    #[test]
+    fn history_renders_a_handoff_brief_before_turns() {
+        let mut app = App::new();
+        app.load_history(&json!({
+            "items": [
+                {"kind": "handoff", "from": "abcdef1234", "text": "## Goal\nship it"},
+                {"kind": "user", "text": "continue"}
+            ],
+            "total": 2
+        }));
+        let texts: Vec<&str> = app.lines.iter().map(|l| l.text.as_str()).collect();
+        let head = texts.iter().position(|t| t.contains("交接自会话 abcdef12")).unwrap();
+        let goal = texts.iter().position(|t| t.contains("ship it")).unwrap();
+        assert!(head < goal);
     }
 
     #[test]

@@ -2447,3 +2447,54 @@ test('warming: a cache miss halts warming until the next real request', async ()
     await rm(work, { recursive: true, force: true });
   }
 });
+
+test('handoff: brief opens a fresh session that resumes with it as context and history', async () => {
+  const mock = await startMock();
+  const home = await mkdtemp(join(tmpdir(), 'tango-serve-home-'));
+  const work = await mkdtemp(join(tmpdir(), 'tango-serve-work-'));
+  const port = (mock.server.address() as AddressInfo).port;
+  await writeFile(join(home, 'models.json'), JSON.stringify([
+    { id: 'mock/mock', provider: 'mock', model: 'mock-model', api: 'openai-completions', baseUrl: `http://127.0.0.1:${port}/v1`, apiKey: 'MOCK_SERVE_KEY', contextWindow: 200_000 }
+  ]));
+  const say = (text: string) => () =>
+    SSE({ choices: [{ delta: { content: text } }] }) + SSE({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 5, completion_tokens: 2 } }) + 'data: [DONE]\n\n';
+  const s = await startServe(home, work, port);
+  let s2: Awaited<ReturnType<typeof startServe>> | undefined;
+  try {
+    await s.until((f: any) => f.type === 'hello', 'hello');
+    // empty session: nothing to hand over, no new session file
+    s.send({ id: 1, cmd: 'handoff' });
+    const empty = await s.until((f: any) => f.type === 'result' && f.id === 1, 'empty handoff');
+    assert.equal(empty.ok, false);
+
+    mock.setScript(say('done step one'));
+    s.send({ id: 2, cmd: 'prompt', text: 'ORIGINAL-TASK-TEXT' });
+    await s.until((f: any) => f.type === 'result' && f.id === 2 && f.ok, 'turn');
+    mock.setScript(say('## Goal\nBRIEF-MARKER'));
+    s.send({ id: 3, cmd: 'handoff', note: 'NEXT-STEP-NOTE' });
+    const ho = await s.until((f: any) => f.type === 'result' && f.id === 3, 'handoff');
+    assert.ok(ho.ok, ho.error);
+    assert.equal(ho.data.brief, '## Goal\nBRIEF-MARKER');
+    const briefReq = JSON.stringify(mock.requests.at(-1));
+    assert.ok(briefReq.includes('ORIGINAL-TASK-TEXT') && briefReq.includes('NEXT-STEP-NOTE'));
+    assert.ok(!briefReq.includes('"tools":[{'), 'brief call is tool-free');
+
+    s2 = await startServe(home, work, port, { TANGO_RESUME: ho.data.sessionId });
+    await s2.until((f: any) => f.type === 'hello', 'hello 2');
+    s2.send({ id: 10, cmd: 'history' });
+    const h = await s2.until((f: any) => f.type === 'result' && f.id === 10, 'history');
+    assert.deepEqual(h.data.items[0], { kind: 'handoff', from: ho.data.from, text: '## Goal\nBRIEF-MARKER' });
+    mock.setScript(say('continuing'));
+    s2.send({ id: 11, cmd: 'prompt', text: 'go on' });
+    await s2.until((f: any) => f.type === 'result' && f.id === 11 && f.ok, 'turn in new session');
+    const next = JSON.stringify(mock.requests.at(-1));
+    assert.ok(next.includes('BRIEF-MARKER'), 'new session context carries the brief');
+    assert.ok(!next.includes('ORIGINAL-TASK-TEXT'), 'old messages are not copied');
+  } finally {
+    s.child.kill();
+    s2?.child.kill();
+    mock.server.close();
+    await rm(home, { recursive: true, force: true });
+    await rm(work, { recursive: true, force: true });
+  }
+});

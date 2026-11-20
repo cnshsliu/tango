@@ -139,6 +139,22 @@ export class SessionStore {
     return fork;
   }
 
+  /**
+   * Start a fresh session whose model context is only `brief` (a handoff summary of this
+   * session). Unlike forkTo, no messages are copied; the brief rides in a compaction entry.
+   */
+  async handoffTo(dir: string, cwd: string, brief: string, name?: string): Promise<SessionStore> {
+    const next = await SessionStore.create(dir, cwd, name ?? this.meta()?.name, undefined, this.clock);
+    await next.append({ kind: 'compaction', ts: next.now(), summary: brief, droppedCount: 0, handoffFrom: this.id });
+    return next;
+  }
+
+  /** The handoff brief this session was opened with, if any. */
+  handoffBrief(): { from: string; summary: string } | undefined {
+    for (const e of this.entries)
+      if (e.kind === 'compaction' && e.handoffFrom) return { from: e.handoffFrom, summary: e.summary };
+  }
+
   /** Messages currently visible to the model (summary + everything after last compaction). */
   messageCount(): number {
     return this.messages().length;

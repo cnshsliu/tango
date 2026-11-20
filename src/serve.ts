@@ -1275,6 +1275,9 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
                 output: resultText({ content: b.content, isError: b.isError }).slice(0, 4_000)
               });
         const items: unknown[] = [];
+        // a /handoff session opens with its brief, shown before any turns
+        const handoff = store.handoffBrief();
+        if (handoff) items.push({ kind: 'handoff', from: handoff.from, text: handoff.summary });
         for (const m of all)
           for (const b of m.content) {
             if (b.type === 'text' && b.text.trim()) items.push({ kind: m.role, text: b.text });
@@ -1543,6 +1546,22 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
         const forkId = randomUUID();
         await store.forkTo(sessionsDir(), forkId, toIndex, cmd.name ? String(cmd.name) : undefined);
         reply(cmd, true, { sessionId: forkId, name: cmd.name ?? null });
+        return;
+      }
+      case 'handoff': {
+        // a fresh session that starts from a brief of this one; the client respawns into it
+        if (promptInFlight) return reply(cmd, false, undefined, 'a turn is running — interrupt it first');
+        runningText = '/handoff';
+        try {
+          const brief = await agent.handoffBrief(cmd.note ? String(cmd.note) : undefined);
+          if (!brief) return reply(cmd, false, undefined, 'handoff: nothing to hand over yet');
+          const next = await store.handoffTo(sessionsDir(), cwd, brief, cmd.name ? String(cmd.name) : undefined);
+          reply(cmd, true, { sessionId: next.id, from: store.id, brief });
+        } catch (e: any) {
+          reply(cmd, false, undefined, String(e?.message ?? e));
+        } finally {
+          runningText = null;
+        }
         return;
       }
       case 'branch': {
