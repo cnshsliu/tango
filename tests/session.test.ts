@@ -191,6 +191,25 @@ test('forkTo copies a prefix into a new session with forkOf lineage', async () =
   }
 });
 
+test('list() extracts the first user prompt as the topic', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'tango-test-'));
+  try {
+    const store = await SessionStore.create(dir, '/work');
+    // tool results arrive as user-role messages with no text — they are not a topic
+    await store.appendMessage({ role: 'assistant', content: [{ type: 'text', text: 'thinking aloud' }] });
+    await store.appendMessage({ role: 'user', content: [{ type: 'tool_result', toolCallId: 'x', content: 'output' }] });
+    await store.appendMessage({ role: 'user', content: [{ type: 'text', text: '帮我修复选区漂移的问题，现象是……' }] });
+    const [listed] = await SessionStore.list(dir);
+    assert.equal(listed.topic, '帮我修复选区漂移的问题，现象是……');
+    // a session with no user text yet has an empty topic
+    const empty = await SessionStore.create(dir, '/work2', 'empty');
+    const all = await SessionStore.list(dir);
+    assert.equal(all.find((s) => s.id === empty.id)?.topic, '');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('meta() reflects the latest rename (list/meta/fork all agree)', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'tango-test-'));
   try {

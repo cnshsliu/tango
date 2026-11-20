@@ -14,6 +14,8 @@ export interface SessionMeta {
 
 export interface SessionSummary extends SessionMeta {
   messages: number;
+  /** first user text prompt, truncated — the human-meaningful identity in lists */
+  topic: string;
 }
 
 /**
@@ -69,15 +71,25 @@ export class SessionStore {
       if (!f.endsWith('.jsonl')) continue;
       let meta: SessionMeta | undefined;
       let messages = 0;
+      let topic = '';
       for (const line of (await readFile(join(dir, f), 'utf8')).split('\n')) {
         if (!line.trim()) continue;
         try {
           const e: SessionEntry = JSON.parse(line);
           if (e.kind === 'meta') meta = e;
-          if (e.kind === 'message') messages++;
+          if (e.kind === 'message') {
+            messages++;
+            // the topic is the first user *text* prompt — tool results also come
+            // as user-role messages but carry no intent
+            if (!topic && e.message.role === 'user') {
+              const text = e.message.content.find((b: any) => b.type === 'text')?.text ?? '';
+              if (text.trim()) topic = text.trim().slice(0, 80);
+            }
+          }
         } catch {}
       }
-      if (meta) out.push({ ...meta, id: meta.id ?? f.slice(0, -'.jsonl'.length), messages });
+      if (meta)
+        out.push({ ...meta, id: meta.id ?? f.slice(0, -'.jsonl'.length), messages, topic });
     }
     return out.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }

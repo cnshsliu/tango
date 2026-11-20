@@ -1265,6 +1265,7 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
             messages: s.messages,
             cwd: s.cwd,
             name: s.name ?? '',
+            topic: s.topic ?? '',
             current: s.id === store.id
           }))
         });

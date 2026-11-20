@@ -2342,7 +2342,8 @@ impl App {
                     self.pending.push((id, Pending::Sessions));
                     self.session_pick = Some(purpose);
                 } else {
-                    let (session, note) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+                    let (session, note) =
+                        rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
                     self.send_transfer(purpose, session, note.trim(), serve);
                 }
             }
@@ -4620,19 +4621,15 @@ impl App {
                                     a.iter()
                                         .filter_map(|s| {
                                             let id = s["id"].as_str()?.to_string();
-                                            Some(PickItem {
-                                                group: String::new(),
-                                                note: {
-                                                    let name = s["name"].as_str().unwrap_or("");
-                                                    if name.is_empty() {
-                                                        s["cwd"].as_str().unwrap_or("").to_string()
-                                                    } else {
-                                                        name.to_string()
-                                                    }
-                                                },
-                                                warn: false,
-                                                current: s["current"].as_bool().unwrap_or(false),
-                                                label: format!(
+                                            // the first user prompt is the identity;
+                                            // uuid prefixes never told anyone anything
+                                            let topic = s["topic"].as_str().unwrap_or("");
+                                            let date = s["createdAt"]
+                                                .as_str()
+                                                .unwrap_or("")
+                                                .replace('T', " ");
+                                            let label = if topic.is_empty() {
+                                                format!(
                                                     "{} · {} msgs · {}",
                                                     s["id"]
                                                         .as_str()
@@ -4641,11 +4638,25 @@ impl App {
                                                         .take(8)
                                                         .collect::<String>(),
                                                     s["messages"].as_u64().unwrap_or(0),
-                                                    s["createdAt"]
-                                                        .as_str()
-                                                        .unwrap_or("")
-                                                        .replace('T', " ")
+                                                    date
+                                                )
+                                            } else {
+                                                topic.to_string()
+                                            };
+                                            let cwd = s["cwd"].as_str().unwrap_or("");
+                                            let cwd_base = cwd.rsplit('/').next().unwrap_or(cwd);
+                                            let name = s["name"].as_str().unwrap_or("");
+                                            Some(PickItem {
+                                                group: String::new(),
+                                                note: format!(
+                                                    "{} · {} 条 · {}",
+                                                    if name.is_empty() { cwd_base } else { name },
+                                                    s["messages"].as_u64().unwrap_or(0),
+                                                    date
                                                 ),
+                                                warn: false,
+                                                current: s["current"].as_bool().unwrap_or(false),
+                                                label,
                                                 id,
                                             })
                                         })
@@ -4855,14 +4866,20 @@ impl App {
                             }
                         }
                         (Pending::Handoff, true) => {
-                            let target: String = d["target"].as_str().unwrap_or("?").chars().take(8).collect();
+                            let target: String = d["target"]
+                                .as_str()
+                                .unwrap_or("?")
+                                .chars()
+                                .take(8)
+                                .collect();
                             self.push(
                                 format!("⇢ 交接摘要已发给会话 {target} · 它下次运行时并入上下文"),
                                 Tone::Success,
                             );
                         }
                         (Pending::Takeover, true) => {
-                            let from: String = d["from"].as_str().unwrap_or("?").chars().take(8).collect();
+                            let from: String =
+                                d["from"].as_str().unwrap_or("?").chars().take(8).collect();
                             self.push(format!("⇠ 已接管会话 {from} · 摘要："), Tone::Success);
                             self.stream = d["brief"].as_str().unwrap_or("").to_string();
                             self.commit_stream();
@@ -5629,7 +5646,8 @@ impl App {
                     self.commit_stream();
                 }
                 Some("handoff") => {
-                    let short: String = it["from"].as_str().unwrap_or("?").chars().take(8).collect();
+                    let short: String =
+                        it["from"].as_str().unwrap_or("?").chars().take(8).collect();
                     let head = if it["via"] == "takeover" {
                         format!("⇠ 已接管会话 {short} · 摘要：")
                     } else {
@@ -7812,6 +7830,53 @@ mod tests {
     }
 
     #[test]
+    fn sessions_picker_leads_with_topic() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.run_slash("/resume", &mut serve);
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        let id = sent["id"].as_u64().unwrap();
+        app.frame(
+            json!({"type": "result", "id": id, "ok": true, "data": {"sessions": [
+                {"id": "abc12345-eeee", "createdAt": "2026-11-20T09:00", "messages": 9,
+                 "cwd": "/Users/lucas/tango", "name": "", "topic": "修复鼠标选区漂移的问题", "current": false},
+                {"id": "fff67890-dddd", "createdAt": "2026-11-19T09:00", "messages": 0,
+                 "cwd": "/tmp", "name": "", "topic": "", "current": false}
+            ]}}),
+            &mut serve,
+        );
+        let picker = app.picker.as_ref().expect("picker");
+        let first = &picker.items[0];
+        assert!(
+            first.label.starts_with("修复鼠标选区漂移的问题"),
+            "topic leads the label: {}",
+            first.label
+        );
+        assert!(
+            first.note.contains("tango"),
+            "note carries cwd: {}",
+            first.note
+        );
+        assert!(
+            first.note.contains("9"),
+            "note carries count: {}",
+            first.note
+        );
+        assert!(
+            first.note.contains("11-20"),
+            "note carries date: {}",
+            first.note
+        );
+        // a session with no first prompt falls back to the id, not an empty label
+        let second = &picker.items[1];
+        assert!(
+            second.label.starts_with("fff67890"),
+            "fallback keeps the id prefix: {}",
+            second.label
+        );
+    }
+
+    #[test]
     fn plain_resume_picker_is_unaffected_by_a_finished_transfer_pick() {
         let mut app = App::new();
         let mut serve = Serve::mock();
@@ -7840,8 +7905,14 @@ mod tests {
         }));
         let texts: Vec<&str> = app.lines.iter().map(|l| l.text.as_str()).collect();
         let first = texts.iter().position(|t| t.contains("first")).unwrap();
-        let recv = texts.iter().position(|t| t.contains("收到会话 abcdef12")).unwrap();
-        let took = texts.iter().position(|t| t.contains("已接管会话 fedcba98")).unwrap();
+        let recv = texts
+            .iter()
+            .position(|t| t.contains("收到会话 abcdef12"))
+            .unwrap();
+        let took = texts
+            .iter()
+            .position(|t| t.contains("已接管会话 fedcba98"))
+            .unwrap();
         assert!(first < recv && recv < took);
     }
 
