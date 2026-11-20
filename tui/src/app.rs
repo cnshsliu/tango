@@ -6503,11 +6503,15 @@ impl App {
         // the choices panel takes a real layout row — the chat scrolls up to make
         // room instead of being covered (the text under it stays reachable)
         let panel_h = self.choices_panel_height(area.width, area.height);
+        // jump-to-bottom pill: its own row above the input, never over the chat or the
+        // status bar; the chat shrinks by one so nothing gets covered
+        let jump_h = u16::from(self.scroll_back > 0);
         let chat_h = self
             .chat_height(area, input_h)
-            .saturating_sub(panel_h as usize);
-        let [chat_a, panel_a, input_a, status_a] = Layout::vertical([
+            .saturating_sub(panel_h as usize + jump_h as usize);
+        let [chat_a, jump_a, panel_a, input_a, status_a] = Layout::vertical([
             Constraint::Min(1),
+            Constraint::Length(jump_h),
             Constraint::Length(panel_h),
             Constraint::Length(input_h),
             Constraint::Length(1),
@@ -6670,12 +6674,26 @@ impl App {
             self.prompt_header = Some((area, back));
         }
         self.jump_area = Rect::default();
-        if self.unread_rows > 0 && chat_a.height > 0 {
-            let label = format!(" ↓ {} 行新内容 · ctrl+end 回到底部 ", self.unread_rows);
-            let width = (display_width(&label) as u16).min(chat_a.width);
+        if jump_h == 1 {
+            // widest label that fits — on a narrow phone terminal the hint drops first
+            let n = self.unread_rows;
+            let news = if n > 0 { format!("{n} 行新内容 · ") } else { String::new() };
+            let labels = [
+                format!(" ↓ {news}ctrl+end 回到底部 "),
+                format!(" ↓ {news}点击回到底部 "),
+                format!(" ↓ {news}回到底部 "),
+                format!(" ↓ {}新 · 回到底部 ", if n > 0 { format!("{n}") } else { String::new() }),
+                " ↓ 回到底部 ".to_string(),
+                " ↓ ".to_string(),
+            ];
+            let label = labels
+                .into_iter()
+                .find(|l| display_width(l) <= jump_a.width as usize)
+                .unwrap_or_else(|| " ↓ ".to_string());
+            let width = (display_width(&label) as u16).min(jump_a.width);
             self.jump_area = Rect {
-                x: chat_a.x + chat_a.width.saturating_sub(width),
-                y: chat_a.y + chat_a.height - 1,
+                x: jump_a.x + jump_a.width.saturating_sub(width) / 2,
+                y: jump_a.y,
                 width,
                 height: 1,
             };
@@ -8195,8 +8213,9 @@ mod tests {
             let buffer = terminal.backend().buffer();
             (0..40).map(|x| buffer[(x, y)].symbol()).collect::<String>()
         };
+        // scrolling up shows the pill row, shrinking the chat by one row
         assert!(
-            row(&terminal, 0).starts_with("line-06"),
+            row(&terminal, 0).starts_with("line-07"),
             "unexpected first row: {:?}",
             row(&terminal, 0)
         );
@@ -8205,7 +8224,10 @@ mod tests {
         app.push("line-21", Tone::Text);
         app.push("line-22", Tone::Text);
         terminal.draw(|f| app.draw(f)).unwrap();
-        assert!(row(&terminal, 0).starts_with("line-06"));
+        assert!(row(&terminal, 0).starts_with("line-07"));
+        // fresh backend: TestBackend's cell diff mangles wide chars when a label grows in place
+        let mut terminal = Terminal::new(TestBackend::new(40, 12)).unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
         let buffer = terminal.backend().buffer();
         let screen = (0..12)
             .map(|y| (0..40).map(|x| buffer[(x, y)].symbol()).collect::<String>())
@@ -8215,6 +8237,9 @@ mod tests {
             screen.replace(' ', "").contains("3行新内容"),
             "screen:\n{screen}"
         );
+        // the pill has its own row above the input, centered, and covers no chat text
+        assert_eq!(app.jump_area.y, app.input_area.y - 1);
+        assert!(row(&terminal, app.jump_area.y - 1).starts_with("line-"));
 
         app.key(
             crossterm::event::KeyEvent::new(KeyCode::End, KeyModifiers::CONTROL),
@@ -11682,6 +11707,52 @@ mod tests {
         assert_eq!(text, "[图片 #1]");
         assert_eq!(images, vec![img.clone()]);
         let _ = std::fs::remove_file(&img);
+    }
+
+    #[test]
+    fn jump_pill_sits_centered_above_the_input_and_shrinks_on_narrow_screens() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        for n in 0..40 {
+            app.push(format!("line-{n:02}"), Tone::Text);
+        }
+        app.unread_rows = 3;
+        app.scroll_back = 5;
+        let row_text = |t: &Terminal<TestBackend>, y: u16, w: u16| {
+            let b = t.backend().buffer();
+            (0..w).map(|x| b[(x, y)].symbol()).collect::<String>()
+        };
+        for w in [80u16, 30, 14] {
+            let mut terminal = Terminal::new(TestBackend::new(w, 16)).unwrap();
+            terminal.draw(|f| app.draw(f)).unwrap();
+            let a = app.jump_area;
+            assert_eq!(a.height, 1);
+            assert_eq!(a.y, app.input_area.y - 1, "its own row right above the input");
+            assert!((a.x + a.width / 2).abs_diff(w / 2) <= 1, "centered at width {w}: {a:?}");
+            assert!(a.width <= w, "fits width {w}");
+            let text = row_text(&terminal, a.y, w);
+            assert!(text.contains("↓"), "pill drawn at width {w}: {text}");
+            // the chat row above it is untouched conversation text
+            assert!(row_text(&terminal, a.y - 1, w).starts_with("line-"), "no overlay");
+        }
+        // clicking it goes back to the bottom and the pill disappears
+        let mut terminal = Terminal::new(TestBackend::new(30, 16)).unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        let a = app.jump_area;
+        app.handle(
+            Event::Mouse(crossterm::event::MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: a.x + 1,
+                row: a.y,
+                modifiers: KeyModifiers::NONE,
+            }),
+            &mut serve,
+        );
+        terminal.draw(|f| app.draw(f)).unwrap();
+        assert_eq!(app.scroll_back, 0);
+        assert_eq!(app.jump_area, Rect::default(), "no pill at the bottom");
+        assert!(row_text(&terminal, app.input_area.y - 1, 30).starts_with("line-"));
     }
 
     #[test]
