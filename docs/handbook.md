@@ -51,7 +51,9 @@ git diff | tango "review this patch"
 
 While a turn runs, Enter queues your next prompt instead of interrupting. Queued prompts
 are sent in order when the turn ends. `/queue` shows them, and its `[并入当前]` button merges
-one into the running turn. Ctrl+C (or Esc) stops the current reply and keeps the queue.
+one into the running turn. Alt+Enter does the same for what you're typing: the text joins the
+running turn, and the model sees it on its next request. Ctrl+C (or Esc) stops the current
+reply and keeps the queue.
 
 ## Everyday workflows
 
