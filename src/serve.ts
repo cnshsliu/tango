@@ -24,7 +24,7 @@ import { loadImages } from './core/images.js';
 import { listDrafts, promoteDraft, saveDraft } from './core/skills.js';
 import { join, resolve } from 'node:path';
 import { SessionStore, relativeTime } from './core/session.js';
-import { drainHandoffs, queueHandoff } from './core/handoff.js';
+import { cancelHandoff, drainHandoffs, listHandoffs, queueHandoff } from './core/handoff.js';
 import { costUsd, displayPlatform, groupModels } from './core/models/registry.js';
 import type { AskFn, PermissionMode } from './core/permissions.js';
 import type { ToolResult } from './core/types.js';
@@ -229,8 +229,11 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
 
   // /handoff briefs other sessions queued for this one; merged by the owner only
   const mergeInbox = async () => {
-    for (const h of await drainHandoffs(store).catch(() => []))
+    const got = await drainHandoffs(store).catch(() => ({ merged: [], expired: [] }));
+    for (const h of got.merged)
       out({ type: 'notice', text: `⇠ 收到来自会话 ${h.from.slice(0, 8)} 的交接摘要，已并入上下文` });
+    for (const h of got.expired)
+      out({ type: 'notice', text: `⌛ 丢弃来自会话 ${h.from.slice(0, 8)} 的过期交接摘要（排队于 ${h.queuedAt.slice(0, 10)}，超过 7 天）` });
   };
   await mergeInbox();
 
@@ -1594,6 +1597,25 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
         reply(cmd, true, { sessionId: forkId, name: cmd.name ?? null });
         return;
       }
+      case 'handoff_list': {
+        // every queued brief (any target); merged ones are gone from the inbox
+        const items = await listHandoffs();
+        reply(cmd, true, {
+          handoffs: items.map((h) => ({ queueId: h.queueId, from: h.from, target: h.target, queuedAt: h.queuedAt, expired: h.expired, preview: h.summary.slice(0, 200) }))
+        });
+        return;
+      }
+      case 'handoff_cancel': {
+        const ref = String(cmd.queueId ?? '').trim();
+        if (!ref) return reply(cmd, false, undefined, 'handoff cancel: which one? (queue id from /handoff list)');
+        try {
+          const h = await cancelHandoff(ref);
+          reply(cmd, true, { queueId: h.queueId, target: h.target });
+        } catch (e: any) {
+          reply(cmd, false, undefined, String(e?.message ?? e));
+        }
+        return;
+      }
       case 'handoff':
       case 'takeover': {
         // handoff: brief of THIS session → queued for an existing target (merged by its owner).
@@ -1610,8 +1632,8 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
           if (what === 'handoff') {
             const brief = await agent.handoffBrief(store.messages(), note);
             if (!brief) return reply(cmd, false, undefined, 'handoff: nothing to hand over yet');
-            await queueHandoff(otherId, { from: store.id, summary: brief });
-            reply(cmd, true, { target: otherId, brief });
+            const queueId = await queueHandoff(otherId, { from: store.id, summary: brief });
+            reply(cmd, true, { target: otherId, brief, queueId });
           } else {
             const source = await SessionStore.open(sessionsDir(), otherId);
             const brief = await agent.handoffBrief(source.messages(), note);

@@ -102,6 +102,8 @@ enum Pending {
     Redo,
     Fork,
     Handoff,
+    HandoffList,
+    HandoffCancel,
     Takeover,
     Branch,
     Tree,
@@ -402,6 +404,10 @@ const SLASH: &[(&str, &str)] = &[
     (
         "/handoff [session] [note]",
         "把当前会话的交接摘要发给已有会话（不切换），裸 /handoff 选会话",
+    ),
+    (
+        "/handoff list | cancel <id>",
+        "查看排队中的交接摘要 / 撤回一条（未并入的摘要 7 天后过期丢弃）",
     ),
     (
         "/takeover [session] [note]",
@@ -2393,7 +2399,24 @@ impl App {
                     PickerKind::TakeoverSource
                 };
                 let rest = rest.trim();
-                if rest.is_empty() {
+                // session ids are hex UUIDs, so "list"/"cancel" never collide with a prefix
+                let (sub, sub_arg) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+                if head == "/handoff" && sub == "list" {
+                    let id = serve.command("handoff_list", vec![]);
+                    self.pending.push((id, Pending::HandoffList));
+                } else if head == "/handoff" && sub == "cancel" {
+                    let q = sub_arg.trim();
+                    if q.is_empty() {
+                        self.push(
+                            "用法：/handoff cancel <queue id> · /handoff list 查看",
+                            Tone::Warning,
+                        );
+                    } else {
+                        let id = serve
+                            .command("handoff_cancel", vec![("queueId", Value::String(q.into()))]);
+                        self.pending.push((id, Pending::HandoffCancel));
+                    }
+                } else if rest.is_empty() {
                     // no id: list sessions, the picker sends the command
                     let id = serve.command("sessions", vec![]);
                     self.pending.push((id, Pending::Sessions));
@@ -5055,8 +5078,75 @@ impl App {
                                 .chars()
                                 .take(8)
                                 .collect();
+                            let q = d["queueId"].as_str().unwrap_or("?");
                             self.push(
-                                format!("⇢ 交接摘要已发给会话 {target} · 它下次运行时并入上下文"),
+                                format!("⇢ 交接摘要已发给会话 {target} · 它下次运行时并入上下文（7 天内）"),
+                                Tone::Success,
+                            );
+                            self.push(
+                                format!("  撤回：/handoff cancel {q} · 查看：/handoff list"),
+                                Tone::Muted,
+                            );
+                        }
+                        (Pending::HandoffList, true) => {
+                            let list = d["handoffs"].as_array().cloned().unwrap_or_default();
+                            if list.is_empty() {
+                                self.push("没有排队中的交接摘要", Tone::Muted);
+                            }
+                            for h in &list {
+                                let short = |k: &str| -> String {
+                                    h[k].as_str().unwrap_or("?").chars().take(8).collect()
+                                };
+                                let at: String = h["queuedAt"]
+                                    .as_str()
+                                    .unwrap_or("")
+                                    .chars()
+                                    .take(16)
+                                    .collect();
+                                let tag = if h["expired"].as_bool().unwrap_or(false) {
+                                    " · 已过期（打开时丢弃）"
+                                } else {
+                                    ""
+                                };
+                                self.push(
+                                    format!(
+                                        "  {}  {} ⇢ {}  {}{tag}",
+                                        h["queueId"].as_str().unwrap_or("?"),
+                                        short("from"),
+                                        short("target"),
+                                        at.replace('T', " ")
+                                    ),
+                                    Tone::Selected,
+                                );
+                                let first = h["preview"]
+                                    .as_str()
+                                    .unwrap_or("")
+                                    .lines()
+                                    .find(|l| !l.trim().is_empty() && !l.starts_with('#'))
+                                    .unwrap_or("")
+                                    .chars()
+                                    .take(80)
+                                    .collect::<String>();
+                                if !first.is_empty() {
+                                    self.push(format!("    {first}"), Tone::Muted);
+                                }
+                            }
+                            if !list.is_empty() {
+                                self.push("  撤回：/handoff cancel <queue id>", Tone::Muted);
+                            }
+                        }
+                        (Pending::HandoffCancel, true) => {
+                            let target: String = d["target"]
+                                .as_str()
+                                .unwrap_or("?")
+                                .chars()
+                                .take(8)
+                                .collect();
+                            self.push(
+                                format!(
+                                    "✕ 已撤回交接摘要 {}（目标会话 {target}）",
+                                    d["queueId"].as_str().unwrap_or("?")
+                                ),
                                 Tone::Success,
                             );
                         }
@@ -5750,7 +5840,10 @@ impl App {
                             self.nvim_preference = d["nvimViewer"].as_str().unwrap_or("ask").into();
                             self.push("Neovim 只读偏好已保存", Tone::Muted);
                         }
-                        (Pending::Handoff, false) | (Pending::Takeover, false) => {
+                        (Pending::Handoff, false)
+                        | (Pending::Takeover, false)
+                        | (Pending::HandoffList, false)
+                        | (Pending::HandoffCancel, false) => {
                             self.push(
                                 format!("{}", v["error"].as_str().unwrap_or("?")),
                                 Tone::Error,
@@ -8015,6 +8108,38 @@ mod tests {
         );
         assert_eq!(app.respawn, None);
         assert!(app.lines.iter().any(|l| l.text.contains("abc12345")));
+    }
+
+    #[test]
+    fn handoff_list_and_cancel_send_their_own_commands() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.run_slash("/handoff list", &mut serve);
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        assert_eq!(sent["cmd"], "handoff_list");
+        let id = sent["id"].as_u64().unwrap();
+        app.frame(
+            json!({"type": "result", "id": id, "ok": true, "data": {"handoffs": [
+                {"queueId": "q1w2e3r4", "from": "aaaaaaaa-1", "target": "bbbbbbbb-2",
+                 "queuedAt": "2026-11-20T09:00:00Z", "expired": true, "preview": "## Goal\nship it"}
+            ]}}),
+            &mut serve,
+        );
+        assert!(
+            app.lines
+                .iter()
+                .any(|l| l.text.contains("q1w2e3r4") && l.text.contains("已过期"))
+        );
+        assert!(app.lines.iter().any(|l| l.text.contains("ship it")));
+
+        app.run_slash("/handoff cancel q1w2", &mut serve);
+        let sent: Value = serde_json::from_str(&serve.sent[1]).unwrap();
+        assert_eq!(sent["cmd"], "handoff_cancel");
+        assert_eq!(sent["queueId"], "q1w2");
+
+        // bare cancel is a usage hint, not a command
+        app.run_slash("/handoff cancel", &mut serve);
+        assert_eq!(serve.sent.len(), 2);
     }
 
     #[test]

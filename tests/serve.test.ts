@@ -2534,3 +2534,64 @@ test('handoff/takeover: briefs merge into existing sessions without switching', 
     await rm(work, { recursive: true, force: true });
   }
 });
+
+test('handoff list/cancel and expiry: queued briefs can be listed, withdrawn, and go stale', async () => {
+  const mock = await startMock();
+  const home = await mkdtemp(join(tmpdir(), 'tango-serve-home-'));
+  const work = await mkdtemp(join(tmpdir(), 'tango-serve-work-'));
+  const port = (mock.server.address() as AddressInfo).port;
+  await writeFile(join(home, 'models.json'), JSON.stringify([
+    { id: 'mock/mock', provider: 'mock', model: 'mock-model', api: 'openai-completions', baseUrl: `http://127.0.0.1:${port}/v1`, apiKey: 'MOCK_SERVE_KEY', contextWindow: 200_000 }
+  ]));
+  const say = (text: string) => () =>
+    SSE({ choices: [{ delta: { content: text } }] }) + SSE({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 5, completion_tokens: 2 } }) + 'data: [DONE]\n\n';
+  const result = (s: any, id: number, what: string) => s.until((f: any) => f.type === 'result' && f.id === id, what);
+  mock.setScript(say('ok'));
+  const b = await startServe(home, work, port);
+  let a: Awaited<ReturnType<typeof startServe>> | undefined;
+  let b2: Awaited<ReturnType<typeof startServe>> | undefined;
+  try {
+    const bId = (await b.until((f: any) => f.type === 'hello', 'hello b')).sessionId as string;
+    b.send({ id: 1, cmd: 'prompt', text: 'B-OWN-WORK' });
+    await result(b, 1, 'b turn');
+    b.child.kill();
+
+    a = await startServe(home, work, port);
+    const aId = (await a.until((f: any) => f.type === 'hello', 'hello a')).sessionId as string;
+    a.send({ id: 2, cmd: 'prompt', text: 'A-TASK' });
+    await result(a, 2, 'a turn');
+    mock.setScript(say('## Goal\nCANCELLED-BRIEF'));
+    a.send({ id: 3, cmd: 'handoff', session: bId });
+    const ho = await result(a, 3, 'handoff');
+    assert.ok(ho.ok && /^[0-9a-f]{8}$/.test(ho.data.queueId), 'handoff returns a queue id');
+
+    // an old brief, as if queued 8 days ago
+    const inbox = join(home, 'handoffs', bId);
+    const old = new Date(Date.now() - 8 * 24 * 3600 * 1000).toISOString();
+    await writeFile(join(inbox, `1-deadbeef.json`), JSON.stringify({ from: aId, summary: 'STALE-BRIEF', queuedAt: old }));
+
+    a.send({ id: 4, cmd: 'handoff_list' });
+    const list = (await result(a, 4, 'list')).data.handoffs;
+    assert.deepEqual(list.map((h: any) => [h.queueId, h.target, h.expired]), [['deadbeef', bId, true], [ho.data.queueId, bId, false]]);
+
+    a.send({ id: 5, cmd: 'handoff_cancel', queueId: ho.data.queueId.slice(0, 4) });
+    assert.ok((await result(a, 5, 'cancel')).ok);
+    a.send({ id: 6, cmd: 'handoff_cancel', queueId: ho.data.queueId });
+    assert.match((await result(a, 6, 'cancel again')).error, /no queued handoff/);
+
+    // opening B: the stale brief is dropped with a notice, the cancelled one never arrives
+    b2 = await startServe(home, work, port, { TANGO_RESUME: bId });
+    await b2.until((f: any) => f.type === 'notice' && String(f.text).includes('过期'), 'expiry notice');
+    await b2.until((f: any) => f.type === 'hello', 'hello b2');
+    const log = await readFile(join(home, 'sessions', `${bId}.jsonl`), 'utf8');
+    assert.ok(!log.includes('STALE-BRIEF') && !log.includes('CANCELLED-BRIEF'));
+    assert.deepEqual(readdirSync(inbox), [], 'inbox emptied');
+  } finally {
+    b.child.kill();
+    a?.child.kill();
+    b2?.child.kill();
+    mock.server.close();
+    await rm(home, { recursive: true, force: true });
+    await rm(work, { recursive: true, force: true });
+  }
+});
