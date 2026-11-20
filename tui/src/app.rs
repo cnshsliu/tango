@@ -468,6 +468,10 @@ const SLASH: &[(&str, &str)] = &[
     ),
     ("/nvim", "用外部 Neovim 编辑草稿 · ctrl+e 编辑当前草稿"),
     ("/quit", "退出"),
+    (
+        "/restart",
+        "退出并重启 TUI 与 serve（载入新构建），续在当前会话",
+    ),
     ("/resume", "切换到历史会话，打开列表"),
     (
         "/skill [title]",
@@ -772,10 +776,11 @@ fn wrap_chat_rows_mixed(texts: &[String], width: usize, is_user: &[bool]) -> Vec
         let user = is_user.get(line).copied().unwrap_or(false);
         let lw = if user { w.saturating_sub(4).max(1) } else { w };
         let mut part = wrap_chat_rows(&[text.clone()], lw);
-        if user {
-            for r in &mut part {
-                r.user = true;
-            }
+        for r in &mut part {
+            // wrap_chat_rows indexes within the single-line slice — restore the
+            // real source-line index so grouping/mapping stay correct
+            r.line = line;
+            r.user = user;
         }
         rows.extend(part);
     }
@@ -991,6 +996,8 @@ pub struct App {
     context_tokens: u64,
     context_window: u64,
     pub quit: bool,
+    /// /restart: after quitting, main re-execs the TUI resuming (session id, permission mode)
+    pub restart: Option<(String, String)>,
     /// serve respawn request for the main loop: Some(Some(id)) resumes, Some(None) starts fresh
     pub respawn: Option<Option<String>>,
     /// set while a /handoff or /takeover session list is in flight: picker purpose
@@ -1085,6 +1092,7 @@ impl App {
             context_window: 0,
             quit: false,
             respawn: None,
+            restart: None,
             session_pick: None,
             err: None,
         }
@@ -2403,6 +2411,16 @@ impl App {
         };
         match head.as_str() {
             "/exit" | "/quit" | ":q" => self.quit = true,
+            "/restart" => {
+                if self.busy {
+                    self.push("回合进行中 · 先 esc 中断再 /restart", Tone::Error);
+                } else if self.session_full.is_empty() {
+                    self.push("serve 还没就绪，没有可续的会话", Tone::Error);
+                } else {
+                    self.restart = Some((self.session_full.clone(), self.mode.clone()));
+                    self.quit = true;
+                }
+            }
             "/help" => {
                 self.push("commands:", Tone::Selected);
                 for (c, d) in SLASH {
@@ -3058,8 +3076,8 @@ impl App {
                     }
                 };
                 self.user_bubble = enabled;
-                let id = serve.command("set_bubble", vec![("bubble", Value::Bool(enabled))]);
-                self.pending.push((id, Pending::Mouse));
+                // serve persists it; the chat line below is the only feedback needed
+                let _ = serve.command("set_bubble", vec![("bubble", Value::Bool(enabled))]);
                 self.push(
                     if enabled {
                         "用户消息：靠右气泡"
@@ -8647,6 +8665,34 @@ mod tests {
     }
 
     #[test]
+    fn bubble_toggle_redraws_after_off_on_cycle() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.run_slash("/bubble off", &mut serve);
+        app.push_user("第一句");
+        app.run_slash("/bubble", &mut serve); // toggle back on
+        app.push_user("第二句");
+        {
+            let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+            terminal.draw(|f| app.draw(f)).unwrap();
+        }
+        let row = app
+            .chat_rows
+            .iter()
+            .find(|r| r.user && r.text.contains("第二句"))
+            .expect("second user row");
+        assert!(
+            row.x > 0,
+            "after toggling back on the bubble is right-positioned"
+        );
+        assert!(
+            app.chat_rows.iter().any(|r| r.border),
+            "frame rows present again"
+        );
+    }
+
+    #[test]
     fn bubble_mode_toggles_between_right_and_fullwidth_left() {
         let mut rows = wrap_chat_rows(&["用户的一句话".to_string(), "agent 回复".to_string()], 40);
         let flags = vec![true, false];
@@ -10424,6 +10470,29 @@ mod tests {
         assert_eq!(App::tip_for(20), App::tip_for(39));
         assert_ne!(App::tip_for(0), App::tip_for(20), "rotates across windows");
         assert!(TIPS.contains(&App::tip_for(37)), "always a pool member");
+    }
+
+    #[test]
+    fn restart_quits_carrying_session_and_mode() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.run_slash("/restart", &mut serve);
+        assert!(
+            !app.quit && app.restart.is_none(),
+            "no session yet → refuse"
+        );
+        app.session_full = "a1b2c3d4e5f67890".into();
+        app.mode = "auto".into();
+        app.busy = true;
+        app.run_slash("/restart", &mut serve);
+        assert!(!app.quit && app.restart.is_none(), "busy turn → refuse");
+        app.busy = false;
+        app.run_slash("/restart", &mut serve);
+        assert!(app.quit);
+        assert_eq!(
+            app.restart,
+            Some(("a1b2c3d4e5f67890".into(), "auto".into()))
+        );
     }
 
     #[test]

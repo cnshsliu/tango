@@ -72,7 +72,7 @@ tango --models         list models   tango --sessions   list sessions   --cwd <d
 tango repl             line-mode REPL — dev fallback, not the product
 ```
 
-TUI commands: `/model`, `/agents`, `/resume`, `/new`, `/rename`, `/mode`, `/plan`, `/goal`,
+TUI commands: `/model`, `/agents`, `/resume`, `/new`, `/restart`, `/rename`, `/mode`, `/plan`, `/goal`,
 `/loop`, `/effort`, `/review`, `/security-review`, `/bg`, `/tasks`, `/stop`, `/subtask`,
 `/worktree`, `/mcp`, `/plugins`, `/vim`, `/nvim`, `/editor`, `/multiline`, `/btw`, `/diff`,
 `/focus`, `/density`, `/mouse`, `/theme`, `/compact`, `/autocompact`, `/skill`, `/skills`,
@@ -335,6 +335,9 @@ same (OpenCode-style). `TANGO_BIN` overrides the server binary (e.g. `TANGO_BIN=
 for dev builds). Bare `/model` and `/resume` open centered pickers; picking a session kills the
 serve child and respawns it with `TANGO_RESUME`, so both the model context and the visible
 transcript come back. `/new` starts fresh while keeping the current model and permission mode.
+`/restart` quits and re-execs the TUI (and with it a fresh serve), so a rebuilt `tango-tui` or
+`dist/` takes effect; it resumes the current session with the same permission mode. It refuses
+while a turn is running.
 Ctrl+P opens a filterable command palette; model/session pickers use the same filtering and mouse
 routing. Ctrl+R searches original prompt history, and Alt+S stashes/restores the complete draft
 (including collapsed paste metadata) without submitting it. File references accept inclusive line

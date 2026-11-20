@@ -54,17 +54,52 @@ fn main() -> Result<(), Box<dyn Error>> {
             eprintln!("tango-tui: {e}");
             std::process::exit(1);
         }
-        Ok(Some(note)) => {
+        Ok(Exit::Restart(session, mode)) => restart(&session, &mode),
+        Ok(Exit::Quit(Some(note))) => {
             println!("{note}");
         }
-        Ok(None) => {}
+        Ok(Exit::Quit(None)) => {}
     }
     Ok(())
 }
 
-fn run(
-    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
-) -> Result<Option<String>, Box<dyn Error>> {
+enum Exit {
+    Quit(Option<String>),
+    /// /restart: (session id, permission mode) for the fresh process
+    Restart(String, String),
+}
+
+/// Replace this process with a fresh copy of the TUI binary (picks up a rebuilt
+/// executable; its serve child picks up a rebuilt dist/) resuming the same session.
+fn restart(session: &str, mode: &str) {
+    let fail = |e: &dyn std::fmt::Display| {
+        eprintln!("tango-tui: restart failed: {e}\n恢复：tango --resume {session}");
+        std::process::exit(1);
+    };
+    let exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => return fail(&e),
+    };
+    let mut cmd = std::process::Command::new(exe);
+    cmd.args(std::env::args_os().skip(1))
+        .env("TANGO_RESUME", session)
+        .env("TANGO_MODE", mode)
+        // a resumed session brings back its own model
+        .env_remove("TANGO_MODEL");
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let e = cmd.exec(); // only returns on failure
+        fail(&e);
+    }
+    #[cfg(not(unix))]
+    match cmd.status() {
+        Ok(s) => std::process::exit(s.code().unwrap_or(1)),
+        Err(e) => fail(&e),
+    }
+}
+
+fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<Exit, Box<dyn Error>> {
     let (tx, rx) = mpsc::channel::<Event>();
     let mut serve = Serve::spawn(tx.clone(), 0, None, None, None)?;
     let input_enabled = Arc::new(AtomicBool::new(true));
@@ -210,8 +245,11 @@ fn run(
     }
     if let Some(e) = app.err {
         Err(e.into())
+    } else if let Some((session, mode)) = app.restart.take() {
+        drop(serve); // kill + reap the old serve so its session lock is free for the new one
+        Ok(Exit::Restart(session, mode))
     } else {
         // hand the user the way back before the process goes away
-        Ok(app.exit_note())
+        Ok(Exit::Quit(app.exit_note()))
     }
 }
