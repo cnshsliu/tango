@@ -5,6 +5,8 @@
 A light agent harness for work and code. China-first: DeepSeek / Kimi / Qwen / GLM work
 out of the box with a single API key, no proxy.
 
+How to use it day to day: [docs/handbook.md](docs/handbook.md).
+
 ## Status
 
 Core loop is working: agent loop, JSONL sessions with compaction, Anthropic + OpenAI-compatible
