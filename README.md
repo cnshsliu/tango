@@ -203,7 +203,9 @@ state is snapshotted too. Snapshots live in the session log; the JSONL log is th
   tool-free call writes a brief (goal, done, decisions, files touched, current state, next steps,
   open questions; `note` steers it) and queues it under `~/.tango/handoffs/<target>/`. You stay
   where you are. The target merges the brief into its context when it is next opened, or before
-  its next prompt if it is already open in another window; its own history is kept.
+  its next prompt if it is already open in another window; its own history is kept. A brief
+  still unmerged after 7 days is discarded with a notice instead. `/handoff list` shows every
+  queued brief with its queue id; `/handoff cancel <queue id>` withdraws one.
 - `/takeover [session] [note]` is the reverse: it briefs an existing session and merges that brief
   into the current one, leaving the source untouched. Both take an id or prefix; bare commands open
   a session picker. Briefs show in the transcript where they were merged.
@@ -267,7 +269,7 @@ Commands: `prompt`, `btw` (ephemeral, tool-free side question), `interrupt`, `pe
 `set_model` (also saved as the default), `set_mode`, `set_nvim_viewer` (persist `ask`/`readonly`),
 `set_theme`, `set_mouse`, `diff` (read-only working-tree/staged patch), `timeline` (turn list with
 snapshot flags), `rewind`/`undo`/`redo` (time travel; refused while a turn runs), `fork`/`branch`/
-`tree` (session forking and ancestry), `handoff` / `takeover` (`session`, `note?` → `brief`), `find` (search all sessions incl. abandoned futures),
+`tree` (session forking and ancestry), `handoff` / `takeover` (`session`, `note?` → `brief`; handoff also → `queueId`), `handoff_list` (→ `handoffs`), `handoff_cancel` (`queueId`), `find` (search all sessions incl. abandoned futures),
 `export` (md/html transcript file), `transcript` (raw text incl. orphans), `rename`, `recap`
 (tool-free one-line summary via `btw_stream`), `sessions`, `history`
 (flattened transcript with paired tool calls/results, latest 300 items by default), `save_skill`,
