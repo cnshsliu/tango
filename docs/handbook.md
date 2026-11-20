@@ -37,7 +37,7 @@ git diff | tango "review this patch"
 | You want to | Do this |
 | --- | --- |
 | Send | Enter (Ctrl+S always sends, also in Vim mode) |
-| Add a newline | Alt+Enter (idle), or switch Enter's meaning with `/multiline` |
+| Add a newline | Alt+Enter while idle, or switch Enter's meaning with `/multiline` |
 | Include a file | `@src/app.ts`, or a line range: `@src/app.ts#20-45` |
 | Attach an image | Paste it; terminals paste a temp file path, which becomes a `[图片 #N]` chip |
 | Run a command | Type `/` and Tab-complete, or open the palette with Ctrl+P |
