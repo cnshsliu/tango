@@ -32,7 +32,7 @@ const COMPACT_INSTRUCTION =
   'open questions. Be dense and factual. This is data for another model, not a reply to a human.';
 
 const HANDOFF_INSTRUCTION =
-  'Write a handoff brief for a NEW session that will continue this work without seeing the messages above. ' +
+  'Write a handoff brief for ANOTHER session that will continue this work without seeing the messages above. ' +
   'Use these markdown sections: ## Goal, ## Done so far, ## Key decisions (with reasons), ' +
   '## Files touched (paths and what changed), ## Current state (what works, what is broken, last command results), ' +
   '## Next steps (ordered, concrete), ## Open questions. Omit empty sections. Be dense and factual; ' +
@@ -315,12 +315,11 @@ export class Agent {
   }
 
   /**
-   * Tool-free brief for a fresh session that continues this work (/handoff).
-   * `note` is the user's steer for the successor (e.g. what to do next).
-   * Returns '' when there is nothing to hand over.
+   * Tool-free brief of `messages` for another session that continues the work
+   * (/handoff: this session's context; /takeover: the other session's).
+   * `note` is the user's steer (e.g. what to do next). '' when there is nothing to hand over.
    */
-  async handoffBrief(note?: string): Promise<string> {
-    const messages = this.store.messages();
+  async handoffBrief(messages: Message[], note?: string): Promise<string> {
     if (messages.length === 0) return '';
     const steer = note?.trim() ? `\n\nThe user's note for the next session: ${note.trim()}` : '';
     const req: CompletionRequest = {

@@ -2448,7 +2448,7 @@ test('warming: a cache miss halts warming until the next real request', async ()
   }
 });
 
-test('handoff: brief opens a fresh session that resumes with it as context and history', async () => {
+test('handoff/takeover: briefs merge into existing sessions without switching', async () => {
   const mock = await startMock();
   const home = await mkdtemp(join(tmpdir(), 'tango-serve-home-'));
   const work = await mkdtemp(join(tmpdir(), 'tango-serve-work-'));
@@ -2458,41 +2458,77 @@ test('handoff: brief opens a fresh session that resumes with it as context and h
   ]));
   const say = (text: string) => () =>
     SSE({ choices: [{ delta: { content: text } }] }) + SSE({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 5, completion_tokens: 2 } }) + 'data: [DONE]\n\n';
-  const s = await startServe(home, work, port);
-  let s2: Awaited<ReturnType<typeof startServe>> | undefined;
+  const result = (s: any, id: number, what: string) => s.until((f: any) => f.type === 'result' && f.id === id, what);
+  mock.setScript(say('ok'));
+  // B: an existing target session, kept open the whole time (live in "another window")
+  const b = await startServe(home, work, port);
+  let a: Awaited<ReturnType<typeof startServe>> | undefined;
+  let b2: Awaited<ReturnType<typeof startServe>> | undefined;
   try {
-    await s.until((f: any) => f.type === 'hello', 'hello');
-    // empty session: nothing to hand over, no new session file
-    s.send({ id: 1, cmd: 'handoff' });
-    const empty = await s.until((f: any) => f.type === 'result' && f.id === 1, 'empty handoff');
-    assert.equal(empty.ok, false);
+    const bId = (await b.until((f: any) => f.type === 'hello', 'hello b')).sessionId as string;
+    b.send({ id: 1, cmd: 'prompt', text: 'B-OWN-WORK' });
+    await result(b, 1, 'b turn');
 
-    mock.setScript(say('done step one'));
-    s.send({ id: 2, cmd: 'prompt', text: 'ORIGINAL-TASK-TEXT' });
-    await s.until((f: any) => f.type === 'result' && f.id === 2 && f.ok, 'turn');
-    mock.setScript(say('## Goal\nBRIEF-MARKER'));
-    s.send({ id: 3, cmd: 'handoff', note: 'NEXT-STEP-NOTE' });
-    const ho = await s.until((f: any) => f.type === 'result' && f.id === 3, 'handoff');
+    a = await startServe(home, work, port);
+    const aId = (await a.until((f: any) => f.type === 'hello', 'hello a')).sessionId as string;
+    a.send({ id: 2, cmd: 'handoff', session: bId.slice(0, 8) });
+    assert.equal((await result(a, 2, 'empty handoff')).ok, false, 'empty session has nothing to hand over');
+    a.send({ id: 3, cmd: 'handoff', session: aId });
+    assert.match((await result(a, 3, 'self handoff')).error, /current session/);
+
+    a.send({ id: 4, cmd: 'prompt', text: 'A-TASK-TEXT' });
+    await result(a, 4, 'a turn');
+    mock.setScript(say('## Goal\nA-BRIEF'));
+    a.send({ id: 5, cmd: 'handoff', session: bId.slice(0, 8), note: 'A-NOTE' });
+    const ho = await result(a, 5, 'handoff');
     assert.ok(ho.ok, ho.error);
-    assert.equal(ho.data.brief, '## Goal\nBRIEF-MARKER');
+    assert.equal(ho.data.target, bId);
     const briefReq = JSON.stringify(mock.requests.at(-1));
-    assert.ok(briefReq.includes('ORIGINAL-TASK-TEXT') && briefReq.includes('NEXT-STEP-NOTE'));
-    assert.ok(!briefReq.includes('"tools":[{'), 'brief call is tool-free');
+    assert.ok(briefReq.includes('A-TASK-TEXT') && briefReq.includes('A-NOTE'));
+    // the target's log is untouched until its owner merges
+    assert.ok(!(await readFile(join(home, 'sessions', `${bId}.jsonl`), 'utf8')).includes('A-BRIEF'));
 
-    s2 = await startServe(home, work, port, { TANGO_RESUME: ho.data.sessionId });
-    await s2.until((f: any) => f.type === 'hello', 'hello 2');
-    s2.send({ id: 10, cmd: 'history' });
-    const h = await s2.until((f: any) => f.type === 'result' && f.id === 10, 'history');
-    assert.deepEqual(h.data.items[0], { kind: 'handoff', from: ho.data.from, text: '## Goal\nBRIEF-MARKER' });
-    mock.setScript(say('continuing'));
-    s2.send({ id: 11, cmd: 'prompt', text: 'go on' });
-    await s2.until((f: any) => f.type === 'result' && f.id === 11 && f.ok, 'turn in new session');
-    const next = JSON.stringify(mock.requests.at(-1));
-    assert.ok(next.includes('BRIEF-MARKER'), 'new session context carries the brief');
-    assert.ok(!next.includes('ORIGINAL-TASK-TEXT'), 'old messages are not copied');
+    // live B merges on its next prompt: keeps its own history, gains the brief
+    mock.setScript(say('ok'));
+    b.send({ id: 6, cmd: 'prompt', text: 'B-NEXT' });
+    await b.until((f: any) => f.type === 'notice' && String(f.text).includes(aId.slice(0, 8)), 'merge notice');
+    await result(b, 6, 'b turn 2');
+    const bReq = JSON.stringify(mock.requests.at(-1));
+    assert.ok(bReq.includes('B-OWN-WORK') && bReq.includes('A-BRIEF'), 'target keeps its history and gets the brief');
+    assert.ok(!bReq.includes('A-TASK-TEXT'), 'source messages are not copied');
+    b.send({ id: 7, cmd: 'history' });
+    const h = await result(b, 7, 'history');
+    const hi = h.data.items.findIndex((x: any) => x.kind === 'handoff');
+    assert.deepEqual(h.data.items[hi], { kind: 'handoff', from: aId, via: 'handoff', text: '## Goal\nA-BRIEF' });
+    assert.ok(h.data.items.findIndex((x: any) => x.text === 'B-OWN-WORK') < hi, 'brief sits where it was merged');
+
+    // a closed target merges on open
+    b.child.kill();
+    mock.setScript(say('## Goal\nSECOND-BRIEF'));
+    a.send({ id: 8, cmd: 'handoff', session: bId });
+    assert.ok((await result(a, 8, 'handoff 2')).ok);
+    b2 = await startServe(home, work, port, { TANGO_RESUME: bId });
+    await b2.until((f: any) => f.type === 'notice' && String(f.text).includes('交接'), 'merge on open');
+    assert.ok((await readFile(join(home, 'sessions', `${bId}.jsonl`), 'utf8')).includes('SECOND-BRIEF'));
+
+    // takeover: A pulls B's work into itself, B's file unchanged
+    const bBefore = await readFile(join(home, 'sessions', `${bId}.jsonl`), 'utf8');
+    mock.setScript(say('## Goal\nB-TAKEN'));
+    a.send({ id: 9, cmd: 'takeover', session: bId.slice(0, 8) });
+    const tk = await result(a, 9, 'takeover');
+    assert.ok(tk.ok, tk.error);
+    assert.equal(tk.data.from, bId);
+    assert.ok(JSON.stringify(mock.requests.at(-1)).includes('B-OWN-WORK'), 'brief is of the source session');
+    assert.equal(await readFile(join(home, 'sessions', `${bId}.jsonl`), 'utf8'), bBefore);
+    mock.setScript(say('ok'));
+    a.send({ id: 10, cmd: 'prompt', text: 'continue' });
+    await result(a, 10, 'a turn after takeover');
+    const aReq = JSON.stringify(mock.requests.at(-1));
+    assert.ok(aReq.includes('A-TASK-TEXT') && aReq.includes('B-TAKEN'));
   } finally {
-    s.child.kill();
-    s2?.child.kill();
+    b.child.kill();
+    a?.child.kill();
+    b2?.child.kill();
     mock.server.close();
     await rm(home, { recursive: true, force: true });
     await rm(work, { recursive: true, force: true });

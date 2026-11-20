@@ -156,8 +156,9 @@ export type SessionEntry =
   | { kind: 'message'; ts: string; message: Message }
   | { kind: 'model'; ts: string; modelId: string }
   | { kind: 'task_run'; ts: string; ok: boolean }
-  /** handoffFrom: set when this summary opened a /handoff session (id of the session handed over) */
-  | { kind: 'compaction'; ts: string; summary: string; droppedCount: number; handoffFrom?: string }
+  | { kind: 'compaction'; ts: string; summary: string; droppedCount: number }
+  /** a brief of session `from` merged into this one (/handoff from there, or /takeover from here) */
+  | { kind: 'handoff'; ts: string; from: string; summary: string; via: 'handoff' | 'takeover' }
   | { kind: 'checkpoint'; ts: string; hash: string; note?: string }
   | { kind: 'rewind'; ts: string; to: number };
 

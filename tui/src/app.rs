@@ -101,6 +101,7 @@ enum Pending {
     Redo,
     Fork,
     Handoff,
+    Takeover,
     Branch,
     Tree,
     Find,
@@ -150,6 +151,10 @@ enum Pending {
 enum PickerKind {
     Model,
     Session,
+    /// /handoff without an id: pick the session to send this one's brief to
+    HandoffTarget,
+    /// /takeover without an id: pick the session whose work this one continues
+    TakeoverSource,
     Command,
     History,
     Theme,
@@ -198,7 +203,12 @@ impl Picker {
     fn filterable(&self) -> bool {
         matches!(
             self.kind,
-            PickerKind::Model | PickerKind::Session | PickerKind::Command | PickerKind::History
+            PickerKind::Model
+                | PickerKind::Session
+                | PickerKind::HandoffTarget
+                | PickerKind::TakeoverSource
+                | PickerKind::Command
+                | PickerKind::History
         )
     }
 
@@ -336,8 +346,12 @@ const SLASH: &[(&str, &str)] = &[
     ("/usage /stats", "跨会话聚合：按模型/会话的请求与花费"),
     ("/fork <name>", "从当前（或 /rewind 选中）位置复制出新会话"),
     (
-        "/handoff [note]",
-        "生成交接摘要，开新会话从摘要继续（note 可写下一步）",
+        "/handoff [session] [note]",
+        "把当前会话的交接摘要发给已有会话（不切换），裸 /handoff 选会话",
+    ),
+    (
+        "/takeover [session] [note]",
+        "把已有会话的工作接到当前会话（摘要并入上下文），裸 /takeover 选会话",
     ),
     (
         "/goal <text>|off|max N",
@@ -857,6 +871,8 @@ pub struct App {
     pub quit: bool,
     /// serve respawn request for the main loop: Some(Some(id)) resumes, Some(None) starts fresh
     pub respawn: Option<Option<String>>,
+    /// set while a /handoff or /takeover session list is in flight: picker purpose
+    session_pick: Option<PickerKind>,
     pub err: Option<String>,
 }
 
@@ -943,6 +959,7 @@ impl App {
             context_window: 0,
             quit: false,
             respawn: None,
+            session_pick: None,
             err: None,
         }
     }
@@ -1008,6 +1025,22 @@ impl App {
         self.unread_rows = 0;
         self.jump_area = Rect::default();
         self.respawn = Some(target);
+    }
+
+    /// Send /handoff (`HandoffTarget`) or /takeover (`TakeoverSource`) for `session`.
+    fn send_transfer(&mut self, purpose: PickerKind, session: &str, note: &str, serve: &mut Serve) {
+        let (cmd, pending, msg) = if purpose == PickerKind::HandoffTarget {
+            ("handoff", Pending::Handoff, "⇢ 正在生成交接摘要…")
+        } else {
+            ("takeover", Pending::Takeover, "⇠ 正在读取并总结该会话…")
+        };
+        let mut extra = vec![("session", Value::String(session.to_string()))];
+        if !note.is_empty() {
+            extra.push(("note", Value::String(note.to_string())));
+        }
+        let id = serve.command(cmd, extra);
+        self.pending.push((id, pending));
+        self.push(msg, Tone::Muted);
     }
 
     /// Terminal row → global row index (the renderer's own row list).
@@ -2296,15 +2329,22 @@ impl App {
                 let id = serve.command("fork", extra);
                 self.pending.push((id, Pending::Fork));
             }
-            "/handoff" => {
-                let note = rest.trim().to_string();
-                let mut extra = vec![];
-                if !note.is_empty() {
-                    extra.push(("note", Value::String(note)));
+            "/handoff" | "/takeover" => {
+                let purpose = if head == "/handoff" {
+                    PickerKind::HandoffTarget
+                } else {
+                    PickerKind::TakeoverSource
+                };
+                let rest = rest.trim();
+                if rest.is_empty() {
+                    // no id: list sessions, the picker sends the command
+                    let id = serve.command("sessions", vec![]);
+                    self.pending.push((id, Pending::Sessions));
+                    self.session_pick = Some(purpose);
+                } else {
+                    let (session, note) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+                    self.send_transfer(purpose, session, note.trim(), serve);
                 }
-                let id = serve.command("handoff", extra);
-                self.pending.push((id, Pending::Handoff));
-                self.push("⇢ 正在生成交接摘要…", Tone::Muted);
             }
             "/branch" => {
                 let id = serve.command("branch", vec![]);
@@ -3659,6 +3699,9 @@ impl App {
                     }
                     self.run_slash(&format!("/model {}", item.id), serve);
                 }
+                PickerKind::HandoffTarget | PickerKind::TakeoverSource => {
+                    self.send_transfer(kind, &item.id, "", serve);
+                }
                 PickerKind::Session => {
                     self.push(format!("↻ resuming session {} …", item.id), Tone::Muted);
                     self.switch_session(Some(item.id));
@@ -4612,7 +4655,18 @@ impl App {
                             if items.is_empty() {
                                 self.push("no sessions yet", Tone::Muted);
                             } else {
-                                self.picker = Some(Picker::new(PickerKind::Session, items));
+                                let kind = self.session_pick.take().unwrap_or(PickerKind::Session);
+                                // the current session is never a handoff/takeover partner
+                                let items: Vec<PickItem> = if kind == PickerKind::Session {
+                                    items
+                                } else {
+                                    items.into_iter().filter(|i| !i.current).collect()
+                                };
+                                if items.is_empty() {
+                                    self.push("no other sessions", Tone::Muted);
+                                } else {
+                                    self.picker = Some(Picker::new(kind, items));
+                                }
                             }
                         }
                         (Pending::Model, true) => {
@@ -4801,10 +4855,17 @@ impl App {
                             }
                         }
                         (Pending::Handoff, true) => {
-                            if let Some(id) = d["sessionId"].as_str() {
-                                self.push(format!("⇢ handoff → {id} …"), Tone::Success);
-                                self.switch_session(Some(id.to_string()));
-                            }
+                            let target: String = d["target"].as_str().unwrap_or("?").chars().take(8).collect();
+                            self.push(
+                                format!("⇢ 交接摘要已发给会话 {target} · 它下次运行时并入上下文"),
+                                Tone::Success,
+                            );
+                        }
+                        (Pending::Takeover, true) => {
+                            let from: String = d["from"].as_str().unwrap_or("?").chars().take(8).collect();
+                            self.push(format!("⇠ 已接管会话 {from} · 摘要："), Tone::Success);
+                            self.stream = d["brief"].as_str().unwrap_or("").to_string();
+                            self.commit_stream();
                         }
                         (Pending::Branch, true) => {
                             self.push(
@@ -5489,9 +5550,9 @@ impl App {
                             self.nvim_preference = d["nvimViewer"].as_str().unwrap_or("ask").into();
                             self.push("Neovim 只读偏好已保存", Tone::Muted);
                         }
-                        (Pending::Handoff, false) => {
+                        (Pending::Handoff, false) | (Pending::Takeover, false) => {
                             self.push(
-                                format!("handoff error: {}", v["error"].as_str().unwrap_or("?")),
+                                format!("{}", v["error"].as_str().unwrap_or("?")),
                                 Tone::Error,
                             );
                         }
@@ -5568,9 +5629,13 @@ impl App {
                     self.commit_stream();
                 }
                 Some("handoff") => {
-                    let from = it["from"].as_str().unwrap_or("?");
-                    let short: String = from.chars().take(8).collect();
-                    self.push(format!("⇢ 交接自会话 {short} · 摘要："), Tone::Muted);
+                    let short: String = it["from"].as_str().unwrap_or("?").chars().take(8).collect();
+                    let head = if it["via"] == "takeover" {
+                        format!("⇠ 已接管会话 {short} · 摘要：")
+                    } else {
+                        format!("⇠ 收到会话 {short} 的交接摘要：")
+                    };
+                    self.push(head, Tone::Muted);
                     self.stream = text.to_string();
                     self.commit_stream();
                 }
@@ -6209,6 +6274,8 @@ impl App {
             let title = match p.kind {
                 PickerKind::Model => "选择模型",
                 PickerKind::Session => "选择会话",
+                PickerKind::HandoffTarget => "交接给哪个会话 · 当前会话的摘要会并入它",
+                PickerKind::TakeoverSource => "接管哪个会话 · 它的摘要会并入当前会话",
                 PickerKind::Timeline => "时间轴 · 选中即回滚到该回合之前",
                 PickerKind::Find => "搜索命中 · 本会话=回滚到该处 · 他会话=切换过去",
                 PickerKind::Preset => "提示模板 · 选中填入输入框（不发送）",
@@ -7696,61 +7763,86 @@ mod tests {
     }
 
     #[test]
-    fn handoff_sends_note_and_respawns_into_the_new_session() {
+    fn handoff_with_id_sends_session_and_note_and_does_not_switch() {
         let mut app = App::new();
         let mut serve = Serve::mock();
-        app.run_slash("/handoff next: add tests", &mut serve);
+        app.run_slash("/handoff abc123 next: add tests", &mut serve);
         let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
         assert_eq!(sent["cmd"], "handoff");
+        assert_eq!(sent["session"], "abc123");
         assert_eq!(sent["note"], "next: add tests");
         let id = sent["id"].as_u64().unwrap();
         app.frame(
-            json!({
-                "type": "result", "id": id, "ok": true,
-                "data": {"sessionId": "handoff-456", "from": "old-1", "brief": "## Goal\\nx"}
-            }),
-            &mut serve,
-        );
-        assert_eq!(app.respawn, Some(Some("handoff-456".into())));
-    }
-
-    #[test]
-    fn handoff_error_stays_in_the_current_session() {
-        let mut app = App::new();
-        let mut serve = Serve::mock();
-        app.run_slash("/handoff", &mut serve);
-        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
-        assert!(sent.get("note").is_none());
-        let id = sent["id"].as_u64().unwrap();
-        app.frame(
-            json!({"type": "result", "id": id, "ok": false, "error": "handoff: nothing to hand over yet"}),
+            json!({"type": "result", "id": id, "ok": true, "data": {"target": "abc12345-x", "brief": "b"}}),
             &mut serve,
         );
         assert_eq!(app.respawn, None);
-        assert!(
-            app.lines
-                .iter()
-                .any(|l| l.text.contains("nothing to hand over"))
-        );
+        assert!(app.lines.iter().any(|l| l.text.contains("abc12345")));
     }
 
     #[test]
-    fn history_renders_a_handoff_brief_before_turns() {
+    fn bare_takeover_opens_a_picker_without_the_current_session_and_sends_on_pick() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.run_slash("/takeover", &mut serve);
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        assert_eq!(sent["cmd"], "sessions");
+        let id = sent["id"].as_u64().unwrap();
+        app.frame(
+            json!({"type": "result", "id": id, "ok": true, "data": {"sessions": [
+                {"id": "me-1", "createdAt": "2026-11-20T10:00", "messages": 4, "cwd": "/w", "name": "", "current": true},
+                {"id": "other-2", "createdAt": "2026-11-20T09:00", "messages": 9, "cwd": "/w", "name": "", "current": false}
+            ]}}),
+            &mut serve,
+        );
+        let picker = app.picker.as_ref().expect("picker");
+        assert_eq!(picker.kind, PickerKind::TakeoverSource);
+        assert_eq!(picker.items.len(), 1);
+        app.accept_picker(&mut serve);
+        let sent: Value = serde_json::from_str(serve.sent.last().unwrap()).unwrap();
+        assert_eq!(sent["cmd"], "takeover");
+        assert_eq!(sent["session"], "other-2");
+        let id = sent["id"].as_u64().unwrap();
+        app.frame(
+            json!({"type": "result", "id": id, "ok": true, "data": {"from": "other-2", "brief": "## Goal\nTAKEN"}}),
+            &mut serve,
+        );
+        assert_eq!(app.respawn, None);
+        assert!(app.lines.iter().any(|l| l.text.contains("TAKEN")));
+    }
+
+    #[test]
+    fn plain_resume_picker_is_unaffected_by_a_finished_transfer_pick() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.run_slash("/resume", &mut serve);
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        let id = sent["id"].as_u64().unwrap();
+        app.frame(
+            json!({"type": "result", "id": id, "ok": true, "data": {"sessions": [
+                {"id": "me-1", "createdAt": "x", "messages": 1, "cwd": "/w", "name": "", "current": true}
+            ]}}),
+            &mut serve,
+        );
+        assert_eq!(app.picker.as_ref().unwrap().kind, PickerKind::Session);
+    }
+
+    #[test]
+    fn history_renders_handoff_and_takeover_briefs_in_place() {
         let mut app = App::new();
         app.load_history(&json!({
             "items": [
-                {"kind": "handoff", "from": "abcdef1234", "text": "## Goal\nship it"},
-                {"kind": "user", "text": "continue"}
+                {"kind": "user", "text": "first"},
+                {"kind": "handoff", "via": "handoff", "from": "abcdef1234", "text": "## Goal\nship it"},
+                {"kind": "handoff", "via": "takeover", "from": "fedcba9876", "text": "taken work"}
             ],
-            "total": 2
+            "total": 3
         }));
         let texts: Vec<&str> = app.lines.iter().map(|l| l.text.as_str()).collect();
-        let head = texts
-            .iter()
-            .position(|t| t.contains("交接自会话 abcdef12"))
-            .unwrap();
-        let goal = texts.iter().position(|t| t.contains("ship it")).unwrap();
-        assert!(head < goal);
+        let first = texts.iter().position(|t| t.contains("first")).unwrap();
+        let recv = texts.iter().position(|t| t.contains("收到会话 abcdef12")).unwrap();
+        let took = texts.iter().position(|t| t.contains("已接管会话 fedcba98")).unwrap();
+        assert!(first < recv && recv < took);
     }
 
     #[test]

@@ -79,7 +79,7 @@ TUI commands: `/model`, `/agents`, `/resume`, `/new`, `/rename`, `/mode`, `/plan
 `/memory`, `/remember`, `/cost`, `/usage`, `/stats`, `/insights`, `/context`, `/queue`,
 `/timestamps`, `/statusline`, `/preset`, `/permissions`, `/import`, `/cd`, `/pwd`, `/add_dir`,
 `/config`, `/keymap`, `/init`, `/doctor`, `/debug-zip`, `/status`, `/clear`, `/rewind`, `/undo`,
-`/redo`, `/fork`, `/handoff`, `/branch`, `/tree`, `/find`, `/export`, `/transcript`, `/copy`, `/recap`,
+`/redo`, `/fork`, `/handoff`, `/takeover`, `/branch`, `/tree`, `/find`, `/export`, `/transcript`, `/copy`, `/recap`,
 `/help`, `/exit`. `/model <id>` also saves the choice as the default for new sessions.
 
 ## Worktrees, background, subagents, MCP, plugins
@@ -199,10 +199,14 @@ state is snapshotted too. Snapshots live in the session log; the JSONL log is th
 - `/fork [name]` copies the session up to the current (or picked) turn into a new session —
   try another direction; the original is untouched. `/branch` is the in-place variant: keep the
   named turn, drop the rest, original future stays recoverable. `/tree` shows the fork tree.
-- `/handoff [note]` hands the work to a fresh session: a tool-free call writes a brief (goal, done,
-  decisions, files touched, current state, next steps, open questions; `note` steers it), a new
-  session starts with only that brief as context, and the TUI switches to it. The brief is shown at
-  the top of the new session; the old session is untouched and still resumable.
+- `/handoff [session] [note]` sends the current session's work to an existing session: a
+  tool-free call writes a brief (goal, done, decisions, files touched, current state, next steps,
+  open questions; `note` steers it) and queues it under `~/.tango/handoffs/<target>/`. You stay
+  where you are. The target merges the brief into its context when it is next opened, or before
+  its next prompt if it is already open in another window; its own history is kept.
+- `/takeover [session] [note]` is the reverse: it briefs an existing session and merges that brief
+  into the current one, leaving the source untouched. Both take an id or prefix; bare commands open
+  a session picker. Briefs show in the transcript where they were merged.
 - `/transcript` opens the raw transcript (including `⟲` abandoned futures); `/copy [N]` copies the
   last (or Nth-last) assistant reply; `/recap` streams a one-line summary without touching the session.
 - Sessions from before checkpoints degrade gracefully: rewind restores the conversation only and
@@ -263,7 +267,7 @@ Commands: `prompt`, `btw` (ephemeral, tool-free side question), `interrupt`, `pe
 `set_model` (also saved as the default), `set_mode`, `set_nvim_viewer` (persist `ask`/`readonly`),
 `set_theme`, `set_mouse`, `diff` (read-only working-tree/staged patch), `timeline` (turn list with
 snapshot flags), `rewind`/`undo`/`redo` (time travel; refused while a turn runs), `fork`/`branch`/
-`tree` (session forking and ancestry), `handoff` (`note?` → new `sessionId` + `brief`), `find` (search all sessions incl. abandoned futures),
+`tree` (session forking and ancestry), `handoff` / `takeover` (`session`, `note?` → `brief`), `find` (search all sessions incl. abandoned futures),
 `export` (md/html transcript file), `transcript` (raw text incl. orphans), `rename`, `recap`
 (tool-free one-line summary via `btw_stream`), `sessions`, `history`
 (flattened transcript with paired tool calls/results, latest 300 items by default), `save_skill`,

@@ -24,10 +24,11 @@ import { loadImages } from './core/images.js';
 import { listDrafts, promoteDraft, saveDraft } from './core/skills.js';
 import { join, resolve } from 'node:path';
 import { SessionStore } from './core/session.js';
+import { drainHandoffs, queueHandoff } from './core/handoff.js';
 import { costUsd, displayPlatform, groupModels } from './core/models/registry.js';
 import type { AskFn, PermissionMode } from './core/permissions.js';
 import type { ToolResult } from './core/types.js';
-import { buildTools, loadPluginHooks, openAgent, VERSION, type HostArgs, type PermState } from './host.js';
+import { buildTools, loadPluginHooks, openAgent, resolveSessionId, VERSION, type HostArgs, type PermState } from './host.js';
 import { diffTool } from './core/tools/diff.js';
 
 const nodeRequire = nodeCreateRequire(import.meta.url);
@@ -225,6 +226,13 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
     for (const resolve of pending.values()) resolve(false);
     pending.clear();
   };
+
+  // /handoff briefs other sessions queued for this one; merged by the owner only
+  const mergeInbox = async () => {
+    for (const h of await drainHandoffs(store).catch(() => []))
+      out({ type: 'notice', text: `⇠ 收到来自会话 ${h.from.slice(0, 8)} 的交接摘要，已并入上下文` });
+  };
+  await mergeInbox();
 
   out({
     type: 'hello',
@@ -514,6 +522,7 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
         let text = String(cmd.text ?? '');
         const imagePaths = Array.isArray(cmd.images) ? cmd.images.map(String) : [];
         if (!text.trim() && !imagePaths.length) return reply(cmd, false, undefined, 'prompt: empty text');
+        await mergeInbox(); // a handoff that arrived while this session was open
         // plan instruction rides the system prompt, not the stored user text
         agent.systemSuffix = perm.plan?.on
           ? '\n# Plan mode\n当前处于 plan 模式：只做研究和计划，不要尝试写入或执行修改；产出清晰执行计划，等用户批准后 /plan off 再执行。'
@@ -1265,6 +1274,7 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
         // the visible conversation (compaction ignored, rewind respected) flattened for
         // display: a resumed client redraws its transcript from this; tool calls are
         // paired with their results
+        if (!promptInFlight) await mergeInbox(); // never splice a brief into a running tool loop
         const results = new Map<string, { isError: boolean; output: string }>();
         const all = store.allVisibleMessages();
         for (const m of all)
@@ -1275,10 +1285,13 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
                 output: resultText({ content: b.content, isError: b.isError }).slice(0, 4_000)
               });
         const items: unknown[] = [];
-        // a /handoff session opens with its brief, shown before any turns
-        const handoff = store.handoffBrief();
-        if (handoff) items.push({ kind: 'handoff', from: handoff.from, text: handoff.summary });
-        for (const m of all)
+        for (const e of store.visibleEntries()) {
+          if (e.kind === 'handoff') {
+            items.push({ kind: 'handoff', from: e.from, via: e.via, text: e.summary });
+            continue;
+          }
+          if (e.kind !== 'message') continue;
+          const m = e.message;
           for (const b of m.content) {
             if (b.type === 'text' && b.text.trim()) items.push({ kind: m.role, text: b.text });
             else if (b.type === 'image')
@@ -1287,6 +1300,7 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
             else if (b.type === 'tool_call')
               items.push({ kind: 'tool', name: b.name, input: b.input, ...(results.get(b.id) ?? { isError: false, output: '' }) });
           }
+        }
         const limit = Math.max(1, Number(cmd.limit) || 300);
         reply(cmd, true, { items: items.slice(-limit), total: items.length });
         return;
@@ -1548,15 +1562,31 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
         reply(cmd, true, { sessionId: forkId, name: cmd.name ?? null });
         return;
       }
-      case 'handoff': {
-        // a fresh session that starts from a brief of this one; the client respawns into it
+      case 'handoff':
+      case 'takeover': {
+        // handoff: brief of THIS session → queued for an existing target (merged by its owner).
+        // takeover: brief of an existing source → merged into this session. No switching.
         if (promptInFlight) return reply(cmd, false, undefined, 'a turn is running — interrupt it first');
-        runningText = '/handoff';
+        const what = cmd.cmd as 'handoff' | 'takeover';
+        const ref = String(cmd.session ?? '').trim();
+        if (!ref) return reply(cmd, false, undefined, `${what}: which session? (id or prefix)`);
+        runningText = `/${what}`;
         try {
-          const brief = await agent.handoffBrief(cmd.note ? String(cmd.note) : undefined);
-          if (!brief) return reply(cmd, false, undefined, 'handoff: nothing to hand over yet');
-          const next = await store.handoffTo(sessionsDir(), cwd, brief, cmd.name ? String(cmd.name) : undefined);
-          reply(cmd, true, { sessionId: next.id, from: store.id, brief });
+          const otherId = await resolveSessionId(ref);
+          if (otherId === store.id) return reply(cmd, false, undefined, `${what}: that is the current session`);
+          const note = cmd.note ? String(cmd.note) : undefined;
+          if (what === 'handoff') {
+            const brief = await agent.handoffBrief(store.messages(), note);
+            if (!brief) return reply(cmd, false, undefined, 'handoff: nothing to hand over yet');
+            await queueHandoff(otherId, { from: store.id, summary: brief });
+            reply(cmd, true, { target: otherId, brief });
+          } else {
+            const source = await SessionStore.open(sessionsDir(), otherId);
+            const brief = await agent.handoffBrief(source.messages(), note);
+            if (!brief) return reply(cmd, false, undefined, 'takeover: that session has nothing to take over');
+            await store.addHandoff(otherId, brief, 'takeover');
+            reply(cmd, true, { from: otherId, brief });
+          }
         } catch (e: any) {
           reply(cmd, false, undefined, String(e?.message ?? e));
         } finally {
