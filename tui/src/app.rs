@@ -4624,10 +4624,19 @@ impl App {
                                             // the first user prompt is the identity;
                                             // uuid prefixes never told anyone anything
                                             let topic = s["topic"].as_str().unwrap_or("");
-                                            let date = s["createdAt"]
-                                                .as_str()
-                                                .unwrap_or("")
-                                                .replace('T', " ");
+                                            let date = {
+                                                // relative time when serve sends it ("3 小时前"),
+                                                // the raw stamp as fallback
+                                                let ago = s["ago"].as_str().unwrap_or("");
+                                                if ago.is_empty() {
+                                                    s["createdAt"]
+                                                        .as_str()
+                                                        .unwrap_or("")
+                                                        .replace('T', " ")
+                                                } else {
+                                                    ago.to_string()
+                                                }
+                                            };
                                             let label = if topic.is_empty() {
                                                 format!(
                                                     "{} · {} msgs · {}",
@@ -7838,7 +7847,7 @@ mod tests {
         let id = sent["id"].as_u64().unwrap();
         app.frame(
             json!({"type": "result", "id": id, "ok": true, "data": {"sessions": [
-                {"id": "abc12345-eeee", "createdAt": "2026-11-20T09:00", "messages": 9,
+                {"id": "abc12345-eeee", "createdAt": "2026-11-20T09:00", "ago": "3 小时前", "messages": 9,
                  "cwd": "/Users/lucas/tango", "name": "", "topic": "修复鼠标选区漂移的问题", "current": false},
                 {"id": "fff67890-dddd", "createdAt": "2026-11-19T09:00", "messages": 0,
                  "cwd": "/tmp", "name": "", "topic": "", "current": false}
@@ -7863,16 +7872,22 @@ mod tests {
             first.note
         );
         assert!(
-            first.note.contains("11-20"),
-            "note carries date: {}",
+            first.note.contains("3 小时前"),
+            "note carries relative time: {}",
             first.note
         );
-        // a session with no first prompt falls back to the id, not an empty label
+        // a session with no first prompt falls back to the id, not an empty label;
+        // without an ago field the note keeps the raw date
         let second = &picker.items[1];
         assert!(
             second.label.starts_with("fff67890"),
             "fallback keeps the id prefix: {}",
             second.label
+        );
+        assert!(
+            second.note.contains("11-19"),
+            "no ago field falls back to the raw date: {}",
+            second.note
         );
     }
 

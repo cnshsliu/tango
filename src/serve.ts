@@ -23,7 +23,7 @@ import { hasKey, keyProblem, loadConfig, loadModels, pickModel, saveConfig, sess
 import { loadImages } from './core/images.js';
 import { listDrafts, promoteDraft, saveDraft } from './core/skills.js';
 import { join, resolve } from 'node:path';
-import { SessionStore } from './core/session.js';
+import { SessionStore, relativeTime } from './core/session.js';
 import { drainHandoffs, queueHandoff } from './core/handoff.js';
 import { costUsd, displayPlatform, groupModels } from './core/models/registry.js';
 import type { AskFn, PermissionMode } from './core/permissions.js';
@@ -1262,6 +1262,7 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
           sessions: list.slice(0, 40).map((s) => ({
             id: s.id,
             createdAt: s.createdAt.slice(0, 16),
+            ago: relativeTime(s.createdAt),
             messages: s.messages,
             cwd: s.cwd,
             name: s.name ?? '',

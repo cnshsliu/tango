@@ -18,6 +18,19 @@ export interface SessionSummary extends SessionMeta {
   topic: string;
 }
 
+/** "3 小时前"-style relative time for session lists (Claude Code /resume look). */
+export function relativeTime(iso: string, now: Date = new Date()): string {
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return '';
+  const s = Math.max(0, (now.getTime() - t) / 1000);
+  if (s < 60) return '刚刚';
+  if (s < 3600) return `${Math.floor(s / 60)} 分钟前`;
+  if (s < 86400) return `${Math.floor(s / 3600)} 小时前`;
+  if (s < 172800) return '昨天';
+  if (s < 604800) return `${Math.floor(s / 86400)} 天前`;
+  return iso.slice(5, 10).replace('-', '/');
+}
+
 /**
  * Append-only JSONL session. One line per entry. Simple, greppable, hand-fixable.
  * Compaction appends a summary entry; messages before it are dropped from model context.

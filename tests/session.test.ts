@@ -191,6 +191,18 @@ test('forkTo copies a prefix into a new session with forkOf lineage', async () =
   }
 });
 
+test('relativeTime buckets ages the way the picker shows them', async () => {
+  const { relativeTime } = await import('../src/core/session.js');
+  const now = new Date('2026-11-20T12:00:00Z');
+  assert.equal(relativeTime('2026-11-20T11:59:30Z', now), '刚刚');
+  assert.equal(relativeTime('2026-11-20T11:30:00Z', now), '30 分钟前');
+  assert.equal(relativeTime('2026-11-20T08:00:00Z', now), '4 小时前');
+  assert.equal(relativeTime('2026-11-19T08:00:00Z', now), '昨天'); // 28h
+  assert.equal(relativeTime('2026-11-16T00:00:00Z', now), '4 天前');
+  assert.equal(relativeTime('2026-10-01T00:00:00Z', now), '10/01');
+  assert.equal(relativeTime('garbage', now), '');
+});
+
 test('list() extracts the first user prompt as the topic', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'tango-test-'));
   try {
