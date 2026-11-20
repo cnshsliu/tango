@@ -171,7 +171,10 @@ To stop being asked about something specific without going fully `auto`, add an 
 
 Rules are saved in `~/.tango/config.json`. They only turn "ask" into "allow" and never
 loosen `readonly` or `/plan`. A bash rule covers only the part of a command line it
-matches, so `git status; rm -rf build` still asks.
+matches, so `git status; rm -rf build` still asks. `/import claude-code|grok|codex` copies
+another agent's allow list into these rules and lists any entries it couldn't convert.
+It reads `.claude/settings.json` in the project, `~/.grok/settings.json`, or
+`~/.codex/config.toml` (pass a different path after `codex`).
 
 `/add_dir <dir>` makes a directory outside the project writable without asking.
 
@@ -277,6 +280,7 @@ while a turn is running unless noted. `/help` prints a short list inside the TUI
 | `/mcp` | MCP servers and the tools they provide |
 | `/plugins` | Installed local plugins |
 | `/permissions [add\|rm <rule>]` | List, add or remove allow rules |
+| `/import claude-code\|grok\|codex [path]` | Copy another agent's allow list into tango's rules |
 | `/config` | View the current config |
 | `/doctor` | Check the environment: git, API keys, directories, versions |
 | `/debug-zip` (`/feedback`) | Write a diagnostics zip (webhook redacted) to the working directory |
