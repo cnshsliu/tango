@@ -11,6 +11,17 @@ import type { ToolCallBlock } from '../src/core/types.js';
 const call = (name: string, input: object): ToolCallBlock => ({ type: 'tool_call', id: 'c', name, input });
 const cwd = '/work/proj';
 
+test('heredoc payloads are data, not commands — risk rules skip them', async () => {
+  const { stripHeredocs } = await import('../src/core/permissions.js');
+  const heredoc = "cat >> docs/handbook.md <<'EOF'\nsome text mentioning rm -rf / and sudo stuff\nEOF";
+  assert.equal(stripHeredocs(heredoc), "cat >> docs/handbook.md <<EOF");
+  // an append whose body merely mentions risky words passes without asking…
+  assert.equal(decide('ask', call('bash', { command: heredoc }), cwd).action, 'allow');
+  // …while the same words as actual commands still ask
+  assert.equal(decide('ask', call('bash', { command: 'rm -rf /tmp/x' }), cwd).action, 'ask');
+  assert.equal(decide('ask', call('bash', { command: 'echo x; sudo id' }), cwd).reason, 'runs as root');
+});
+
 test('reads always pass, even in readonly', () => {
   for (const name of ['read', 'grep', 'find', 'ls']) {
     assert.equal(decide('readonly', call(name, { path: '/etc/passwd' }), cwd).action, 'allow');

@@ -1766,6 +1766,36 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
       }
       return;
     }
+    if (cmd.cmd === 'editlast') {
+      // one-key "edit my last prompt": interrupt the running turn (wait for the
+      // abort to settle so the rewind lands clean), rewind to before it, and
+      // return the original text verbatim for the client to preload
+      return (async () => {
+        if (promptInFlight) {
+          denyPending();
+          interruptGen++;
+          agent.abort();
+          for (let i = 0; i < 100 && promptInFlight; i++) {
+            await new Promise((r) => setTimeout(r, 100));
+          }
+        }
+        const list = turns();
+        const last = lastVisibleTurn(list);
+        if (last < 0) return reply(cmd, false, undefined, 'editlast: no turn to edit');
+        const turn = list[last];
+        const entry = store.indexedEntries().find((e) => e.index === turn.entryIndex)?.entry;
+        const prompt =
+          entry && entry.kind === 'message'
+            ? (entry as any).message.content
+                .filter((b: any) => b.type === 'text')
+                .map((b: any) => b.text)
+                .join('\n')
+            : '';
+        const r = await rewindToTurn(last);
+        if (!r.ok) return reply(cmd, false, undefined, r.error);
+        reply(cmd, true, { ...r.data, prompt });
+      })();
+    }
     if (cmd.cmd === 'interrupt') {
       // drop the queued prompts (they never run) and abort the running turn; the
       // running turn's own settle path clears runningText/promptInFlight, so time

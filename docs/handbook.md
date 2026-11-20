@@ -190,6 +190,7 @@ while a turn is running unless noted. `/help` prints a short list inside the TUI
 | `/new` | Start a new session with the same model and permission mode |
 | `/resume` (`/sessions`) | Open the session picker and switch to the one you pick |
 | `/rename [name]` (`/name`) | Show or set the session name. In the picker, Ctrl+R renames any session |
+| `/editlast` (Alt+E) | Interrupt the running turn, roll the conversation **and code** back to before your last prompt, and load that prompt verbatim into the input box for editing. Two presses: the first arms (rollback touches code), the second executes; Esc cancels |
 | `/find [text]` | Search all sessions, including abandoned turns, and jump to a hit |
 | `/handoff [session] [note]` | Send a brief of this session's work to another session. Bare: pick one |
 | `/handoff list` | Show queued briefs with their queue ids. Briefs not merged within 7 days expire |

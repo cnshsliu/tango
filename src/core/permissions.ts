@@ -35,6 +35,12 @@ const RISKY_BASH: [RegExp, string][] = [
   [/of=\/dev\/(?!null\b)\S*/, 'writes to a raw device']
 ];
 
+/** Drop heredoc payloads from a command: the body is data written to a file,
+ * never something the shell executes — risk rules must not scan it. */
+export function stripHeredocs(cmd: string): string {
+  return cmd.replace(/<<-?['"]?(\w+)['"]?\n[\s\S]*?\n?\1\s*$/gm, "<<$1");
+}
+
 export function inside(cwd: string, path: string): boolean {
   const rel = relative(resolve(cwd), resolve(cwd, path));
   return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
@@ -103,7 +109,9 @@ export function decide(mode: PermissionMode, call: ToolCallBlock, cwd: string, r
     if (call.name === 'bash') {
       const segs = bashSegments(String((call.input as Record<string, unknown>)?.command ?? ''));
       const covered = (seg: string) => rules.some((r) => r.kind === 'bash' && (seg === r.value || seg.startsWith(r.value + ' ')));
-      const riskyTail = segs.find((seg, i) => i > 0 && !covered(seg) && RISKY_BASH.some(([re]) => re.test(seg)));
+      const riskyTail = segs.find(
+        (seg, i) => i > 0 && !covered(seg) && RISKY_BASH.some(([re]) => re.test(stripHeredocs(seg)))
+      );
       if (riskyTail) {
         const why = RISKY_BASH.find(([re]) => re.test(riskyTail))![1];
         return { action: 'ask', reason: `rule covers the prefix, but a later command ${why}: ${riskyTail.slice(0, 60)}` };
@@ -133,7 +141,9 @@ function decideBase(mode: PermissionMode, call: ToolCallBlock, cwd: string, extr
   if (call.name === 'bash') {
     if (mode === 'readonly') return { action: 'deny', reason: 'read-only mode' };
     const cmd = String(input.command ?? '');
-    for (const [re, why] of RISKY_BASH) if (re.test(cmd)) return { action: 'ask', reason: why };
+    // risk rules read the executable part only — heredoc bodies are file data
+    const scanned = stripHeredocs(cmd);
+    for (const [re, why] of RISKY_BASH) if (re.test(scanned)) return { action: 'ask', reason: why };
     return { action: 'allow' };
   }
 

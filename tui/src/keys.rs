@@ -4,6 +4,7 @@ use serde_json::Value;
 #[derive(Clone, Copy, PartialEq)]
 pub enum Action {
     ExpandTools,
+    EditLast,
     Newline,
     Interrupt,
     ClearInput,
@@ -17,6 +18,7 @@ impl Action {
     pub fn name(self) -> &'static str {
         match self {
             Action::ExpandTools => "expandTools",
+            Action::EditLast => "editLast",
             Action::Newline => "newline",
             Action::Interrupt => "interrupt",
             Action::ClearInput => "clearInput",
@@ -98,7 +100,7 @@ impl Binding {
 }
 
 pub struct Keymap {
-    bindings: [(Action, Binding); 8],
+    bindings: [(Action, Binding); 9],
 }
 
 impl Keymap {
@@ -119,9 +121,14 @@ impl Keymap {
             code,
             modifiers: KeyModifiers::NONE,
         };
+        let alt = |c| Binding {
+            code: KeyCode::Char(c),
+            modifiers: KeyModifiers::ALT,
+        };
         let mut keys = Self {
             bindings: [
                 (Action::ExpandTools, ctrl('o')),
+                (Action::EditLast, alt('e')),
                 (
                     Action::Newline,
                     Binding {
@@ -139,6 +146,7 @@ impl Keymap {
         };
         let names = [
             "expandTools",
+            "editLast",
             "newline",
             "interrupt",
             "clearInput",

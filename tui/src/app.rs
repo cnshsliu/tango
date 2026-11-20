@@ -85,6 +85,7 @@ struct Permission {
 #[derive(Clone, Copy, PartialEq)]
 enum Pending {
     SessionPreview,
+    EditLast,
     Model,
     Models,
     Sessions,
@@ -398,6 +399,10 @@ const SLASH: &[(&str, &str)] = &[
         "工具详情密度 0紧凑/1默认/2完整 · /density [0|1|2]",
     ),
     ("/diff", "只读查看工作区 diff · /diff --staged [paths]"),
+    (
+        "/editlast",
+        "打断并回滚上一句，原文载入输入框改后重发（alt+e）",
+    ),
     (
         "/editor",
         "用 $VISUAL/$EDITOR 编辑当前草稿（nvim 专用 /nvim）",
@@ -1029,6 +1034,9 @@ pub struct App {
     /// the preview's wrap width, captured each draw so key/wheel scrolling
     /// computes the same row count the dialog rendered
     perm_wrap_w: usize,
+    /// alt+e armed: the destructive confirm (interrupt + code rollback) waits
+    /// for a second press
+    editlast_armed: bool,
     /// plan mode badge (/plan)
     plan_mode: bool,
     /// active /goal text (badge)
@@ -1128,6 +1136,7 @@ impl App {
             user_bubble: true,
             perm_scroll: 0,
             perm_wrap_w: 76,
+            editlast_armed: false,
             ime_restore: None,
             queue_buttons: Vec::new(),
             plan_mode: false,
@@ -3002,6 +3011,22 @@ impl App {
                 let id = serve.command("transcript", vec![]);
                 self.pending.push((id, Pending::Transcript));
             }
+            "/editlast" => {
+                // same two-press rule as alt+e: the rewind is code-destructive
+                if self.editlast_armed {
+                    self.editlast_armed = false;
+                    let id = serve.command("editlast", vec![]);
+                    self.pending.push((id, Pending::EditLast));
+                    self.push("⟲ 打断并回滚上一句中 …", Tone::Muted);
+                } else {
+                    self.editlast_armed = true;
+                    self.push(
+                        "⚠ 将打断当前回合并回滚对话与代码到上一句之前 · 再按 alt+e 或 /editlast 执行 · esc 取消"
+                            .to_string(),
+                        Tone::Warning,
+                    );
+                }
+            }
             "/rename" | "/name" => {
                 if rest.is_empty() {
                     let shown = if self.session_name.is_empty() {
@@ -4506,6 +4531,24 @@ impl App {
             return;
         }
         // Ctrl+C always remains a safe interrupt even when the action is remapped.
+        // alt+e: edit the last prompt — interrupt + rewind + preload, two presses
+        // because the rewind also rolls back code
+        if self.keys.matches(Action::EditLast, k) {
+            if self.editlast_armed {
+                self.editlast_armed = false;
+                let id = serve.command("editlast", vec![]);
+                self.pending.push((id, Pending::EditLast));
+                self.push("⟲ 打断并回滚上一句中 …", Tone::Muted);
+            } else {
+                self.editlast_armed = true;
+                self.push(
+                    "⚠ editlast：将打断当前回合并把对话与代码回滚到上一句之前，原文载入输入框 · 再按一次执行 · esc 取消"
+                        .to_string(),
+                    Tone::Warning,
+                );
+            }
+            return;
+        }
         if self.busy && (self.keys.matches(Action::Interrupt, k) || k.code == KeyCode::Esc) {
             serve.notify(json!({ "cmd": "interrupt" }));
             self.goal_text = None;
@@ -4582,6 +4625,7 @@ impl App {
                     }
                 }
                 KeyCode::Esc => {
+                    self.editlast_armed = false;
                     // cancel an in-progress rename without closing the picker
                     if let Some(p) = self.picker.as_mut()
                         && p.renaming.take().is_some()
@@ -4668,6 +4712,7 @@ impl App {
             return;
         }
         if self.keys.matches(Action::Interrupt, k) || self.keys.matches(Action::ClearInput, k) {
+            self.editlast_armed = false; // esc backs out of the armed confirm too
             self.clear_input();
             return;
         }
@@ -5112,6 +5157,18 @@ impl App {
                                         .unwrap_or_default();
                                     self.picker = Some(picker);
                                 }
+                            }
+                        }
+                        (Pending::EditLast, true) => {
+                            if let Some(prompt) = d["prompt"].as_str() {
+                                self.input = prompt.chars().collect();
+                                self.cursor = self.input.len();
+                                self.push(
+                                    "✎ 原句已载入输入框，修改后回车重发（该回合已回滚）",
+                                    Tone::Success,
+                                );
+                            } else {
+                                self.push("editlast: 没有可编辑的回合", Tone::Muted);
                             }
                         }
                         (Pending::SessionPreview, true) => {
@@ -8402,9 +8459,15 @@ mod tests {
         let picker = app.picker.as_ref().unwrap();
         assert_eq!(picker.items.len(), 2);
         // newest on top, cursor on it; labels keep the chronological #index
-        assert!(picker.items[0].label.starts_with("#1 ·") && picker.items[0].label.contains("refactor it"));
+        assert!(
+            picker.items[0].label.starts_with("#1 ·")
+                && picker.items[0].label.contains("refactor it")
+        );
         assert!(picker.items[0].note.contains("无代码快照"));
-        assert!(picker.items[1].label.starts_with("#0 ·") && picker.items[1].label.contains("fix the bug"));
+        assert!(
+            picker.items[1].label.starts_with("#0 ·")
+                && picker.items[1].label.contains("fix the bug")
+        );
         assert_eq!(picker.sel, 0);
 
         app.key(
@@ -8415,7 +8478,10 @@ mod tests {
         assert_eq!(serve.sent.len(), 2);
         let rew: Value = serde_json::from_str(&serve.sent[1]).unwrap();
         assert_eq!(rew["cmd"], "rewind");
-        assert_eq!(rew["entryIndex"], 9, "Enter on the default cursor rewinds to the newest node");
+        assert_eq!(
+            rew["entryIndex"], 9,
+            "Enter on the default cursor rewinds to the newest node"
+        );
     }
 
     #[test]
@@ -10132,6 +10198,59 @@ mod tests {
             screen(&mut terminal).contains("第39行"),
             "scrolling reveals the tail"
         );
+    }
+
+    #[test]
+    fn editlast_arms_confirms_and_preloads_the_original_prompt() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        // first press: confirmation notice, nothing sent (code rollback is destructive)
+        app.key(
+            crossterm::event::KeyEvent::new_with_kind(
+                KeyCode::Char('e'),
+                KeyModifiers::ALT,
+                crossterm::event::KeyEventKind::Press,
+            ),
+            &mut serve,
+        );
+        assert!(serve.sent.is_empty(), "first press only arms");
+        assert!(app.editlast_armed);
+        assert!(app.lines.iter().any(|l| l.text.contains("再按一次")));
+        // a different key disarms
+        app.key(
+            crossterm::event::KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            &mut serve,
+        );
+        assert!(!app.editlast_armed, "esc cancels the arming");
+        // second press after re-arming sends the command
+        app.key(
+            crossterm::event::KeyEvent::new_with_kind(
+                KeyCode::Char('e'),
+                KeyModifiers::ALT,
+                crossterm::event::KeyEventKind::Press,
+            ),
+            &mut serve,
+        );
+        app.key(
+            crossterm::event::KeyEvent::new_with_kind(
+                KeyCode::Char('e'),
+                KeyModifiers::ALT,
+                crossterm::event::KeyEventKind::Press,
+            ),
+            &mut serve,
+        );
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        assert_eq!(sent["cmd"], "editlast");
+        let rid = sent["id"].as_u64().unwrap();
+        // the rewound prompt comes back verbatim into the input box
+        app.frame(
+            json!({"type": "result", "id": rid, "ok": true,
+                   "data": {"prompt": "原来的句子，含\n换行", "turnDropped": 1}}),
+            &mut serve,
+        );
+        let typed: String = app.input.iter().collect();
+        assert_eq!(typed, "原来的句子，含\n换行");
+        assert!(!app.editlast_armed);
     }
 
     #[test]
