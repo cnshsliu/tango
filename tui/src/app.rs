@@ -82,6 +82,7 @@ struct Permission {
 
 #[derive(Clone, Copy, PartialEq)]
 enum Pending {
+    SessionPreview,
     Model,
     Models,
     Sessions,
@@ -187,6 +188,17 @@ struct Picker {
     items: Vec<PickItem>,
     sel: usize,
     query: String,
+    /// session pickers only: (id → cwd, branch) for the project/branch filters
+    scopes: Vec<(String, String, String)>,
+    /// the serve cwd and its git branch (empty = no filtering)
+    cwd: String,
+    branch: String,
+    /// Ctrl+A: show sessions from every project, not just this cwd
+    all_projects: bool,
+    /// Ctrl+B: only sessions recorded on this branch
+    branch_only: bool,
+    /// Ctrl+R in progress: the session id being renamed (query holds the name)
+    renaming: Option<String>,
 }
 
 impl Picker {
@@ -197,7 +209,20 @@ impl Picker {
             items,
             sel,
             query: String::new(),
+            scopes: Vec::new(),
+            cwd: String::new(),
+            branch: String::new(),
+            all_projects: false,
+            branch_only: false,
+            renaming: None,
         }
+    }
+
+    fn session_scoped(kind: PickerKind) -> bool {
+        matches!(
+            kind,
+            PickerKind::Session | PickerKind::HandoffTarget | PickerKind::TakeoverSource
+        )
     }
 
     fn filterable(&self) -> bool {
@@ -222,7 +247,36 @@ impl Picker {
                         .into_iter()
                         .any(|text| text.to_lowercase().contains(&query))
             })
+            .filter(|item| {
+                if !Self::session_scoped(self.kind) {
+                    return true;
+                }
+                let Some((_, cwd, branch)) = self.scopes.iter().find(|(id, _, _)| *id == item.id)
+                else {
+                    return true; // unknown scope (mock frames): don't hide
+                };
+                if !self.all_projects && !self.cwd_filter().is_empty() && cwd != &self.cwd_filter()
+                {
+                    return false;
+                }
+                if self.branch_only
+                    && !self.branch_filter().is_empty()
+                    && (branch.is_empty() || branch != &self.branch_filter())
+                {
+                    return false;
+                }
+                true
+            })
             .collect()
+    }
+
+    /// the project filter is the serve cwd; tests inject it directly
+    fn cwd_filter(&self) -> String {
+        self.cwd.clone()
+    }
+
+    fn branch_filter(&self) -> String {
+        self.branch.clone()
     }
 
     fn selected_item(&self) -> Option<PickItem> {
@@ -854,6 +908,8 @@ pub struct App {
     /// full serve session id (the status bar shows the 8-char prefix; the exit
     /// note needs the whole thing for `tango --resume`)
     session_full: String,
+    /// the serve cwd's current git branch (hello frame) — Ctrl+B filters by it
+    serve_branch: String,
     /// plan mode badge (/plan)
     plan_mode: bool,
     /// active /goal text (badge)
@@ -945,6 +1001,7 @@ impl App {
             turn_started: None,
             turn_chars: 0,
             session_full: String::new(),
+            serve_branch: String::new(),
             ime_restore: None,
             queue_buttons: Vec::new(),
             plan_mode: false,
@@ -4203,7 +4260,53 @@ impl App {
         }
         // the picker grabs navigation keys while it is open
         if self.picker.is_some() {
+            let scoped = self
+                .picker
+                .as_ref()
+                .is_some_and(|p| Picker::session_scoped(p.kind));
             match k.code {
+                // ctrl+a/ctrl+b toggle the project/branch filters (session pickers)
+                KeyCode::Char('a') if ctrl && scoped => {
+                    if let Some(p) = self.picker.as_mut() {
+                        p.all_projects = !p.all_projects;
+                        p.sel = 0;
+                    }
+                    return;
+                }
+                KeyCode::Char('b') if ctrl && scoped => {
+                    if let Some(p) = self.picker.as_mut() {
+                        p.branch_only = !p.branch_only;
+                        p.sel = 0;
+                    }
+                    return;
+                }
+                // ctrl+r renames the highlighted session
+                KeyCode::Char('r') if ctrl && scoped => {
+                    if let Some(p) = self.picker.as_mut() {
+                        if let Some(item) = p.selected_item() {
+                            p.renaming = Some(item.id);
+                            p.query.clear();
+                        }
+                    }
+                    return;
+                }
+                // space previews the highlighted session in the read-only viewer
+                KeyCode::Char(' ')
+                    if !ctrl
+                        && scoped
+                        && self.picker.as_ref().is_some_and(|p| p.renaming.is_none()) =>
+                {
+                    if let Some(id) = self
+                        .picker
+                        .as_ref()
+                        .and_then(|p| p.selected_item().map(|i| i.id))
+                    {
+                        let rid =
+                            serve.command("session_preview", vec![("session", Value::String(id))]);
+                        self.pending.push((rid, Pending::SessionPreview));
+                    }
+                    return;
+                }
                 KeyCode::Up => {
                     if let Some(p) = self.picker.as_mut() {
                         p.sel = p.sel.saturating_sub(1);
@@ -4216,6 +4319,13 @@ impl App {
                     }
                 }
                 KeyCode::Esc => {
+                    // cancel an in-progress rename without closing the picker
+                    if let Some(p) = self.picker.as_mut()
+                        && p.renaming.take().is_some()
+                    {
+                        p.query.clear();
+                        return;
+                    }
                     if self.picker.as_ref().map(|p| p.kind) == Some(PickerKind::NvimBackend)
                         && let Some(viewer) = self.pending_viewer.take()
                     {
@@ -4226,7 +4336,30 @@ impl App {
                     }
                     self.picker = None;
                 }
-                KeyCode::Enter | KeyCode::Tab => self.accept_picker(serve),
+                KeyCode::Enter | KeyCode::Tab => {
+                    // commit a rename instead of accepting the pick
+                    let rename = self.picker.as_ref().and_then(|p| p.renaming.clone());
+                    if let Some(session) = rename {
+                        let name = self
+                            .picker
+                            .as_ref()
+                            .map(|p| p.query.trim().to_string())
+                            .unwrap_or_default();
+                        self.picker = None;
+                        if !name.is_empty() {
+                            serve.command(
+                                "session_rename",
+                                vec![
+                                    ("session", Value::String(session)),
+                                    ("name", Value::String(name.clone())),
+                                ],
+                            );
+                            self.push(format!("✓ 会话已重命名：{name}"), Tone::Success);
+                        }
+                        return;
+                    }
+                    self.accept_picker(serve);
+                }
                 _ => {
                     if let Some(p) = self.picker.as_mut() {
                         p.filter_key(k.code, ctrl);
@@ -4443,6 +4576,7 @@ impl App {
                     .take(8)
                     .collect();
                 self.session_full = v["sessionId"].as_str().unwrap_or("").to_string();
+                self.serve_branch = v["branch"].as_str().unwrap_or("").to_string();
                 self.cost = v["totalCostUsd"].as_f64().unwrap_or(0.0);
                 self.context_tokens = v["contextTokens"].as_u64().unwrap_or(0);
                 self.context_window = v["contextWindow"].as_u64().unwrap_or(0);
@@ -4685,8 +4819,48 @@ impl App {
                                 if items.is_empty() {
                                     self.push("no other sessions", Tone::Muted);
                                 } else {
-                                    self.picker = Some(Picker::new(kind, items));
+                                    let mut picker = Picker::new(kind, items);
+                                    picker.cwd = self
+                                        .serve_cwd
+                                        .as_ref()
+                                        .map(|p| p.display().to_string())
+                                        .unwrap_or_default();
+                                    picker.branch = self.serve_branch.clone();
+                                    picker.scopes = d["sessions"]
+                                        .as_array()
+                                        .map(|a| {
+                                            a.iter()
+                                                .filter_map(|s| {
+                                                    Some((
+                                                        s["id"].as_str()?.to_string(),
+                                                        s["cwd"].as_str().unwrap_or("").to_string(),
+                                                        s["branch"]
+                                                            .as_str()
+                                                            .unwrap_or("")
+                                                            .to_string(),
+                                                    ))
+                                                })
+                                                .collect()
+                                        })
+                                        .unwrap_or_default();
+                                    self.picker = Some(picker);
                                 }
+                            }
+                        }
+                        (Pending::SessionPreview, true) => {
+                            if let Some(preview) = d["preview"].as_str() {
+                                let head: String = preview
+                                    .lines()
+                                    .next()
+                                    .unwrap_or("")
+                                    .chars()
+                                    .take(40)
+                                    .collect();
+                                let v = crate::viewer::Viewer::read_only(
+                                    format!("会话预览 · {head}"),
+                                    preview.to_string(),
+                                );
+                                self.request_viewer(v);
                             }
                         }
                         (Pending::Model, true) => {
@@ -6288,9 +6462,19 @@ impl App {
                 }
                 display.push(PickRow::Item(i));
             }
-            let pagination = usize::from(display.len() > 14);
+            let two_line = Picker::session_scoped(p.kind);
+            let per = if two_line { 2usize } else { 1 };
+            let line_count = display
+                .iter()
+                .map(|r| match r {
+                    PickRow::Item(_) => per,
+                    _ => 1,
+                })
+                .sum::<usize>();
+            let pagination = usize::from(line_count > 14);
             let query_rows = usize::from(p.filterable());
-            let h = (display.len().min(14) + pagination + query_rows + 2) as u16;
+            let shown = if two_line { 14 / per } else { 14 };
+            let h = (line_count.min(14) + pagination + query_rows + 2) as u16;
             let w = (area.width.min(72)).max(44).min(area.width);
             let pop = Rect {
                 x: (area.width.saturating_sub(w)) / 2,
@@ -6330,9 +6514,14 @@ impl App {
                 .iter()
                 .position(|r| matches!(r, PickRow::Item(i) if *i == p.sel))
                 .unwrap_or(0);
-            let start = if sel_row < 13 { 0 } else { sel_row - 12 };
+            let keep = shown.saturating_sub(1);
+            let start = if sel_row < keep {
+                0
+            } else {
+                sel_row - (keep - 1)
+            };
             self.picker_area = pop;
-            let win = &display[start..(start + 14).min(display.len())];
+            let win = &display[start..(start + shown).min(display.len())];
             self.picker_rows = win
                 .iter()
                 .map(|r| match r {
@@ -6342,36 +6531,57 @@ impl App {
                 .collect();
             let mut rows: Vec<Line> = win
                 .iter()
-                .map(|slot| match slot {
-                    PickRow::Header(g) => Line::from(Span::styled(
-                        format!(" ── {} ──", g),
-                        self.theme.style(Tone::Muted),
-                    )),
-                    PickRow::Item(i) => {
-                        let it = filtered[*i];
-                        let marks = format!(
-                            "{}{} {}",
-                            if it.warn { "⚠" } else { " " },
-                            if it.current { "✓" } else { " " },
-                            if *i == p.sel { "▸" } else { " " }
-                        );
-                        let style = if it.warn {
-                            self.theme.style(Tone::Muted)
-                        } else if *i == p.sel {
-                            self.theme.style(Tone::Selected)
-                        } else {
-                            self.theme.style(Tone::Text)
-                        };
-                        let pad = label_w.saturating_sub(display_width(&it.label));
-                        let note: String = it
-                            .note
-                            .chars()
-                            .take((inner.width as usize).saturating_sub(label_w + 9))
-                            .collect();
-                        Line::from(Span::styled(
-                            format!(" {marks} {}{} {}", it.label, " ".repeat(pad), note),
-                            style,
-                        ))
+                .flat_map(|slot| -> Vec<Line> {
+                    match slot {
+                        PickRow::Header(g) => vec![Line::from(Span::styled(
+                            format!(" ── {} ──", g),
+                            self.theme.style(Tone::Muted),
+                        ))],
+                        PickRow::Item(i) => {
+                            let it = filtered[*i];
+                            let marks = format!(
+                                "{}{} {}",
+                                if it.warn { "⚠" } else { " " },
+                                if it.current { "✓" } else { " " },
+                                if *i == p.sel { "▸" } else { " " }
+                            );
+                            let style = if it.warn {
+                                self.theme.style(Tone::Muted)
+                            } else if *i == p.sel {
+                                self.theme.style(Tone::Selected)
+                            } else {
+                                self.theme.style(Tone::Text)
+                            };
+                            if two_line {
+                                // Claude Code style: title row + muted meta row beneath
+                                let note: String = it
+                                    .note
+                                    .chars()
+                                    .take((inner.width as usize).saturating_sub(8))
+                                    .collect();
+                                vec![
+                                    Line::from(Span::styled(
+                                        format!(" {marks} {}", it.label),
+                                        style,
+                                    )),
+                                    Line::from(Span::styled(
+                                        format!("      {note}"),
+                                        self.theme.style(Tone::Muted),
+                                    )),
+                                ]
+                            } else {
+                                let pad = label_w.saturating_sub(display_width(&it.label));
+                                let note: String = it
+                                    .note
+                                    .chars()
+                                    .take((inner.width as usize).saturating_sub(label_w + 9))
+                                    .collect();
+                                vec![Line::from(Span::styled(
+                                    format!(" {marks} {}{} {}", it.label, " ".repeat(pad), note),
+                                    style,
+                                ))]
+                            }
+                        }
                     }
                 })
                 .collect();
@@ -7889,6 +8099,166 @@ mod tests {
             "no ago field falls back to the raw date: {}",
             second.note
         );
+    }
+
+    #[test]
+    fn session_picker_renders_two_line_rows() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.serve_cwd = Some("/Users/lucas/tango".into());
+        app.run_slash("/resume", &mut serve);
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        let id = sent["id"].as_u64().unwrap();
+        app.frame(
+            json!({"type": "result", "id": id, "ok": true, "data": {"sessions": [
+                {"id": "s-one", "createdAt": "2026-11-20T09:00", "ago": "3 小时前", "messages": 9,
+                 "cwd": "/Users/lucas/tango", "name": "", "topic": "修复选区漂移", "current": false, "branch": "main"}
+            ]}}),
+            &mut serve,
+        );
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        // the topic and its meta line render on DIFFERENT screen rows
+        let line_of = |needle: &str| -> Option<usize> {
+            (0..30).find(|&y| {
+                let row: String = terminal.backend().buffer().content[y * 100..(y + 1) * 100]
+                    .iter()
+                    .map(|c| c.symbol().to_string())
+                    .collect();
+                row.replace(' ', "").contains(needle)
+            })
+        };
+        let topic_y = line_of("修复选区漂移").expect("topic on screen");
+        let meta_y = line_of("条·").expect("meta line on screen");
+        assert_ne!(
+            topic_y, meta_y,
+            "two-line layout: title and meta on separate rows"
+        );
+        assert!(meta_y > topic_y, "meta below the title");
+    }
+
+    #[test]
+    fn session_picker_space_previews_in_viewer() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.nvim_preference = "builtin".into(); // previews open the built-in viewer
+        app.serve_cwd = Some("/w".into());
+        app.run_slash("/resume", &mut serve);
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        let id = sent["id"].as_u64().unwrap();
+        app.frame(
+            json!({"type": "result", "id": id, "ok": true, "data": {"sessions": [
+                {"id": "prev-1", "createdAt": "x", "messages": 2, "cwd": "/w", "name": "",
+                 "topic": "看看预览", "current": false, "branch": ""}
+            ]}}),
+            &mut serve,
+        );
+        app.key(
+            crossterm::event::KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
+            &mut serve,
+        );
+        let sent: Value = serde_json::from_str(&serve.sent[1]).unwrap();
+        assert_eq!(sent["cmd"], "session_preview");
+        assert_eq!(sent["session"], "prev-1");
+        let cmd_id = sent["id"].as_u64().unwrap();
+        // serve replies with the digest → the read-only viewer shows it
+        app.frame(
+            json!({"type": "result", "id": cmd_id, "ok": true,
+                   "data": {"preview": "❯ 看看预览\n• 好的，这是回复"}}),
+            &mut serve,
+        );
+        let v = app.viewer.as_ref().expect("preview viewer opened");
+        assert!(v.read_only);
+        assert!(v.text.contains("看看预览"));
+    }
+
+    #[test]
+    fn session_picker_ctrl_r_renames() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.serve_cwd = Some("/w".into());
+        app.run_slash("/resume", &mut serve);
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        let id = sent["id"].as_u64().unwrap();
+        app.frame(
+            json!({"type": "result", "id": id, "ok": true, "data": {"sessions": [
+                {"id": "ren-1", "createdAt": "x", "messages": 2, "cwd": "/w", "name": "",
+                 "topic": "待重命名", "current": false, "branch": ""}
+            ]}}),
+            &mut serve,
+        );
+        // ctrl+r enters rename mode; typing edits the name; enter commits
+        app.key(
+            crossterm::event::KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL),
+            &mut serve,
+        );
+        for c in "新名字".chars() {
+            app.key(
+                crossterm::event::KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE),
+                &mut serve,
+            );
+        }
+        app.key(
+            crossterm::event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut serve,
+        );
+        let sent: Value = serde_json::from_str(&serve.sent[1]).unwrap();
+        assert_eq!(sent["cmd"], "session_rename");
+        assert_eq!(sent["session"], "ren-1");
+        assert_eq!(sent["name"], "新名字");
+        assert!(app.picker.is_none(), "picker closes after renaming");
+    }
+
+    #[test]
+    fn session_picker_project_and_branch_filters() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.serve_cwd = Some("/proj-a".into());
+        app.serve_branch = "main".into();
+        app.run_slash("/resume", &mut serve);
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        let id = sent["id"].as_u64().unwrap();
+        app.frame(
+            json!({"type": "result", "id": id, "ok": true, "data": {"sessions": [
+                {"id": "a-main", "createdAt": "1", "messages": 1, "cwd": "/proj-a", "name": "",
+                 "topic": "A主分支", "current": false, "branch": "main"},
+                {"id": "a-dev", "createdAt": "2", "messages": 1, "cwd": "/proj-a", "name": "",
+                 "topic": "A开发分支", "current": false, "branch": "dev"},
+                {"id": "b-one", "createdAt": "3", "messages": 1, "cwd": "/proj-b", "name": "",
+                 "topic": "B项目", "current": false, "branch": "main"}
+            ]}}),
+            &mut serve,
+        );
+        let visible = |app: &App| -> Vec<String> {
+            app.picker
+                .as_ref()
+                .unwrap()
+                .filtered_items()
+                .iter()
+                .map(|i| i.id.clone())
+                .collect()
+        };
+        // default: this project only
+        assert_eq!(visible(&app), vec!["a-main", "a-dev"]);
+        // ctrl+b: only sessions on this branch
+        app.key(
+            crossterm::event::KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL),
+            &mut serve,
+        );
+        assert_eq!(visible(&app), vec!["a-main"]);
+        // ctrl+b again: back to project scope
+        app.key(
+            crossterm::event::KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL),
+            &mut serve,
+        );
+        assert_eq!(visible(&app), vec!["a-main", "a-dev"]);
+        // ctrl+a: every project
+        app.key(
+            crossterm::event::KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL),
+            &mut serve,
+        );
+        assert_eq!(visible(&app), vec!["a-main", "a-dev", "b-one"]);
     }
 
     #[test]

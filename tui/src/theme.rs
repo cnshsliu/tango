@@ -42,13 +42,15 @@ impl Theme {
         }
     }
 
-    /// The user-message bubble: the line's own fg over a subtle bg. Wrapped rows
-    /// all carry it, forming one rectangle hugging the right margin.
+    /// The user-message bubble: the line's own fg over a contrasty bg + bold, so
+    /// it never blends into the agent's text. Wrapped rows all carry it, forming
+    /// one rectangle hugging the right margin.
     pub fn user_bubble(self, base: Style) -> Style {
         if self.light {
-            base.bg(Color::Rgb(224, 228, 236))
+            base.bg(Color::Rgb(205, 222, 240))
+                .add_modifier(Modifier::BOLD)
         } else {
-            base.bg(Color::Rgb(45, 45, 54))
+            base.bg(Color::Rgb(31, 58, 78)).add_modifier(Modifier::BOLD)
         }
     }
 

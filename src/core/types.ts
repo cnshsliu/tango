@@ -152,7 +152,7 @@ export interface Tool<TInput = unknown> extends ToolSchema {
 // ---------- Session ----------
 
 export type SessionEntry =
-  | { kind: 'meta'; id: string; createdAt: string; cwd: string; name?: string; forkOf?: { sessionId: string; entryIndex: number } }
+  | { kind: 'meta'; id: string; createdAt: string; cwd: string; name?: string; branch?: string; forkOf?: { sessionId: string; entryIndex: number } }
   | { kind: 'message'; ts: string; message: Message }
   | { kind: 'model'; ts: string; modelId: string }
   | { kind: 'task_run'; ts: string; ok: boolean }

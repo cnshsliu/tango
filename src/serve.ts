@@ -241,6 +241,7 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
     sessionId: store.id,
     model: agent.model.id,
     cwd,
+    branch: store.meta()?.branch ?? '',
     mode: perm.mode,
     totalCostUsd: sessionCostUsd,
     contextTokens: store.allMessages().filter((m) => m.role === 'assistant').at(-1)?.usage?.input ?? 0,
@@ -1256,6 +1257,34 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
         }
         return;
       }
+      case 'session_preview': {
+        // read-only digest of another session: first turns, no side effects
+        try {
+          const other = await SessionStore.open(sessionsDir(), await resolveSessionId(String(cmd.session ?? '')));
+          const lines: string[] = [];
+          for (const m of other.allVisibleMessages()) {
+            const text = m.content.filter((b: any) => b.type === 'text').map((b: any) => b.text).join(' ');
+            if (!text.trim()) continue;
+            const snippet = text.trim().replace(/\s+/g, ' ').slice(0, 200);
+            lines.push(m.role === 'user' ? `❯ ${snippet}` : `• ${snippet}`);
+            if (lines.length >= 20) break;
+          }
+          reply(cmd, true, { preview: lines.join('\n') || '（无消息）' });
+        } catch (e: any) {
+          reply(cmd, false, { error: String(e?.message ?? e) });
+        }
+        return;
+      }
+      case 'session_rename': {
+        try {
+          const other = await SessionStore.open(sessionsDir(), await resolveSessionId(String(cmd.session ?? '')));
+          await other.rename(String(cmd.name ?? '').trim());
+          reply(cmd, true, {});
+        } catch (e: any) {
+          reply(cmd, false, { error: String(e?.message ?? e) });
+        }
+        return;
+      }
       case 'sessions': {
         const list = await SessionStore.list(sessionsDir());
         reply(cmd, true, {
@@ -1263,6 +1292,7 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
             id: s.id,
             createdAt: s.createdAt.slice(0, 16),
             ago: relativeTime(s.createdAt),
+            branch: s.branch ?? '',
             messages: s.messages,
             cwd: s.cwd,
             name: s.name ?? '',

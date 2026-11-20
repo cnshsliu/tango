@@ -176,7 +176,11 @@ export async function openAgent(args: HostArgs, perm: PermState): Promise<Opened
     if (!latest) throw new Error('no sessions to continue yet');
     store = await SessionStore.open(sessionsDir(), latest.id);
   } else {
-    store = await SessionStore.create(sessionsDir(), args.cwd ?? process.cwd());
+    // record the branch so session lists can group/filter by it later
+    const branch = String(
+      spawnSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: args.cwd ?? process.cwd() }).stdout ?? ''
+    ).trim();
+    store = await SessionStore.create(sessionsDir(), args.cwd ?? process.cwd(), undefined, undefined, undefined, branch || undefined);
   }
 
   const cwd = args.cwd ?? store.meta()?.cwd ?? process.cwd();

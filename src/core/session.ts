@@ -9,6 +9,8 @@ export interface SessionMeta {
   createdAt: string;
   cwd: string;
   name?: string;
+  /** git branch of the cwd at creation — session lists group/filter by it */
+  branch?: string;
   forkOf?: { sessionId: string; entryIndex: number };
 }
 
@@ -54,12 +56,32 @@ export class SessionStore {
     return this.clock().toISOString();
   }
 
-  static async create(dir: string, cwd: string, name?: string, id?: string, clock?: () => Date): Promise<SessionStore> {
+  static async create(
+    dir: string,
+    cwd: string,
+    name?: string,
+    id?: string,
+    clock?: () => Date,
+    branch?: string
+  ): Promise<SessionStore> {
     await mkdir(dir, { recursive: true });
     const store = new SessionStore(dir, id ?? randomUUID());
     if (clock) store.clock = clock;
-    await store.append({ kind: 'meta', id: store.id, createdAt: store.now(), cwd, name });
+    await store.append({ kind: 'meta', id: store.id, createdAt: store.now(), cwd, name, branch });
     return store;
+  }
+
+  /** Rename by appending a fresh meta entry (the log stays append-only). */
+  rename(name: string): Promise<void> {
+    const meta = this.meta();
+    return this.append({
+      kind: 'meta',
+      id: this.id,
+      createdAt: meta?.createdAt ?? this.now(),
+      cwd: meta?.cwd ?? '',
+      name,
+      branch: meta?.branch
+    });
   }
 
   static async open(dir: string, id: string): Promise<SessionStore> {

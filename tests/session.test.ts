@@ -191,6 +191,26 @@ test('forkTo copies a prefix into a new session with forkOf lineage', async () =
   }
 });
 
+test('rename() appends a meta the list picks up; create() records the branch', async () => {
+  const { SessionStore } = await import('../src/core/session.js');
+  const dir = await mkdtemp(join(tmpdir(), 'tango-test-'));
+  try {
+    const store = await SessionStore.create(dir, '/work', undefined, undefined, undefined, 'feature-x');
+    assert.equal(store.meta()?.branch, 'feature-x', 'branch recorded at creation');
+    const [listed] = await SessionStore.list(dir);
+    assert.equal(listed.branch, 'feature-x');
+
+    await store.rename('给我起个名');
+    assert.equal(store.meta()?.name, '给我起个名');
+    assert.equal(store.meta()?.branch, 'feature-x', 'rename keeps the other meta fields');
+    const [after] = await SessionStore.list(dir);
+    assert.equal(after.name, '给我起个名');
+    assert.equal(after.branch, 'feature-x');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('relativeTime buckets ages the way the picker shows them', async () => {
   const { relativeTime } = await import('../src/core/session.js');
   const now = new Date('2026-11-20T12:00:00Z');
