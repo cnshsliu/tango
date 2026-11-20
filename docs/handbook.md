@@ -47,6 +47,7 @@ git diff | tango "review this patch"
 | See a full tool output | Ctrl+O, or click the tool line |
 | Search the whole transcript | Ctrl+T, then `/` |
 | Ask a side question | `/btw <question>`. The answer doesn't enter the session |
+| Answer the model's ❓ panel | ↑↓ + Enter, click, or type the option number + Enter. Esc hides it; `/todo` brings it back |
 
 While a turn runs, Enter queues your next prompt instead of interrupting. Queued prompts
 are sent in order when the turn ends. `/queue` shows them, and its `[并入当前]` button merges

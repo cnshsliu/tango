@@ -4485,6 +4485,24 @@ impl App {
                 _ => {}
             }
         }
+        // a lone option number + Enter picks it ("3" would otherwise go out as a prompt)
+        if k.code == KeyCode::Enter
+            && k.modifiers.is_empty()
+            && !self.busy
+            && !self.choices_collapsed
+            && !self.queue_dialog
+            && !self.todo_dialog
+            && let Some(c) = &self.choices
+            && let Ok(n) = self.input.iter().collect::<String>().trim().parse::<usize>()
+        {
+            // the built-in explain row is one past the model's options (not on suggest panels)
+            let rows = c.options.len() + usize::from(c.suggest.is_none());
+            if (1..=rows).contains(&n) {
+                self.clear_input();
+                self.pick_choice(serve, n - 1);
+                return;
+            }
+        }
         if ctrl && k.code == KeyCode::Char('t') {
             self.open_transcript();
             return;
@@ -6273,10 +6291,15 @@ impl App {
                 Tone::Muted,
             );
         }
+        // replayed ?choice / ?suggest blocks re-arm the panel and todo like live ones;
+        // any later user message answered them, so only those after the last one survive
+        let todos_before = self.todos.len();
         for it in items {
             let text = it["text"].as_str().unwrap_or("");
             match it["kind"].as_str() {
                 Some("user") => {
+                    self.choices = None;
+                    self.todos.truncate(todos_before);
                     self.push_user(text);
                     if let Some(line) = self.lines.last_mut() {
                         line.prompt_state = Some(PromptState::Completed);
@@ -6786,7 +6809,7 @@ impl App {
                 f,
                 pop,
                 "❓ 模型在等你选择",
-                "↑↓/点击 选择 · enter 确认 · tab 改写自答 · esc 收起（/todo 找回）",
+                "↑↓/点击 选择 · enter 确认（或输编号+enter）· tab 改写自答 · esc 收起",
                 self.theme,
             );
             // the question wraps at the dialog width — long asks stay fully readable
@@ -10671,6 +10694,62 @@ mod tests {
         assert_eq!(sent["text"], "现在就改");
         assert!(app.choices.is_none(), "panel retires once answered");
         assert!(app.todos.is_empty(), "answered choice leaves the todo list");
+    }
+
+    #[test]
+    fn typed_option_number_plus_enter_picks_it() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        let enter = crossterm::event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        app.stream = "要改吗？\n?choice\n1. 现在就改\n2. 不改\n3. 先不动".into();
+        app.commit_stream();
+        for ch in "3".chars() {
+            app.key(crossterm::event::KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE), &mut serve);
+        }
+        app.key(enter, &mut serve);
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        assert_eq!(sent["text"], "先不动", "the option label goes out, not \"3\"");
+        assert!(app.choices.is_none() && app.input.is_empty());
+
+        // 4 = the built-in explain row; it asks for a walkthrough
+        app.busy = false; // the turn the pick started has ended
+        app.stream = "?choice\n1. a\n2. b\n3. c".into();
+        app.commit_stream();
+        app.input = "4".chars().collect();
+        app.cursor = 1;
+        app.key(enter, &mut serve);
+        let sent: Value = serde_json::from_str(&serve.sent[1]).unwrap();
+        assert!(sent["text"].as_str().unwrap().starts_with("请逐项详细解释"));
+
+        // out of range, or more than a number: an ordinary prompt
+        for text in ["9", "3 个文件"] {
+            app.busy = false;
+            app.stream = "?choice\n1. a\n2. b".into();
+            app.commit_stream();
+            app.input = text.chars().collect();
+            app.cursor = app.input.len();
+            app.key(enter, &mut serve);
+            let sent: Value = serde_json::from_str(serve.sent.last().unwrap()).unwrap();
+            assert_eq!(sent["text"], text);
+        }
+    }
+
+    #[test]
+    fn resumed_history_only_revives_unanswered_choices_and_suggestions() {
+        let mut app = App::new();
+        let ask = |q: &str| json!({"kind": "assistant", "text": format!("{q}\n?choice\n1. a\n2. b\n?suggest idea {q}")});
+        app.load_history(&json!({"total": 4, "items": [
+            {"kind": "user", "text": "q1"}, ask("old"), {"kind": "user", "text": "a"}, {"kind": "assistant", "text": "ok"}
+        ]}));
+        assert!(app.choices.is_none(), "an answered choice doesn't reopen on resume");
+        assert!(app.todos.is_empty(), "answered choice / old suggestion stay out of todo");
+
+        let mut app = App::new();
+        app.load_history(&json!({"total": 4, "items": [
+            {"kind": "user", "text": "q1"}, ask("old"), {"kind": "user", "text": "a"}, ask("new")
+        ]}));
+        assert_eq!(app.choices.as_ref().map(|c| c.question.as_str()), Some("new"));
+        assert_eq!(app.todos.len(), 2, "the trailing, unanswered choice and suggestion survive");
     }
 
     #[test]
