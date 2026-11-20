@@ -433,6 +433,10 @@ const SLASH: &[(&str, &str)] = &[
     ),
     ("/interrupt", "停止当前回合"),
     ("/model <id>", "切换模型（存为默认），裸 /model 打开列表"),
+    (
+        "/name [名字]",
+        "查看/重命名当前会话（选择窗 ctrl+r 改任意会话）",
+    ),
     ("/mode <m>", "ask | auto | readonly"),
     ("/mcp", "MCP 服务器与桥接工具状态"),
     ("/memory", "查看长期记忆（全局 AGENTS.md，ctrl+e 编辑）"),
@@ -916,6 +920,8 @@ pub struct App {
     session_full: String,
     /// the serve cwd's current git branch (hello frame) — Ctrl+B filters by it
     serve_branch: String,
+    /// the current session's display name (/name) — status bar shows it over the id
+    session_name: String,
     /// plan mode badge (/plan)
     plan_mode: bool,
     /// active /goal text (badge)
@@ -1008,6 +1014,7 @@ impl App {
             turn_chars: 0,
             session_full: String::new(),
             serve_branch: String::new(),
+            session_name: String::new(),
             ime_restore: None,
             queue_buttons: Vec::new(),
             plan_mode: false,
@@ -2848,11 +2855,24 @@ impl App {
                 let id = serve.command("transcript", vec![]);
                 self.pending.push((id, Pending::Transcript));
             }
-            "/rename" => {
+            "/rename" | "/name" => {
                 if rest.is_empty() {
-                    self.push("usage: /rename <name>", Tone::Muted);
+                    let shown = if self.session_name.is_empty() {
+                        self.session.clone()
+                    } else {
+                        self.session_name.clone()
+                    };
+                    self.push(
+                        format!("当前会话：{shown} · /name <新名字> 重命名（状态栏即显示）"),
+                        Tone::Muted,
+                    );
                 } else {
                     let id = serve.command("rename", vec![("name", Value::String(rest.into()))]);
+                    self.session_name = rest.trim().chars().take(32).collect();
+                    self.push(
+                        format!("✓ 会话已重命名：{}", self.session_name),
+                        Tone::Success,
+                    );
                     self.pending.push((id, Pending::Rename));
                 }
             }
@@ -4600,6 +4620,7 @@ impl App {
                     .collect();
                 self.session_full = v["sessionId"].as_str().unwrap_or("").to_string();
                 self.serve_branch = v["branch"].as_str().unwrap_or("").to_string();
+                self.session_name = v["sessionName"].as_str().unwrap_or("").to_string();
                 self.cost = v["totalCostUsd"].as_f64().unwrap_or(0.0);
                 self.context_tokens = v["contextTokens"].as_u64().unwrap_or(0);
                 self.context_window = v["contextWindow"].as_u64().unwrap_or(0);
@@ -6869,7 +6890,14 @@ impl App {
                 },
             ),
             Span::styled(
-                format!(" sess {} ", self.session),
+                format!(
+                    " sess {} ",
+                    if self.session_name.is_empty() {
+                        self.session.clone()
+                    } else {
+                        self.session_name.chars().take(16).collect::<String>()
+                    }
+                ),
                 self.theme.style(Tone::Muted),
             ),
         ];
@@ -8384,6 +8412,29 @@ mod tests {
             &mut serve,
         );
         assert_eq!(visible(&app), vec!["a-main", "a-dev", "b-one"]);
+    }
+
+    #[test]
+    fn name_command_renames_current_session_and_shows_in_status() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.session_full = "cur-1234-abcd".into();
+        app.run_slash("/name 修复气泡的会话", &mut serve);
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        assert_eq!(sent["cmd"], "rename");
+        assert_eq!(sent["name"], "修复气泡的会话");
+        assert!(
+            app.lines.iter().any(|l| l.text.contains("已重命名")),
+            "chat confirms the rename"
+        );
+        // the status bar carries the name once set (hello's sessionName updates it too)
+        app.session_name = "修复气泡的会话".into();
+        assert!(app.status_segments_text().contains("修复气泡的会话"));
+        // bare /name shows the current name instead of renaming
+        let before = serve.sent.len();
+        app.run_slash("/name", &mut serve);
+        assert_eq!(serve.sent.len(), before, "bare /name sends nothing");
+        assert!(app.lines.iter().any(|l| l.text.contains("修复气泡的会话")));
     }
 
     #[test]

@@ -245,6 +245,7 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
     model: agent.model.id,
     cwd,
     branch: store.meta()?.branch ?? '',
+    sessionName: store.meta()?.name ?? '',
     mode: perm.mode,
     totalCostUsd: sessionCostUsd,
     contextTokens: store.allMessages().filter((m) => m.role === 'assistant').at(-1)?.usage?.input ?? 0,
