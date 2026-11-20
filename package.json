@@ -12,7 +12,9 @@
     "dev": "tsx src/cli.ts",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --import tsx --test tests/**/*.test.ts"
+    "test": "npm run test:ts && npm run test:tui",
+    "test:ts": "node --import tsx --test tests/**/*.test.ts",
+    "test:tui": "cd tui && cargo test -q"
   },
   "engines": {
     "node": ">=20"

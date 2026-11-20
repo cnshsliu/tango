@@ -474,5 +474,9 @@ Design rules (keep them):
 
 ```sh
 npm run typecheck
-npm test
+npm test            # test:ts (node) + test:tui (cargo test in tui/)
 ```
+
+`npm test` needs a Rust toolchain because `test:tui` runs `cargo test` in `tui/`. Among those
+tests is the slash-command sync check: TUI handlers, `/help`, `docs/handbook.md` and the command
+list above must agree. Use `npm run test:ts` for the TypeScript tests alone.
