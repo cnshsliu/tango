@@ -384,6 +384,10 @@ const SLASH: &[(&str, &str)] = &[
     ),
     ("/clear", "清空屏幕（上下文保留）"),
     ("/compact", "压缩较早的上下文"),
+    (
+        "/autocompact [N%|0.N|off]",
+        "查看/设置自动压缩阈值（默认 75%，持久化）",
+    ),
     ("/cost", "本会话花费与上下文条数"),
     (
         "/density",
@@ -402,7 +406,8 @@ const SLASH: &[(&str, &str)] = &[
     ),
     ("/find <text>", "全库搜索对话（含被放弃的分支），可跳转"),
     ("/focus", "安静模式：隐藏成功工具与思考，保留错误"),
-    ("/usage /stats", "跨会话聚合：按模型/会话的请求与花费"),
+    ("/usage", "跨会话聚合：按模型/会话的请求与花费"),
+    ("/stats", "同 /usage"),
     ("/fork <name>", "从当前（或 /rewind 选中）位置复制出新会话"),
     (
         "/handoff [session] [note]",
@@ -422,16 +427,30 @@ const SLASH: &[(&str, &str)] = &[
     ),
     ("/rewind", "打开时间轴：代码+对话+上下文整体回滚"),
     ("/add_dir <dir>", "添加 cwd 之外的额外可写目录（持久化）"),
+    ("/cd <dir>", "切换会话工作目录（工具与快照跟随）"),
+    ("/pwd", "显示当前工作目录"),
     (
         "/agents [role model]",
         "角色模型路由：driver/subagent/longContext（/bg 自动用 subagent）",
     ),
+    (
+        "/bg [--long] <任务>",
+        "后台任务：独立 worktree + 独立会话跑完（--long 用 longContext）",
+    ),
+    ("/tasks", "后台任务列表：状态与会话"),
+    ("/stop <id>", "停止一个后台任务（id 或名字见 /tasks）"),
     (
         "/import claude-code|grok|codex",
         "导入其他代理的允许列表为 /permissions 规则（报告无法转换的条目）",
     ),
     ("/init", "生成 AGENTS.md 项目说明脚手架（--force 追加）"),
     ("/doctor", "环境体检：git/key/目录/版本"),
+    ("/config", "查看当前配置（config.json）"),
+    (
+        "/debug-zip",
+        "打包诊断信息 zip 到工作目录（webhook 已脱敏）",
+    ),
+    ("/feedback", "同 /debug-zip"),
     ("/help", "命令列表"),
     ("/insights", "生成 HTML 使用报告（离线可读）"),
     (
@@ -445,7 +464,13 @@ const SLASH: &[(&str, &str)] = &[
         "查看/重命名当前会话（选择窗 ctrl+r 改任意会话）",
     ),
     ("/mode <m>", "ask | auto | readonly"),
+    ("/plan", "计划模式开关：禁止一切写操作，只出执行计划"),
+    (
+        "/permissions [add|rm <rule>]",
+        "允许规则：tool:<名> · path:<前缀> · bash:<命令前缀>",
+    ),
     ("/mcp", "MCP 服务器与桥接工具状态"),
+    ("/plugins", "本地插件列表（~/.tango/plugins）"),
     ("/memory", "查看长期记忆（全局 AGENTS.md，ctrl+e 编辑）"),
     ("/remember <text>", "记住一条偏好 → 全局记忆，所有会话生效"),
     ("/mouse", "切换鼠标捕获 · /mouse on|off"),
@@ -465,6 +490,7 @@ const SLASH: &[(&str, &str)] = &[
         "/review [paths]",
         "对工作区 diff 做代码评审 · /security-review 安全评审",
     ),
+    ("/security-review", "对工作区 diff 做安全评审"),
     (
         "/queue [rm <n>|clear]",
         "本地排队管理 · Alt+Enter 补充到正在处理的回合",
@@ -480,10 +506,12 @@ const SLASH: &[(&str, &str)] = &[
         "退出并重启 TUI 与 serve（载入新构建），续在当前会话",
     ),
     ("/resume", "切换到历史会话，打开列表"),
+    ("/sessions", "打开历史会话列表（切换会话）"),
     (
         "/skill [title]",
         "把本会话存成技能草稿 · /skill finish <file> 定稿",
     ),
+    ("/save-as-skill", "同 /skill"),
     ("/skills", "列出全局/项目技能"),
     ("/status", "会话信息"),
     (
@@ -507,6 +535,7 @@ const SLASH: &[(&str, &str)] = &[
     ("/copy [N]", "复制最近（或倒数第 N 个）助手回复"),
     ("/tree", "查看会话分叉树"),
     ("/undo", "回退一个回合（/redo 前进一步）"),
+    ("/redo", "前进一个回合（撤销 /undo）"),
     ("/vim", "切换 Vim 编辑 · ctrl+s 发送 · :wq/:wqa 发送"),
     (
         "/worktree [new|rm|merge <name>]",
@@ -9437,6 +9466,46 @@ mod tests {
         let again = app.chat_lines();
         let new2 = again.iter().find(|l| l.text.contains("new line")).unwrap();
         assert_eq!(new.text, new2.text);
+    }
+
+    #[test]
+    fn slash_table_lists_every_command_and_alias() {
+        // each must be its own entry so Tab-completion (first-word prefix match) reaches it
+        let words: Vec<&str> = SLASH
+            .iter()
+            .map(|(c, _)| c.split(' ').next().unwrap())
+            .collect();
+        for cmd in [
+            "/autocompact",
+            "/bg",
+            "/cd",
+            "/config",
+            "/debug-zip",
+            "/feedback",
+            "/permissions",
+            "/plan",
+            "/plugins",
+            "/pwd",
+            "/redo",
+            "/save-as-skill",
+            "/security-review",
+            "/sessions",
+            "/stats",
+            "/stop",
+            "/tasks",
+        ] {
+            assert!(words.contains(&cmd), "{cmd} missing from SLASH");
+        }
+        let mut app = App::new();
+        app.input = "/ta".chars().collect();
+        app.cursor = app.input.len();
+        app.refresh_popup();
+        let popup = app.popup.as_ref().expect("completion popup");
+        assert!(
+            popup.items.iter().any(|i| i == "/tasks"),
+            "{:?}",
+            popup.items
+        );
     }
 
     #[test]
