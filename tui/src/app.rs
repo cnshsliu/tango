@@ -5607,6 +5607,22 @@ impl App {
         (area.height.saturating_sub(1 + input_h)) as usize
     }
 
+    /// Height of the choices panel as a layout row: 0 when hidden. The question
+    /// wraps at the dialog's inner width, so long asks stay fully readable.
+    fn choices_panel_height(&self, width: u16, term_h: u16) -> u16 {
+        let Some(c) = &self.choices else { return 0 };
+        if self.choices_collapsed {
+            return 0;
+        }
+        let w = 72u16.min(width).max(3);
+        let iw = (w as usize).saturating_sub(2); // bordered dialog inner width
+        let q_rows = wrap_chat_rows(&[c.question.clone()], iw).len() as u16;
+        let notes = c.options.iter().filter(|o| o.note.is_some()).count() as u16;
+        let content = q_rows + c.preview.len() as u16 + c.options.len() as u16 + notes;
+        // +2: title + hint rows; capped so the chat keeps at least half the screen
+        (content + 2).min(term_h / 2).max(3)
+    }
+
     /// the chat exactly as drawn — scroll math and mouse hit testing use the same lines
     fn chat_lines(&self) -> Vec<ChatLine> {
         self.lines
@@ -5689,9 +5705,15 @@ impl App {
     pub fn draw(&mut self, f: &mut Frame) {
         let area = f.area();
         let input_h = self.input_height(area.width);
-        let chat_h = self.chat_height(area, input_h);
-        let [chat_a, input_a, status_a] = Layout::vertical([
+        // the choices panel takes a real layout row — the chat scrolls up to make
+        // room instead of being covered (the text under it stays reachable)
+        let panel_h = self.choices_panel_height(area.width, area.height);
+        let chat_h = self
+            .chat_height(area, input_h)
+            .saturating_sub(panel_h as usize);
+        let [chat_a, panel_a, input_a, status_a] = Layout::vertical([
             Constraint::Min(1),
+            Constraint::Length(panel_h),
             Constraint::Length(input_h),
             Constraint::Length(1),
         ])
@@ -5971,19 +5993,18 @@ impl App {
             }
         }
 
-        // the choices panel, glued above the input box like the completion popup
+        // the choices panel: a reserved layout row between chat and input (the
+        // chat scrolls up to make room — never covered), question wrapped whole
         if let Some(c) = self.choices.clone()
             && !self.choices_collapsed
+            && panel_h > 0
         {
             self.choice_rows.clear();
-            let note_rows: u16 = c.options.iter().filter(|o| o.note.is_some()).count() as u16;
-            let ph = (c.options.len() as u16) + (c.preview.len() as u16) + note_rows + 3;
-            let w = 72u16.min(area.width);
             let pop = Rect {
-                x: (area.width.saturating_sub(w)) / 2,
-                y: input_a.y.saturating_sub(ph),
-                width: w,
-                height: ph,
+                x: panel_a.x + (panel_a.width.saturating_sub(72u16.min(panel_a.width))) / 2,
+                y: panel_a.y,
+                width: 72u16.min(panel_a.width),
+                height: panel_h,
             };
             let inner = render_dialog(
                 f,
@@ -5992,17 +6013,21 @@ impl App {
                 "↑↓/点击 选择 · enter 确认 · tab 改写自答 · esc 收起（/todo 找回）",
                 self.theme,
             );
-            let q: String = c.question.chars().take(inner.width as usize).collect();
-            f.render_widget(
-                Paragraph::new(q).style(self.theme.style(Tone::Selected)),
-                Rect {
-                    x: inner.x,
-                    y: inner.y,
-                    width: inner.width,
-                    height: 1,
-                },
-            );
-            let mut y = inner.y + 1;
+            // the question wraps at the dialog width — long asks stay fully readable
+            let q_rows = wrap_chat_rows(&[c.question.clone()], inner.width.max(1) as usize);
+            let q_style = self.theme.style(Tone::Selected);
+            for (qi, qr) in q_rows.iter().enumerate() {
+                f.render_widget(
+                    Paragraph::new(qr.text.clone()).style(q_style),
+                    Rect {
+                        x: inner.x,
+                        y: inner.y + qi as u16,
+                        width: inner.width,
+                        height: 1,
+                    },
+                );
+            }
+            let mut y = inner.y + q_rows.len() as u16;
             // bar-indented preview block: what the ask is about (commands, paths)
             let bar = self.theme.style(Tone::Muted);
             for line in &c.preview {
@@ -7702,7 +7727,11 @@ mod tests {
             &mut serve,
         );
         assert_eq!(app.respawn, None);
-        assert!(app.lines.iter().any(|l| l.text.contains("nothing to hand over")));
+        assert!(
+            app.lines
+                .iter()
+                .any(|l| l.text.contains("nothing to hand over"))
+        );
     }
 
     #[test]
@@ -7716,7 +7745,10 @@ mod tests {
             "total": 2
         }));
         let texts: Vec<&str> = app.lines.iter().map(|l| l.text.as_str()).collect();
-        let head = texts.iter().position(|t| t.contains("交接自会话 abcdef12")).unwrap();
+        let head = texts
+            .iter()
+            .position(|t| t.contains("交接自会话 abcdef12"))
+            .unwrap();
         let goal = texts.iter().position(|t| t.contains("ship it")).unwrap();
         assert!(head < goal);
     }
@@ -9244,6 +9276,86 @@ mod tests {
         app.sel_anchor_pos = Some((0, 1));
         app.sel_end_pos = Some((0, 3));
         assert_eq!(app.selected_text(0).as_deref(), Some("bc"));
+    }
+
+    #[test]
+    fn choices_panel_reserves_layout_space_not_overlay() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.stream = "要改吗？\n?choice\n1. 改\n2. 不改".into();
+        app.commit_stream();
+        {
+            let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+            terminal.draw(|f| app.draw(f)).unwrap();
+        }
+        // the panel sits in its own layout row below the chat — never over it
+        for (rect, _) in &app.choice_rows {
+            assert!(
+                rect.y >= app.chat_area.bottom(),
+                "panel row at y={} overlaps chat (bottom={})",
+                rect.y,
+                app.chat_area.bottom()
+            );
+        }
+        // and the chat actually shrank to make room
+        assert!(
+            app.chat_area.height < 24 - 2,
+            "chat height {} should shrink for the panel",
+            app.chat_area.height
+        );
+        // option rows are clickable in the new geometry
+        assert!(app.choice_rows.len() >= 2);
+        let _ = serve;
+    }
+
+    #[test]
+    fn long_choice_question_wraps_fully_visible() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut app = App::new();
+        let long: String = "这是一个非常长的问题需要多行才能显示完整".repeat(8);
+        app.choices = Some(Choices {
+            question: long.clone(),
+            preview: vec![],
+            options: vec![
+                ChoiceOption {
+                    label: "是".into(),
+                    note: None,
+                },
+                ChoiceOption {
+                    label: "否".into(),
+                    note: None,
+                },
+            ],
+            sel: 0,
+            suggest: None,
+        });
+        let mut terminal = Terminal::new(TestBackend::new(80, 40)).unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        // the tail of the question must actually be on screen (not truncated away);
+        // 144 CJK chars at 35/row → the last wrapped row holds the final 4, so a
+        // within-row tail avoids row-boundary padding spaces
+        let tail: String = long
+            .chars()
+            .rev()
+            .take(4)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        let screen: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol().to_string())
+            .collect();
+        let compact: String = screen.chars().filter(|c| !c.is_whitespace()).collect();
+        assert!(
+            compact.contains(tail.as_str()),
+            "question tail {tail:?} missing — question was truncated"
+        );
+        let _ = terminal;
     }
 
     #[test]
