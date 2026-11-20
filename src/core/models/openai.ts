@@ -107,6 +107,7 @@ export const openaiAdapter: ModelAdapter = {
     body[maxKey] = req.maxTokens ?? spec.maxTokens ?? 8192;
     // only reasoning-capable endpoints take the param; others may 400 on it
     if (req.effort && spec.reasoning !== false) body.reasoning_effort = req.effort;
+    if (typeof spec.thinkingBudget === 'number') body.thinking_budget = spec.thinkingBudget;
     if (req.tools.length) {
       body.tools = req.tools.map((t) => ({
         type: 'function',

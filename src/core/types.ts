@@ -77,6 +77,11 @@ export interface ModelSpec {
   apiKey?: string;
   contextWindow?: number;
   maxTokens?: number;
+  /**
+   * Sent as `thinking_budget` on OpenAI-compatible calls.
+   * `0` turns the server's automatic thinking cap off (maxTokens still bounds the turn).
+   */
+  thinkingBudget?: number;
   reasoning?: boolean;
   /** accepts image input (vision). Unset = unknown: images are still sent, with a heads-up notice */
   vision?: boolean;

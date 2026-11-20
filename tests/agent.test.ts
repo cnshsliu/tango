@@ -412,6 +412,7 @@ test('effort: reasoning_effort rides openai requests; off omits it', async () =>
     agent.effort = 'high';
     await agent.prompt('a');
     assert.equal(bodies[0].reasoning_effort, 'high', 'effort rides the request body');
+    assert.ok(!('thinking_budget' in bodies[0]), 'thinking budget omitted unless the spec sets it');
     agent.effort = undefined;
     await agent.prompt('b');
     assert.ok(!('reasoning_effort' in bodies[1]), 'off omits the field');

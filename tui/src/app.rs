@@ -596,6 +596,60 @@ struct ChatRow {
     cs: usize, // char start (into the source line text)
     ce: usize, // char end, exclusive
     text: String,
+    /// display column this row starts at: 0 for full-width rows, the bubble's
+    /// block indent for user rows
+    x: u16,
+    /// user rows render as a right-positioned bg bubble (interior left-aligned)
+    user: bool,
+}
+
+/// Right-position the rows of user lines into one bg bubble per line: all rows of
+/// a line share a block indent computed from the widest row (+ interior padding),
+/// so wrapped lines align inside a rectangle hugging the right margin.
+fn layout_user_bubbles(rows: &mut [ChatRow], is_user: &[bool], width: usize) {
+    let mut i = 0;
+    while i < rows.len() {
+        let line = rows[i].line;
+        let user = is_user.get(line).copied().unwrap_or(false);
+        let end = rows[i..]
+            .iter()
+            .position(|r| r.line != line)
+            .map(|n| i + n)
+            .unwrap_or(rows.len());
+        if user && rows[i..end].iter().any(|r| !r.text.is_empty()) {
+            let maxw = rows[i..end]
+                .iter()
+                .map(|r| display_width(&r.text))
+                .max()
+                .unwrap_or(0);
+            // +2: one interior padding column each side; -1 right margin
+            let block = maxw + 2;
+            let x = (width.saturating_sub(block + 1)) as u16;
+            for r in &mut rows[i..end] {
+                r.user = true;
+                r.x = x;
+            }
+        }
+        i = end;
+    }
+}
+
+/// The char index a screen column lands on within a row, walking display widths
+/// from the row's own start (bubble rows carry an indent + one interior pad).
+/// Columns left of the row clamp to 0; past the end, to the char count.
+fn row_char_at(row: &ChatRow, column: u16) -> usize {
+    let start = row.x as usize + usize::from(row.user); // interior pad
+    let mut col = (column as usize).saturating_sub(start);
+    let mut idx = 0usize;
+    for ch in row.text.chars() {
+        let w = display_width(&ch.to_string());
+        if col < w {
+            break;
+        }
+        col -= w;
+        idx += 1;
+    }
+    idx
 }
 
 /// Word wrap with char-index tracking; long words (URLs, CJK runs) hard-split at width.
@@ -610,6 +664,8 @@ fn wrap_chat_rows(texts: &[String], width: usize) -> Vec<ChatRow> {
                 cs: 0,
                 ce: 0,
                 text: String::new(),
+                x: 0,
+                user: false,
             });
             continue;
         }
@@ -646,6 +702,8 @@ fn wrap_chat_rows(texts: &[String], width: usize) -> Vec<ChatRow> {
                 cs,
                 ce: row_end,
                 text: piece,
+                x: 0,
+                user: false,
             });
             cs = next;
             idx = next;
@@ -963,7 +1021,19 @@ impl App {
         } else {
             (gb, b.1, ga, a.1)
         };
-        Some((ra, ca as usize, rb, cb as usize))
+        // screen columns → char indices (bubble rows carry an indent; CJK chars
+        // are 2 columns wide — walking widths keeps both exact)
+        let ca = self
+            .chat_rows
+            .get(ra)
+            .map(|r| row_char_at(r, ca))
+            .unwrap_or(0);
+        let cb = self
+            .chat_rows
+            .get(rb)
+            .map(|r| row_char_at(r, cb))
+            .unwrap_or(0);
+        Some((ra, ca, rb, cb))
     }
 
     /// The exact selected text: partial rows at both ends, full rows between.
@@ -1018,15 +1088,7 @@ impl App {
             if i < g {
                 click_idx += r.text.chars().count();
             } else if i == g {
-                let mut col = 0usize;
-                for ch in r.text.chars() {
-                    let w = display_width(&ch.to_string());
-                    if (column as usize) < col + w {
-                        break;
-                    }
-                    col += w;
-                    click_idx += 1;
-                }
+                click_idx += row_char_at(r, column);
             }
             full.push_str(&r.text);
         }
@@ -5618,7 +5680,9 @@ impl App {
             texts.push(self.stream.replace("**", "").replace('`', ""));
         }
         let tones: Vec<Tone> = self.chat_lines().iter().map(|l| l.tone).collect();
-        let all_rows = wrap_chat_rows(&texts, inner_w);
+        let user_flags: Vec<bool> = tones.iter().map(|t| *t == Tone::User).collect();
+        let mut all_rows = wrap_chat_rows(&texts, inner_w);
+        layout_user_bubbles(&mut all_rows, &user_flags, inner_w);
         let total = all_rows.len();
         if self.last_visual_total > 0 && total > self.last_visual_total && self.scroll_back > 0 {
             let added = total - self.last_visual_total;
@@ -5656,15 +5720,34 @@ impl App {
                 }
                 _ => (0, 0),
             };
+            // right-positioned bubble: blank indent + bg-styled interior with one
+            // padding column each side — wrapped rows form one rectangle
+            let pad = if row.user {
+                vec![Span::raw(" ".repeat(row.x as usize))]
+            } else {
+                Vec::new()
+            };
+            let base = if row.user {
+                self.theme.user_bubble(style)
+            } else {
+                style
+            };
             if sel.is_some() && s_to > s_from {
-                shown.push(Line::from(vec![
-                    Span::styled(chars[..s_from].iter().collect::<String>(), style),
-                    Span::styled(
-                        chars[s_from..s_to].iter().collect::<String>(),
-                        style.reversed(),
-                    ),
-                    Span::styled(chars[s_to..].iter().collect::<String>(), style),
-                ]));
+                let mut spans = pad;
+                spans.push(Span::styled(
+                    chars[..s_from].iter().collect::<String>(),
+                    base,
+                ));
+                spans.push(Span::styled(
+                    chars[s_from..s_to].iter().collect::<String>(),
+                    base.reversed(),
+                ));
+                spans.push(Span::styled(chars[s_to..].iter().collect::<String>(), base));
+                shown.push(Line::from(spans));
+            } else if row.user {
+                let mut spans = pad;
+                spans.push(Span::styled(format!(" {} ", row.text), base));
+                shown.push(Line::from(spans));
             } else {
                 shown.push(Line::from(Span::styled(row.text.clone(), style)));
             }
@@ -8997,6 +9080,88 @@ mod tests {
     }
 
     #[test]
+    fn user_bubbles_right_aligned_block() {
+        let mut rows = wrap_chat_rows(
+            &[
+                "一二三四五六七八九十 一二三四五六七八九十 abc".to_string(),
+                "agent 回复左对齐".to_string(),
+            ],
+            40,
+        );
+        let is_user = vec![true, false];
+        layout_user_bubbles(&mut rows, &is_user, 40);
+        let user_rows: Vec<&ChatRow> = rows.iter().filter(|r| r.user).collect();
+        assert!(user_rows.len() >= 2, "long user text wraps into rows");
+        let first_x = user_rows[0].x;
+        assert!(first_x > 0, "user rows sit right of the margin");
+        assert!(
+            user_rows.iter().all(|r| r.x == first_x),
+            "wrapped rows share one block indent (bubble shape)"
+        );
+        let maxw = user_rows
+            .iter()
+            .map(|r| display_width(&r.text))
+            .max()
+            .unwrap();
+        assert!(
+            (first_x as usize) + maxw + 2 <= 40,
+            "block plus interior padding fits the width"
+        );
+        assert!(
+            rows.iter().filter(|r| !r.user).all(|r| r.x == 0),
+            "agent rows keep the left edge"
+        );
+    }
+
+    #[test]
+    fn click_inside_bubble_maps_through_offset() {
+        let mut app = App::new();
+        app.chat_inner_w = 40;
+        app.chat_scroll_offset = 0;
+        app.chat_rows = vec![ChatRow {
+            line: 0,
+            cs: 0,
+            ce: 6,
+            text: "abcdef".into(),
+            x: 30,
+            user: true,
+        }];
+        // bubble interior starts at x+1; column 34 → char 3 ('d')
+        assert_eq!(app.chat_line_hit(0, 34, 0).map(|(_, _, i)| i), Some(3));
+        // left of the bubble clamps to char 0
+        assert_eq!(app.chat_line_hit(0, 5, 0).map(|(_, _, i)| i), Some(0));
+    }
+
+    #[test]
+    fn partial_cjk_selection_inside_bubble_is_char_exact() {
+        let mut app = App::new();
+        app.chat_rows = vec![ChatRow {
+            line: 0,
+            cs: 0,
+            ce: 4,
+            text: "汉字汉字".into(),
+            x: 30,
+            user: true,
+        }];
+        // interior starts at col 31; 汉 spans 31-32, 字 spans 33-34
+        app.sel_anchor_pos = Some((0, 31));
+        app.sel_end_pos = Some((0, 35));
+        assert_eq!(app.selected_text(0).as_deref(), Some("汉字"));
+        // and the plain-row path keeps working (x=0, ascii)
+        app.chat_rows[0] = ChatRow {
+            line: 0,
+            cs: 0,
+            ce: 6,
+            text: "abcdef".into(),
+            x: 0,
+            user: false,
+        };
+        app.sel_anchor_pos = Some((0, 1));
+        app.sel_end_pos = Some((0, 3));
+        assert_eq!(app.selected_text(0).as_deref(), Some("bc"));
+    }
+
+    #[test]
     fn elapsed_and_token_formats() {
         assert_eq!(App::fmt_elapsed(42), "42s");
         assert_eq!(App::fmt_elapsed(59), "59s");
@@ -9510,11 +9675,13 @@ mod tests {
             .map(|c| display_width(&c.to_string()))
             .sum();
         let term_row = app.chat_area.y + (g - app.chat_scroll_offset) as u16;
+        // the user line renders as a right-positioned bubble: add its indent + pad
+        let bubble = app.chat_rows[g].x as usize + usize::from(app.chat_rows[g].user);
         // chips open on release (press+release, no drag), like file paths
         app.handle(
             Event::Mouse(crossterm::event::MouseEvent {
                 kind: MouseEventKind::Down(MouseButton::Left),
-                column: (col + 1) as u16,
+                column: (col + 1 + bubble) as u16,
                 row: term_row,
                 modifiers: KeyModifiers::NONE,
             }),
@@ -9523,7 +9690,7 @@ mod tests {
         app.handle(
             Event::Mouse(crossterm::event::MouseEvent {
                 kind: MouseEventKind::Up(MouseButton::Left),
-                column: (col + 1) as u16,
+                column: (col + 1 + bubble) as u16,
                 row: term_row,
                 modifiers: KeyModifiers::NONE,
             }),

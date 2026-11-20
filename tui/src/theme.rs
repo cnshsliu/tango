@@ -42,6 +42,16 @@ impl Theme {
         }
     }
 
+    /// The user-message bubble: the line's own fg over a subtle bg. Wrapped rows
+    /// all carry it, forming one rectangle hugging the right margin.
+    pub fn user_bubble(self, base: Style) -> Style {
+        if self.light {
+            base.bg(Color::Rgb(224, 228, 236))
+        } else {
+            base.bg(Color::Rgb(45, 45, 54))
+        }
+    }
+
     pub fn style(self, tone: Tone) -> Style {
         match (self.light, tone) {
             (_, Tone::Muted) => Style::new().fg(Color::DarkGray),
