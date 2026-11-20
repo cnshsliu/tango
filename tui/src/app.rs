@@ -4732,6 +4732,24 @@ impl App {
             self.scroll_chat_down(20);
             return;
         }
+        // Alt+Enter while a turn runs supplements it — this must run BEFORE the
+        // rebindable Newline action, whose default binding IS alt+enter, or the
+        // generic newline eats the key and the supplement branch is unreachable
+        if self.busy
+            && !self.input.is_empty()
+            && k.code == KeyCode::Enter
+            && k.modifiers.contains(KeyModifiers::ALT)
+        {
+            let text: String = self.input.iter().collect();
+            self.clear_input();
+            let head: String = text.lines().next().unwrap_or("").chars().take(40).collect();
+            serve.command("supplement", vec![("text", Value::String(text))]);
+            self.push(
+                format!("➕ 已并入当前回合（下一轮请求可见）：{head}"),
+                Tone::Success,
+            );
+            return;
+        }
         if self.keys.matches(Action::Newline, k) {
             self.insert_char('\n');
             self.refresh_popup();
@@ -4756,21 +4774,6 @@ impl App {
             KeyCode::Enter if self.multiline_enter => {
                 self.insert_char('\n');
                 self.refresh_popup();
-            }
-            // Alt+Enter: append context to the RUNNING turn ("forgot to mention…")
-            KeyCode::Enter
-                if k.modifiers.contains(KeyModifiers::ALT)
-                    && self.busy
-                    && !self.input.is_empty() =>
-            {
-                let text: String = self.input.iter().collect();
-                self.clear_input();
-                let head: String = text.lines().next().unwrap_or("").chars().take(40).collect();
-                serve.command("supplement", vec![("text", Value::String(text))]);
-                self.push(
-                    format!("➕ 已并入当前回合（下一轮请求可见）：{head}"),
-                    Tone::Success,
-                );
             }
             KeyCode::Enter if !self.busy => self.send_prompt(serve),
             KeyCode::Enter if !self.input.is_empty() => {
@@ -10198,6 +10201,42 @@ mod tests {
             screen(&mut terminal).contains("第39行"),
             "scrolling reveals the tail"
         );
+    }
+
+    #[test]
+    fn alt_enter_supplements_a_running_turn_before_newline_eats_it() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.busy = true;
+        app.input = "补充说明".chars().collect();
+        app.key(
+            crossterm::event::KeyEvent::new_with_kind(
+                KeyCode::Enter,
+                KeyModifiers::ALT,
+                crossterm::event::KeyEventKind::Press,
+            ),
+            &mut serve,
+        );
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap_or(json!(null));
+        assert_eq!(
+            sent["cmd"], "supplement",
+            "alt+enter while busy must supplement, not newline (default Newline binding is alt+enter)"
+        );
+        assert!(app.input.is_empty());
+        // idle alt+enter stays a newline (the rebindable Action::Newline default)
+        app.busy = false;
+        app.input = "a".chars().collect();
+        app.cursor = 1; // typing position, not the default 0
+        app.key(
+            crossterm::event::KeyEvent::new_with_kind(
+                KeyCode::Enter,
+                KeyModifiers::ALT,
+                crossterm::event::KeyEventKind::Press,
+            ),
+            &mut serve,
+        );
+        let typed: String = app.input.iter().collect();
+        assert_eq!(typed, "a\n", "idle alt+enter inserts a newline");
     }
 
     #[test]
