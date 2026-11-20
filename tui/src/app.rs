@@ -742,7 +742,10 @@ fn layout_user_bubbles(rows: &mut Vec<ChatRow>, is_user: &[bool], width: usize, 
                 };
                 rows.insert(end, bottom);
                 rows.insert(i, top);
-                i += 1; // skip the top border we just inserted
+                // the framed group now occupies [i, end+2): both inserts shifted it
+                // past `end`, so skipping only `end` would re-frame the tail
+                i = end + 2;
+                continue;
             }
         }
         i = end;
@@ -8662,6 +8665,43 @@ mod tests {
             !sel.contains("\n\n"),
             "no blank lines from border rows: {sel:?}"
         );
+    }
+
+    #[test]
+    fn adjacent_and_multiline_user_messages_get_exactly_one_frame_each() {
+        // two adjacent user lines + one wrapping user line: every user line gets
+        // exactly one top and one bottom border, nothing nested
+        let texts = vec![
+            "第一句".to_string(),
+            "第二句".to_string(),
+            "一二三四五六七八九十一二三四五六七八九十".to_string(),
+        ];
+        let flags = vec![true, true, true];
+        let mut rows = wrap_chat_rows_mixed(&texts, 24, &flags);
+        layout_user_bubbles(&mut rows, &flags, 24, true);
+        let borders = rows.iter().filter(|r| r.border).count();
+        let text_rows = rows.iter().filter(|r| r.user && !r.border).count();
+        assert_eq!(
+            borders, 6,
+            "3 user lines → 3 frames → 6 border rows, got layout: {rows:?}"
+        );
+        assert_eq!(
+            text_rows, 4,
+            "wrapped third line takes 2 rows at width 24-4"
+        );
+        // every user line's group starts with a top border and ends with a bottom
+        for (li, _) in texts.iter().enumerate() {
+            let group: Vec<usize> = rows
+                .iter()
+                .enumerate()
+                .filter(|(_, r)| r.line == li)
+                .map(|(i, _)| i)
+                .collect();
+            assert!(
+                rows[group[0]].border && rows[*group.last().unwrap()].border,
+                "line {li} not fully framed: {rows:?}"
+            );
+        }
     }
 
     #[test]
