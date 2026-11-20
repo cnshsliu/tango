@@ -82,7 +82,8 @@ export class SessionStore {
             // the topic is the first user *text* prompt — tool results also come
             // as user-role messages but carry no intent
             if (!topic && e.message.role === 'user') {
-              const text = e.message.content.find((b: any) => b.type === 'text')?.text ?? '';
+              const block: any = e.message.content.find((b) => b.type === 'text');
+              const text: string = block?.text ?? '';
               if (text.trim()) topic = text.trim().slice(0, 80);
             }
           }
