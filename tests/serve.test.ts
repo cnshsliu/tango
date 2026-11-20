@@ -2483,6 +2483,7 @@ test('handoff/takeover: briefs merge into existing sessions without switching', 
     const ho = await result(a, 5, 'handoff');
     assert.ok(ho.ok, ho.error);
     assert.equal(ho.data.target, bId);
+    assert.equal(ho.data.targetLive?.pid, b.child.pid, 'B is open in another window: the reply says so');
     const briefReq = JSON.stringify(mock.requests.at(-1));
     assert.ok(briefReq.includes('A-TASK-TEXT') && briefReq.includes('A-NOTE'));
     // the target's log is untouched until its owner merges
@@ -2503,10 +2504,14 @@ test('handoff/takeover: briefs merge into existing sessions without switching', 
     assert.ok(h.data.items.findIndex((x: any) => x.text === 'B-OWN-WORK') < hi, 'brief sits where it was merged');
 
     // a closed target merges on open
+    const bExited = new Promise((r) => b.child.once('exit', r));
     b.child.kill();
+    await bExited; // reaped: a zombie would still answer kill(pid, 0)
     mock.setScript(say('## Goal\nSECOND-BRIEF'));
     a.send({ id: 8, cmd: 'handoff', session: bId });
-    assert.ok((await result(a, 8, 'handoff 2')).ok);
+    const ho2 = await result(a, 8, 'handoff 2');
+    assert.ok(ho2.ok);
+    assert.equal(ho2.data.targetLive, null, 'closed target: stale lock (killed pid) is not reported as live');
     b2 = await startServe(home, work, port, { TANGO_RESUME: bId });
     await b2.until((f: any) => f.type === 'notice' && String(f.text).includes('交接'), 'merge on open');
     assert.ok((await readFile(join(home, 'sessions', `${bId}.jsonl`), 'utf8')).includes('SECOND-BRIEF'));
@@ -2518,6 +2523,7 @@ test('handoff/takeover: briefs merge into existing sessions without switching', 
     const tk = await result(a, 9, 'takeover');
     assert.ok(tk.ok, tk.error);
     assert.equal(tk.data.from, bId);
+    assert.equal(tk.data.sourceLive?.pid, b2.child.pid, 'takeover of a session open elsewhere is flagged');
     assert.ok(JSON.stringify(mock.requests.at(-1)).includes('B-OWN-WORK'), 'brief is of the source session');
     assert.equal(await readFile(join(home, 'sessions', `${bId}.jsonl`), 'utf8'), bBefore);
     mock.setScript(say('ok'));

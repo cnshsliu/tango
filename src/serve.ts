@@ -25,6 +25,7 @@ import { listDrafts, promoteDraft, saveDraft } from './core/skills.js';
 import { join, resolve } from 'node:path';
 import { SessionStore, relativeTime } from './core/session.js';
 import { cancelHandoff, drainHandoffs, listHandoffs, queueHandoff } from './core/handoff.js';
+import { holdSessionLock, sessionHolder } from './core/session-lock.js';
 import { costUsd, displayPlatform, groupModels } from './core/models/registry.js';
 import type { AskFn, PermissionMode } from './core/permissions.js';
 import type { ToolResult } from './core/types.js';
@@ -110,6 +111,8 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
       } catch {}
     });
   }
+  // per-session liveness, so /handoff can tell the target is open in another window
+  await holdSessionLock(store.id, cwd).catch(() => {});
   const config = await loadConfig();
   // the persisted threshold (or 'off') must survive restarts
   if (config.autocompact === 'off') agent.compactAt = 0;
@@ -1634,13 +1637,17 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
             const brief = await agent.handoffBrief(store.messages(), note);
             if (!brief) return reply(cmd, false, undefined, 'handoff: nothing to hand over yet');
             const queueId = await queueHandoff(otherId, { from: store.id, summary: brief });
-            reply(cmd, true, { target: otherId, brief, queueId });
+            // live target: merged before its next prompt there; closed: merged when reopened
+            const holder = await sessionHolder(otherId);
+            reply(cmd, true, { target: otherId, brief, queueId, targetLive: holder ? { pid: holder.pid } : null });
           } else {
             const source = await SessionStore.open(sessionsDir(), otherId);
             const brief = await agent.handoffBrief(source.messages(), note);
             if (!brief) return reply(cmd, false, undefined, 'takeover: that session has nothing to take over');
             await store.addHandoff(otherId, brief, 'takeover');
-            reply(cmd, true, { from: otherId, brief });
+            // live source: the brief is a snapshot; that window keeps going
+            const holder = await sessionHolder(otherId);
+            reply(cmd, true, { from: otherId, brief, sourceLive: holder ? { pid: holder.pid } : null });
           }
         } catch (e: any) {
           reply(cmd, false, undefined, String(e?.message ?? e));

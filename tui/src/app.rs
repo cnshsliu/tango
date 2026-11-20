@@ -5119,6 +5119,12 @@ impl App {
                                 format!("⇢ 交接摘要已发给会话 {target} · 它下次运行时并入上下文（7 天内）"),
                                 Tone::Success,
                             );
+                            if let Some(pid) = d["targetLive"]["pid"].as_u64() {
+                                self.push(
+                                    format!("  ⚠ 会话 {target} 正在另一个窗口打开（pid {pid}）· 在那边发下一条消息前并入"),
+                                    Tone::Warning,
+                                );
+                            }
                             self.push(
                                 format!("  撤回：/handoff cancel {q} · 查看：/handoff list"),
                                 Tone::Muted,
@@ -5190,6 +5196,12 @@ impl App {
                             let from: String =
                                 d["from"].as_str().unwrap_or("?").chars().take(8).collect();
                             self.push(format!("⇠ 已接管会话 {from} · 摘要："), Tone::Success);
+                            if let Some(pid) = d["sourceLive"]["pid"].as_u64() {
+                                self.push(
+                                    format!("  ⚠ 会话 {from} 仍在另一个窗口打开（pid {pid}）· 摘要只是此刻的快照，那边的后续进展不会同步"),
+                                    Tone::Warning,
+                                );
+                            }
                             self.stream = d["brief"].as_str().unwrap_or("").to_string();
                             self.commit_stream();
                         }
@@ -8169,6 +8181,29 @@ mod tests {
         );
         assert_eq!(app.respawn, None);
         assert!(app.lines.iter().any(|l| l.text.contains("abc12345")));
+        assert!(
+            !app.lines.iter().any(|l| l.text.contains("另一个窗口")),
+            "closed target: no warning"
+        );
+    }
+
+    #[test]
+    fn handoff_to_a_live_session_warns() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.run_slash("/handoff abc123", &mut serve);
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        let id = sent["id"].as_u64().unwrap();
+        app.frame(
+            json!({"type": "result", "id": id, "ok": true, "data": {
+                "target": "abc12345-x", "brief": "b", "queueId": "q1", "targetLive": {"pid": 4242}}}),
+            &mut serve,
+        );
+        assert!(
+            app.lines
+                .iter()
+                .any(|l| l.text.contains("另一个窗口") && l.text.contains("4242"))
+        );
     }
 
     #[test]

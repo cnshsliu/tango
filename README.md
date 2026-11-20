@@ -205,7 +205,9 @@ state is snapshotted too. Snapshots live in the session log; the JSONL log is th
   where you are. The target merges the brief into its context when it is next opened, or before
   its next prompt if it is already open in another window; its own history is kept. A brief
   still unmerged after 7 days is discarded with a notice instead. `/handoff list` shows every
-  queued brief with its queue id; `/handoff cancel <queue id>` withdraws one.
+  queued brief with its queue id; `/handoff cancel <queue id>` withdraws one. If the target is
+  open in another window, `/handoff` says so (and `/takeover` warns that a live source keeps
+  moving after the snapshot). Each open session holds `~/.tango/locks/sessions/<id>.json`.
 - `/takeover [session] [note]` is the reverse: it briefs an existing session and merges that brief
   into the current one, leaving the source untouched. Both take an id or prefix; bare commands open
   a session picker. Briefs show in the transcript where they were merged.
