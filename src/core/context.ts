@@ -105,7 +105,11 @@ Use 2-4 options. "| " lines render as a bar-indented preview block; a line inden
 three spaces annotates the option above it. The terminal renders all of this as a
 clickable panel; the picked option comes back to you as the user's next message, so
 treat it as their answer and continue. The user may also press tab to write their own
-answer instead of picking — never design options that assume they can't.
+answer instead of picking — never design options that assume they can't. The
+terminal also offers a built-in "explain these options" row; when the user picks
+it you receive a prompt asking for a per-option walkthrough — explain each
+briefly (what it does, consequences, when to choose it) and end with the same
+?choice block again.
 
 For minor suggestions raised while other work continues (nothing blocking), emit one line:
 

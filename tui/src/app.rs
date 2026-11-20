@@ -1453,6 +1453,23 @@ impl App {
     /// The picked option goes out as the next prompt; the matching todo entry retires.
     fn pick_choice(&mut self, serve: &mut Serve, idx: usize) {
         let Some(c) = self.choices.take() else { return };
+        // the built-in explain row (one past the model's options): ask for a
+        // detailed walkthrough of every option ending in the same ?choice
+        // block again — the ask itself is not answered
+        if idx == c.options.len() && c.suggest.is_none() {
+            let numbered: Vec<String> = c
+                .options
+                .iter()
+                .enumerate()
+                .map(|(i, o)| format!("{}. {}", i + 1, o.label))
+                .collect();
+            let prompt = format!(
+                "请逐项详细解释这组选项：\n{}\n对每一项说明：它具体会做什么、做了之后发生什么（含风险与代价）、什么情况下该选它。解释完成后，把同一组选项再用 ?choice 块原样给出（若解释让你发现某项表述有误导，可修正措辞后给出完整选项组），不要引入新选项。",
+                numbered.join("\n")
+            );
+            self.submit_text(serve, prompt, vec![]);
+            return;
+        }
         let Some(pick) = c.options.get(idx).cloned() else {
             self.choices = Some(c);
             return;
@@ -4439,7 +4456,8 @@ impl App {
                 }
                 KeyCode::Down => {
                     if let Some(c) = self.choices.as_mut() {
-                        c.sel = (c.sel + 1).min(c.options.len().saturating_sub(1));
+                        // + 1: the built-in explain row is selectable too
+                        c.sel = (c.sel + 1).min(c.options.len());
                     }
                     return;
                 }
@@ -6324,7 +6342,7 @@ impl App {
         let iw = (w as usize).saturating_sub(2); // bordered dialog inner width
         let q_rows = wrap_chat_rows(&[c.question.clone()], iw).len() as u16;
         let notes = c.options.iter().filter(|o| o.note.is_some()).count() as u16;
-        let content = q_rows + c.preview.len() as u16 + c.options.len() as u16 + notes;
+        let content = q_rows + c.preview.len() as u16 + c.options.len() as u16 + notes + 1; // + explain row
         // +2: title + hint rows; capped so the chat keeps at least half the screen
         (content + 2).min(term_h / 2).max(3)
     }
@@ -6848,6 +6866,26 @@ impl App {
                     y += 1;
                 }
             }
+            // the built-in explain row: ask the model to walk through every
+            // option, then re-present the block
+            let erow = Rect {
+                x: inner.x,
+                y,
+                width: inner.width,
+                height: 1,
+            };
+            let n = c.options.len();
+            let emarker = if c.sel == n { "❯" } else { " " };
+            let estyle = if c.sel == n {
+                self.theme.style(Tone::Badge)
+            } else {
+                self.theme.style(Tone::Muted)
+            };
+            f.render_widget(
+                Paragraph::new(format!("{}. {emarker} ❓ 详细解释各选项", n + 1)).style(estyle),
+                erow,
+            );
+            self.choice_rows.push((erow, n));
         }
 
         // completion popup, glued above the input rule
@@ -10201,6 +10239,38 @@ mod tests {
             screen(&mut terminal).contains("第39行"),
             "scrolling reveals the tail"
         );
+    }
+
+    #[test]
+    fn choice_panel_has_an_explain_row_that_asks_without_retiring() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.stream = "怎么处理？?choice\n1. 直接改\n2. 先看测试".into();
+        app.commit_stream();
+        {
+            let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+            terminal.draw(|f| app.draw(f)).unwrap();
+        }
+        // the panel carries one extra built-in row beyond the model's options
+        let explain_idx = app.choices.as_ref().unwrap().options.len();
+        assert_eq!(
+            app.choice_rows.len(),
+            explain_idx + 1,
+            "explain row rendered"
+        );
+        // picking it sends an explanation request and re-arms nothing yet…
+        app.pick_choice(&mut serve, explain_idx);
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        assert_eq!(sent["cmd"], "prompt");
+        let text = sent["text"].as_str().unwrap().to_string();
+        assert!(text.contains("解释"), "{text}");
+        assert!(
+            text.contains("?choice"),
+            "the model is asked to re-present the block: {text}"
+        );
+        // …and the choice stays parked in todo for the re-armed panel
+        assert_eq!(app.todos.len(), 1, "the ask is not answered by explaining");
     }
 
     #[test]
