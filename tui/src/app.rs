@@ -5229,7 +5229,7 @@ impl App {
                             }
                         }
                         (Pending::Timeline, true) => {
-                            let items: Vec<PickItem> = d["nodes"]
+                            let mut items: Vec<PickItem> = d["nodes"]
                                 .as_array()
                                 .map(|a| {
                                     a.iter()
@@ -5262,6 +5262,10 @@ impl App {
                                         .collect()
                                 })
                                 .unwrap_or_default();
+                            // newest first with the cursor on it: a rewind usually goes back a
+                            // step or two, and /resume lists newest first too. #i keeps the
+                            // chronological index (#0 = oldest) so labels don't shift.
+                            items.reverse();
                             self.picker = Some(Picker::new(PickerKind::Timeline, items));
                         }
                         (Pending::Rewind, true) | (Pending::Undo, true) | (Pending::Redo, true) => {
@@ -8397,8 +8401,11 @@ mod tests {
         assert!(app.picker.as_ref().unwrap().kind == PickerKind::Timeline);
         let picker = app.picker.as_ref().unwrap();
         assert_eq!(picker.items.len(), 2);
-        assert!(picker.items[0].label.contains("fix the bug"));
-        assert!(picker.items[1].note.contains("无代码快照"));
+        // newest on top, cursor on it; labels keep the chronological #index
+        assert!(picker.items[0].label.starts_with("#1 ·") && picker.items[0].label.contains("refactor it"));
+        assert!(picker.items[0].note.contains("无代码快照"));
+        assert!(picker.items[1].label.starts_with("#0 ·") && picker.items[1].label.contains("fix the bug"));
+        assert_eq!(picker.sel, 0);
 
         app.key(
             crossterm::event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
@@ -8408,7 +8415,7 @@ mod tests {
         assert_eq!(serve.sent.len(), 2);
         let rew: Value = serde_json::from_str(&serve.sent[1]).unwrap();
         assert_eq!(rew["cmd"], "rewind");
-        assert_eq!(rew["entryIndex"], 1);
+        assert_eq!(rew["entryIndex"], 9, "Enter on the default cursor rewinds to the newest node");
     }
 
     #[test]

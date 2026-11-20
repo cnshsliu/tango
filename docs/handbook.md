@@ -207,7 +207,7 @@ while a turn is running unless noted. `/help` prints a short list inside the TUI
 | Command | What it does |
 | --- | --- |
 | `/undo` / `/redo` | Step one turn back or forward (code + conversation). Not during a turn |
-| `/rewind` | Timeline picker. Roll back to just before the chosen turn |
+| `/rewind` | Timeline picker, newest turn on top. Roll back to just before the chosen turn |
 | `/fork [name]` | Copy the session up to now (or the turn picked in `/rewind`) into a new session |
 | `/branch` | Keep history up to a turn and drop the rest in place. `/redo` can recover the rest |
 | `/tree` | Show the fork tree of sessions |

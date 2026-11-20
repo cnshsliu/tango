@@ -191,7 +191,7 @@ Every prompt turn is checkpointed automatically: before a turn's first write-eff
 (`refs`-only commits — your branch, index and `git status` are never touched), and the turn's end
 state is snapshotted too. Snapshots live in the session log; the JSONL log is the single truth.
 
-- `/rewind` opens a timeline picker (one node per turn); choosing one rolls **code + conversation
+- `/rewind` opens a timeline picker (one node per turn, newest on top with the cursor on it); choosing one rolls **code + conversation
   + model context** back to just before that turn. Smart delete removes agent leftovers (files that
   exist in a later snapshot but not the target), keeps files no snapshot knows about (your own
   hand-made files are reported, never deleted) and never touches `.gitignore`d files.
