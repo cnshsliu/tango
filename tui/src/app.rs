@@ -78,6 +78,8 @@ struct Permission {
     name: String,
     detail: String,
     reason: String,
+    /// plain-language summary of what the command does (serve-side briefCommand)
+    brief: String,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -124,6 +126,7 @@ enum Pending {
     PresetGet,
     PermissionsList,
     PermissionsAdd,
+    Import,
     PermissionsRemove,
     ConfigShow,
     Pwd,
@@ -422,6 +425,10 @@ const SLASH: &[(&str, &str)] = &[
     (
         "/agents [role model]",
         "角色模型路由：driver/subagent/longContext（/bg 自动用 subagent）",
+    ),
+    (
+        "/import claude-code|grok|codex",
+        "导入其他代理的允许列表为 /permissions 规则（报告无法转换的条目）",
     ),
     ("/init", "生成 AGENTS.md 项目说明脚手架（--force 追加）"),
     ("/doctor", "环境体检：git/key/目录/版本"),
@@ -984,6 +991,11 @@ pub struct App {
     /// user-message style: true = right-positioned bubble (default),
     /// false = Claude Code style (same theme, left, full-width bg) — /bubble
     user_bubble: bool,
+    /// scroll offset of the permission dialog's command preview (↑↓/wheel)
+    perm_scroll: usize,
+    /// the preview's wrap width, captured each draw so key/wheel scrolling
+    /// computes the same row count the dialog rendered
+    perm_wrap_w: usize,
     /// plan mode badge (/plan)
     plan_mode: bool,
     /// active /goal text (badge)
@@ -1081,6 +1093,8 @@ impl App {
             session_name: String::new(),
             session_id_area: Rect::default(),
             user_bubble: true,
+            perm_scroll: 0,
+            perm_wrap_w: 76,
             ime_restore: None,
             queue_buttons: Vec::new(),
             plan_mode: false,
@@ -1956,8 +1970,8 @@ impl App {
             .find_map(|k| m.and_then(|o| o.get(*k)).and_then(|v| v.as_str()))
             .map(String::from)
             .unwrap_or_else(|| input.to_string());
-        let d: String = detail.chars().take(90).collect();
-        d.replace('\n', " ")
+        let d: String = detail.chars().take(4000).collect();
+        d
     }
 
     /// Lightweight markdown commit: fences become indented gray blocks (markers stripped),
@@ -2834,6 +2848,24 @@ impl App {
                 } else {
                     let id = serve.command("permissions_list", vec![]);
                     self.pending.push((id, Pending::PermissionsList));
+                }
+            }
+            "/import" => {
+                let mut parts = rest.split_whitespace();
+                match parts.next() {
+                    Some(source @ ("claude-code" | "grok" | "codex")) => {
+                        let mut extra = vec![("source", Value::String(source.into()))];
+                        // codex only: optional config.toml path (default ~/.codex/config.toml)
+                        if let (Some(path), "codex") = (parts.next(), source) {
+                            extra.push(("path", Value::String(path.into())));
+                        }
+                        let id = serve.command("import", extra);
+                        self.pending.push((id, Pending::Import));
+                    }
+                    _ => self.push(
+                        "usage: /import claude-code|grok|codex [config.toml]",
+                        Tone::Muted,
+                    ),
                 }
             }
             "/preset" => {
@@ -3793,7 +3825,27 @@ impl App {
                         _ => {}
                     }
                 } else if self.permission.is_some() {
-                    // permission answers are deliberate keyboard choices; never click through
+                    // answers stay deliberate keyboard choices; the wheel only scrolls
+                    match m.kind {
+                        MouseEventKind::ScrollUp => {
+                            if let Some(p) = self.permission.as_ref() {
+                                let total =
+                                    wrap_chat_rows(&[p.detail.clone()], self.perm_wrap_w).len();
+                                let max_scroll = total.saturating_sub(8);
+                                self.perm_scroll =
+                                    self.perm_scroll.saturating_sub(1).min(max_scroll);
+                            }
+                        }
+                        MouseEventKind::ScrollDown => {
+                            if let Some(p) = self.permission.as_ref() {
+                                let total =
+                                    wrap_chat_rows(&[p.detail.clone()], self.perm_wrap_w).len();
+                                let max_scroll = total.saturating_sub(8);
+                                self.perm_scroll = (self.perm_scroll + 1).min(max_scroll);
+                            }
+                        }
+                        _ => {}
+                    }
                 } else if self.picker.is_some() {
                     match m.kind {
                         MouseEventKind::ScrollUp => {
@@ -4265,6 +4317,21 @@ impl App {
         // permission modal grabs the keyboard
         if self.permission.is_some() {
             match k.code {
+                // scroll the command preview — reading is never answering
+                KeyCode::Up => {
+                    if let Some(p) = self.permission.as_ref() {
+                        let total = wrap_chat_rows(&[p.detail.clone()], self.perm_wrap_w).len();
+                        let max_scroll = total.saturating_sub(8);
+                        self.perm_scroll = self.perm_scroll.saturating_sub(1).min(max_scroll);
+                    }
+                }
+                KeyCode::Down => {
+                    if let Some(p) = self.permission.as_ref() {
+                        let total = wrap_chat_rows(&[p.detail.clone()], self.perm_wrap_w).len();
+                        let max_scroll = total.saturating_sub(8);
+                        self.perm_scroll = (self.perm_scroll + 1).min(max_scroll);
+                    }
+                }
                 KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
                     self.answer(serve, true)
                 }
@@ -4806,7 +4873,9 @@ impl App {
                     name,
                     detail,
                     reason,
+                    brief: v["brief"].as_str().unwrap_or("").to_string(),
                 });
+                self.perm_scroll = 0;
                 self.ime_for_dialog(); // y/n/a need a roman keyboard through a CJK IME
             }
             "turn_end" => {
@@ -5653,6 +5722,33 @@ impl App {
                                 ),
                                 Tone::Success,
                             );
+                        }
+                        (Pending::Import, true) => {
+                            let imported: Vec<&str> = d["imported"]
+                                .as_array()
+                                .map(|a| a.iter().filter_map(Value::as_str).collect())
+                                .unwrap_or_default();
+                            let mut text = format!("已导入 {} 条允许规则", imported.len());
+                            for r in &imported {
+                                text.push_str(&format!("\n  + {r}"));
+                            }
+                            let skipped = d["skipped"].as_array().cloned().unwrap_or_default();
+                            if !skipped.is_empty() {
+                                text.push_str(&format!("\n未能转换 {} 条：", skipped.len()));
+                                for s in &skipped {
+                                    text.push_str(&format!(
+                                        "\n  - {} （{}）",
+                                        s["raw"].as_str().unwrap_or("?"),
+                                        s["reason"].as_str().unwrap_or("?")
+                                    ));
+                                }
+                            }
+                            let tone = if imported.is_empty() {
+                                Tone::Muted
+                            } else {
+                                Tone::Success
+                            };
+                            self.push(text, tone);
                         }
                         (Pending::PermissionsRemove, true) => {
                             self.push("规则已移除", Tone::Muted);
@@ -6913,31 +7009,54 @@ impl App {
 
         // permission modal
         if let Some(p) = &self.permission {
-            let w = (area.width.min(72)).max(40).min(area.width);
-            let h = 7.min(area.height);
+            let w = (area.width.min(76)).max(40).min(area.width);
+            // the full command wraps; the window shows at most 8 rows and scrolls
+            let wrap_w = (w as usize).saturating_sub(2);
+            self.perm_wrap_w = wrap_w;
+            let cmd_rows = wrap_chat_rows(&[p.detail.clone()], wrap_w);
+            let max_rows = 8.min(area.height.saturating_sub(6) as usize);
+            let total = cmd_rows.len();
+            let max_scroll = total.saturating_sub(max_rows);
+            self.perm_scroll = self.perm_scroll.min(max_scroll);
+            let shown = cmd_rows
+                .iter()
+                .skip(self.perm_scroll)
+                .take(max_rows)
+                .map(|r| Line::from(Span::styled(r.text.clone(), self.theme.style(Tone::Muted))))
+                .collect::<Vec<_>>();
+            let brief_rows = usize::from(!p.brief.is_empty());
+            let h = (3 + brief_rows + shown.len() + usize::from(total > max_rows)) as u16;
+            let h = h.max(5).min(area.height);
             let popup = Rect {
                 x: (area.width.saturating_sub(w)) / 2,
                 y: (area.height.saturating_sub(h)) / 2,
                 width: w,
                 height: h,
             };
-            let inner = render_dialog(
-                f,
-                popup,
-                &p.name,
-                "y 允许 · n 拒绝 · a 始终允许 · c 复制命令",
-                self.theme,
-            );
-            let body = Paragraph::new(vec![
-                Line::from(Span::styled(
-                    p.reason.clone(),
-                    self.theme.style(Tone::Warning),
-                )),
-                Line::from(""),
-                Line::from(Span::raw(p.detail.chars().take(240).collect::<String>())),
-            ])
-            .wrap(Wrap { trim: true });
-            f.render_widget(body, inner);
+            let mut hint = String::from("y 允许 · n 拒绝 · a 始终允许 · c 复制命令");
+            if total > max_rows {
+                hint = format!(
+                    "↑↓/滚轮 滚动（{}/{} 行） · {}",
+                    self.perm_scroll + 1,
+                    total,
+                    hint
+                );
+            }
+            let inner = render_dialog(f, popup, &p.name, &hint, self.theme);
+            let mut body = Vec::new();
+            if !p.brief.is_empty() {
+                body.push(Line::from(Span::styled(
+                    p.brief.clone(),
+                    self.theme.style(Tone::Selected),
+                )));
+            }
+            body.push(Line::from(Span::styled(
+                p.reason.clone(),
+                self.theme.style(Tone::Warning),
+            )));
+            body.push(Line::from(""));
+            body.extend(shown);
+            f.render_widget(Paragraph::new(body), inner);
         }
 
         if let Some(viewer) = self.viewer.as_mut() {
@@ -9321,6 +9440,62 @@ mod tests {
     }
 
     #[test]
+    fn import_routes_to_serve_and_reports_imported_and_skipped() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        // bad / missing source: usage, nothing sent
+        app.run_slash("/import", &mut serve);
+        app.run_slash("/import cursor", &mut serve);
+        assert!(serve.sent.is_empty());
+        assert!(app.lines.iter().any(|l| l.text.contains("usage: /import")));
+
+        app.run_slash("/import claude-code", &mut serve);
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        assert_eq!(sent["cmd"], "import");
+        assert_eq!(sent["source"], "claude-code");
+        assert!(sent.get("path").is_none());
+        app.frame(
+            json!({"type": "result", "id": sent["id"], "ok": true, "data": {
+                "imported": ["bash:git status", "path:src"],
+                "skipped": [{"raw": "Dangerous(*)", "reason": "unknown tool"}]}}),
+            &mut serve,
+        );
+        let all: String = app
+            .lines
+            .iter()
+            .map(|l| l.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            all.contains("已导入 2 条") && all.contains("+ bash:git status"),
+            "{all}"
+        );
+        assert!(
+            all.contains("Dangerous(*)") && all.contains("unknown tool"),
+            "{all}"
+        );
+
+        // codex takes an optional config.toml path; other sources ignore extras
+        app.run_slash("/import codex ./c.toml", &mut serve);
+        let codex: Value = serde_json::from_str(&serve.sent[1]).unwrap();
+        assert_eq!(codex["path"], "./c.toml");
+        app.run_slash("/import grok extra", &mut serve);
+        let grok: Value = serde_json::from_str(&serve.sent[2]).unwrap();
+        assert!(grok.get("path").is_none());
+        app.frame(
+            json!({"type": "result", "id": grok["id"], "ok": false, "error": "import grok: ENOENT"}),
+            &mut serve,
+        );
+        assert!(
+            app.lines
+                .last()
+                .unwrap()
+                .text
+                .contains("import grok: ENOENT")
+        );
+    }
+
+    #[test]
     fn permissions_command_lists_adds_and_removes() {
         let mut app = App::new();
         let mut serve = Serve::mock();
@@ -9763,6 +9938,54 @@ mod tests {
     }
 
     #[test]
+    fn permission_dialog_shows_brief_and_scrolls_full_command() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        let mut cmd = String::from("cat >> docs/handbook.md <<'EOF'");
+        for i in 0..40 {
+            cmd.push_str(&format!("\n第 {i} 行内容内容内容内容"));
+        }
+        cmd.push_str("\nEOF");
+        app.permission = Some(Permission {
+            request: 1,
+            name: "bash".into(),
+            detail: cmd,
+            reason: "deletes files".into(),
+            brief: "向 docs/handbook.md 追加 40 行文本（首行：第 0 行内容）".into(),
+        });
+        let mut terminal = Terminal::new(TestBackend::new(80, 30)).unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        let screen = |t: &mut Terminal<TestBackend>| -> String {
+            t.backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|c| c.symbol().to_string())
+                .collect::<String>()
+                .chars()
+                .filter(|c| !c.is_whitespace())
+                .collect()
+        };
+        let first = screen(&mut terminal);
+        assert!(first.contains("追加40行文本"), "brief leads the dialog");
+        assert!(first.contains("第0行"), "first command rows visible");
+        assert!(!first.contains("第39行"), "tail hidden before scrolling");
+        // ↓↓ scrolls to the end of the preview
+        for _ in 0..40 {
+            app.key(
+                crossterm::event::KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+                &mut serve,
+            );
+        }
+        terminal.draw(|f| app.draw(f)).unwrap();
+        assert!(
+            screen(&mut terminal).contains("第39行"),
+            "scrolling reveals the tail"
+        );
+    }
+
+    #[test]
     fn permission_c_copies_without_answering() {
         let mut app = App::new();
         let mut serve = Serve::mock();
@@ -9771,6 +9994,7 @@ mod tests {
             name: "bash".into(),
             detail: "rm -rf build/".into(),
             reason: "deletes files".into(),
+            brief: "删除（递归+强制）：build/".into(),
         });
         app.key(
             crossterm::event::KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE),

@@ -18,6 +18,7 @@ import { reconcileTasks, startBgTask, stopTask } from './core/bgtask.js';
 import { bridgeName, connectServers } from './core/mcp.js';
 import { worktreeCreate, worktreeList, worktreeMerge, worktreeRemove } from './core/worktrees.js';
 import { parseRule } from './core/permissions.js';
+import { briefCommand } from './core/bash-brief.js';
 import { restoreSnapshot, snapshotFileList } from './core/git-snapshot.js';
 import { hasKey, keyProblem, loadConfig, loadModels, pickModel, saveConfig, sessionsDir, tangoDir } from './core/config.js';
 import { loadImages } from './core/images.js';
@@ -155,7 +156,8 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
     new Promise<boolean>((resolve) => {
       const request = ++reqSeq;
       pending.set(request, resolve);
-      out({ type: 'permission_request', request, call: { id: call.id, name: call.name, input: call.input }, reason });
+      out({ type: 'permission_request', request, call: { id: call.id, name: call.name, input: call.input }, reason,
+      brief: typeof (call.input as any)?.command === 'string' ? briefCommand(String((call.input as any).command)) : '' });
     })) satisfies AskFn;
 
   agent.events.on('message', ({ message }) => out({ type: 'message', message }));
