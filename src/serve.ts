@@ -255,6 +255,7 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
     contextWindow: agent.model.contextWindow ?? 128_000,
     theme: config.theme,
     mouse: config.mouse ?? true,
+    bubble: config.bubble ?? true,
     editor: config.editor,
     keys: config.keys,
     nvimViewer: config.nvimViewer,
@@ -1380,6 +1381,13 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
           return reply(cmd, false, undefined, `bad theme "${cmd.theme}" (dark|light|auto)`);
         await saveConfig({ ...(await loadConfig()), theme });
         reply(cmd, true, { theme });
+        return;
+      }
+      case 'set_bubble': {
+        if (typeof cmd.bubble !== 'boolean')
+          return reply(cmd, false, undefined, `bad bubble value "${cmd.bubble}" (true|false)`);
+        await saveConfig({ ...(await loadConfig()), bubble: cmd.bubble });
+        reply(cmd, true, { bubble: cmd.bubble });
         return;
       }
       case 'set_mouse': {

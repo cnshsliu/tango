@@ -443,6 +443,10 @@ const SLASH: &[(&str, &str)] = &[
     ("/remember <text>", "记住一条偏好 → 全局记忆，所有会话生效"),
     ("/mouse", "切换鼠标捕获 · /mouse on|off"),
     (
+        "/bubble",
+        "用户消息样式：on 靠右气泡（默认）· off 全宽靠左（Claude Code 式）",
+    ),
+    (
         "/loop <interval> <prompt>",
         "定间隔重复提示（如 /loop 10m 检查构建）· /loop off 停",
     ),
@@ -689,7 +693,7 @@ struct ChatRow {
 /// Right-position the rows of user lines into one bg bubble per line: all rows of
 /// a line share a block indent computed from the widest row (+ interior padding),
 /// so wrapped lines align inside a rectangle hugging the right margin.
-fn layout_user_bubbles(rows: &mut [ChatRow], is_user: &[bool], width: usize) {
+fn layout_user_bubbles(rows: &mut [ChatRow], is_user: &[bool], width: usize, bubble: bool) {
     let mut i = 0;
     while i < rows.len() {
         let line = rows[i].line;
@@ -700,17 +704,21 @@ fn layout_user_bubbles(rows: &mut [ChatRow], is_user: &[bool], width: usize) {
             .map(|n| i + n)
             .unwrap_or(rows.len());
         if user && rows[i..end].iter().any(|r| !r.text.is_empty()) {
-            let maxw = rows[i..end]
-                .iter()
-                .map(|r| display_width(&r.text))
-                .max()
-                .unwrap_or(0);
-            // +2: one interior padding column each side; -1 right margin
-            let block = maxw + 2;
-            let x = (width.saturating_sub(block + 1)) as u16;
             for r in &mut rows[i..end] {
                 r.user = true;
-                r.x = x;
+            }
+            if bubble {
+                let maxw = rows[i..end]
+                    .iter()
+                    .map(|r| display_width(&r.text))
+                    .max()
+                    .unwrap_or(0);
+                // +2: one interior padding column each side; -1 right margin
+                let block = maxw + 2;
+                let x = (width.saturating_sub(block + 1)) as u16;
+                for r in &mut rows[i..end] {
+                    r.x = x;
+                }
             }
         }
         i = end;
@@ -924,6 +932,9 @@ pub struct App {
     session_name: String,
     /// the status-bar sess span's rect — clicking copies the full id
     session_id_area: Rect,
+    /// user-message style: true = right-positioned bubble (default),
+    /// false = Claude Code style (same theme, left, full-width bg) — /bubble
+    user_bubble: bool,
     /// plan mode badge (/plan)
     plan_mode: bool,
     /// active /goal text (badge)
@@ -1018,6 +1029,7 @@ impl App {
             serve_branch: String::new(),
             session_name: String::new(),
             session_id_area: Rect::default(),
+            user_bubble: true,
             ime_restore: None,
             queue_buttons: Vec::new(),
             plan_mode: false,
@@ -2986,6 +2998,32 @@ impl App {
                 self.pending.push((id, Pending::Mouse));
                 self.mouse_capture = Some(enabled);
             }
+            "/bubble" => {
+                let enabled = match rest {
+                    "" => !self.user_bubble,
+                    "on" => true,
+                    "off" => false,
+                    _ => {
+                        self.push(
+                            "usage: /bubble [on|off]（on=靠右气泡 off=全宽靠左）",
+                            Tone::Muted,
+                        );
+                        return;
+                    }
+                };
+                self.user_bubble = enabled;
+                let id = serve.command("set_bubble", vec![("bubble", Value::Bool(enabled))]);
+                self.pending.push((id, Pending::Mouse));
+                self.push(
+                    if enabled {
+                        "用户消息：靠右气泡"
+                    } else {
+                        "用户消息：全宽靠左（Claude Code 式）"
+                    }
+                    .to_string(),
+                    Tone::Muted,
+                );
+            }
             "/vim" => {
                 let enabled = match rest {
                     "" => !self.vim,
@@ -4636,6 +4674,7 @@ impl App {
                 self.session_full = v["sessionId"].as_str().unwrap_or("").to_string();
                 self.serve_branch = v["branch"].as_str().unwrap_or("").to_string();
                 self.session_name = v["sessionName"].as_str().unwrap_or("").to_string();
+                self.user_bubble = v["bubble"].as_bool().unwrap_or(true);
                 self.cost = v["totalCostUsd"].as_f64().unwrap_or(0.0);
                 self.context_tokens = v["contextTokens"].as_u64().unwrap_or(0);
                 self.context_window = v["contextWindow"].as_u64().unwrap_or(0);
@@ -6163,7 +6202,7 @@ impl App {
         let tones: Vec<Tone> = self.chat_lines().iter().map(|l| l.tone).collect();
         let user_flags: Vec<bool> = tones.iter().map(|t| *t == Tone::User).collect();
         let mut all_rows = wrap_chat_rows(&texts, inner_w);
-        layout_user_bubbles(&mut all_rows, &user_flags, inner_w);
+        layout_user_bubbles(&mut all_rows, &user_flags, inner_w, self.user_bubble);
         let total = all_rows.len();
         if self.last_visual_total > 0 && total > self.last_visual_total && self.scroll_back > 0 {
             let added = total - self.last_visual_total;
@@ -6225,6 +6264,12 @@ impl App {
                 ));
                 spans.push(Span::styled(chars[s_to..].iter().collect::<String>(), base));
                 shown.push(Line::from(spans));
+            } else if row.user && !self.user_bubble {
+                // Claude Code mode: same theme, left-aligned, full-width bg
+                let text = format!(" {} ", row.text);
+                let fill = (inner_w as usize).saturating_sub(display_width(&text));
+                let line = format!("{}{}", text, " ".repeat(fill));
+                shown.push(Line::from(Span::styled(line, base)));
             } else if row.user {
                 let mut spans = pad;
                 spans.push(Span::styled(format!(" {} ", row.text), base));
@@ -8483,6 +8528,34 @@ mod tests {
     }
 
     #[test]
+    fn bubble_mode_toggles_between_right_and_fullwidth_left() {
+        let mut rows = wrap_chat_rows(&["用户的一句话".to_string(), "agent 回复".to_string()], 40);
+        let flags = vec![true, false];
+        layout_user_bubbles(&mut rows, &flags, 40, true);
+        assert!(
+            rows[0].user && rows[0].x > 0,
+            "default: right-positioned bubble"
+        );
+        let mut rows = wrap_chat_rows(&["用户的一句话".to_string()], 40);
+        layout_user_bubbles(&mut rows, &[true], 40, false);
+        assert!(
+            rows[0].user && rows[0].x == 0,
+            "claude-code mode: full-width, left, still user-styled"
+        );
+        // the slash command flips it and persists through serve
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        assert!(app.user_bubble, "default is the right bubble");
+        app.run_slash("/bubble off", &mut serve);
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        assert_eq!(sent["cmd"], "set_bubble");
+        assert_eq!(sent["bubble"], false);
+        assert!(!app.user_bubble);
+        app.run_slash("/bubble", &mut serve);
+        assert!(app.user_bubble, "bare /bubble toggles back on");
+    }
+
+    #[test]
     fn status_session_id_click_copies_to_clipboard() {
         use ratatui::{Terminal, backend::TestBackend};
         let mut app = App::new();
@@ -10026,7 +10099,7 @@ mod tests {
             40,
         );
         let is_user = vec![true, false];
-        layout_user_bubbles(&mut rows, &is_user, 40);
+        layout_user_bubbles(&mut rows, &is_user, 40, true);
         let user_rows: Vec<&ChatRow> = rows.iter().filter(|r| r.user).collect();
         assert!(user_rows.len() >= 2, "long user text wraps into rows");
         let first_x = user_rows[0].x;
