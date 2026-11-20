@@ -183,6 +183,32 @@ export const presets: ModelSpec[] = [
     cost: { input: 0.12, output: 0.419, cacheRead: 0.034 }
   },
   {
+    // GLM Coding Plan: subscription (not per-token), Anthropic-protocol endpoint —
+    // same key Claude Code uses for its GLM plans
+    id: 'zhipu-plan/glm-5.3',
+    region: 'cn',
+    provider: 'zhipu-plan',
+    model: 'glm-5.3',
+    api: 'anthropic-messages',
+    baseUrl: 'https://open.bigmodel.cn/api/anthropic',
+    apiKey: 'ZHIPU_CODING_PLAN_API_KEY',
+    contextWindow: 1000000,
+    maxTokens: 32768,
+    reasoning: true
+  },
+  {
+    id: 'zhipu-plan/glm-5.3-flash',
+    region: 'cn',
+    provider: 'zhipu-plan',
+    model: 'glm-5.3-flash',
+    api: 'anthropic-messages',
+    baseUrl: 'https://open.bigmodel.cn/api/anthropic',
+    apiKey: 'ZHIPU_CODING_PLAN_API_KEY',
+    contextWindow: 1000000,
+    maxTokens: 32768,
+    reasoning: true
+  },
+  {
     id: 'kimi-code/kimi-for-coding',
     region: 'cn',
     provider: 'kimi-code',

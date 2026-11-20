@@ -7,6 +7,19 @@ const spec = (over: Partial<ModelSpec>): ModelSpec => ({
   id: 't/m', provider: 't', model: 'm', api: 'openai-completions', baseUrl: 'http://x', ...over
 });
 
+test('zhipu coding-plan presets ride the anthropic-compatible endpoint', async () => {
+  const models = presets;
+  const plan = models.find((m) => m.id === 'zhipu-plan/glm-5.3');
+  assert.ok(plan, 'coding-plan glm-5.3 preset registered');
+  assert.equal(plan.api, 'anthropic-messages');
+  assert.equal(plan.baseUrl, 'https://open.bigmodel.cn/api/anthropic');
+  assert.equal(plan.apiKey, 'ZHIPU_CODING_PLAN_API_KEY');
+  const flash = models.find((m) => m.id === 'zhipu-plan/glm-5.3-flash');
+  assert.ok(flash, 'flash variant registered');
+  // the pay-as-you-go presets stay untouched
+  assert.ok(models.find((m) => m.id === 'zhipu/glm-5.3' && m.api === 'openai-completions'));
+});
+
 test('platformOf: explicit platform wins, provider is the fallback', () => {
   assert.equal(platformOf(spec({ platform: 'opencode', provider: 'opencode' })), 'opencode');
   assert.equal(platformOf(spec({ provider: 'tknet' })), 'tknet');

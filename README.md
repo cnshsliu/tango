@@ -34,6 +34,7 @@ prices come from pricing groups, which tango doesn't see). If
 | | `kimi-code/kimi-for-coding` (api.kimi.com/coding, Kimi Code plan) | `KIMI_CODE_API_KEY` |
 | | `qwen/qwen3.8-max`, `qwen/qwen3.8-flash` (dashscope.aliyuncs.com) | `DASHSCOPE_API_KEY` |
 | | `zhipu/glm-5.3`, `zhipu/glm-5.3-flash` (bigmodel.cn) | `Z_API_KEY` |
+| | `zhipu-plan/glm-5.3`, `-flash` (GLM Coding Plan, Anthropic 协议) | `ZHIPU_CODING_PLAN_API_KEY` |
 | International | `kimi-intl/kimi-k3.1-pro`, `kimi-intl/kimi-k3.1-pro-highspeed` (moonshot.ai) | `KIMI_API_KEY` |
 | | `qwen-us/qwen3.8-max`, `qwen-us/qwen3.8-flash` (dashscope-us) | `DASHSCOPE_US_API_KEY` |
 | | `anthropic/claude-opus-5-5`, `anthropic/claude-haiku-5-5` | `ANTHROPIC_API_KEY` |
