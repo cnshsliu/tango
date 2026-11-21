@@ -110,22 +110,7 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<Exit, Box<dy
     // query the terminal's graphics capability BEFORE the input thread exists —
     // the query responses arrive on stdin and must be read here, not typed
     // into the input box (iTerm2's fast `_Gi=31;OK` reply landed as keystrokes)
-    let queried = {
-        let mut queried = ratatui_image::picker::Picker::from_query_stdio().ok();
-        // Orca answers DA1 (sixel) AND the kitty-graphics query (`_Gi=..;OK`),
-        // but delivers responses out of order so the picker's DSR early-exit
-        // misses them. Kitty is the right force: its unicode placeholders keep
-        // images anchored to cells — they scroll with the chat and diff-render
-        // cleanly. Sixel instead pins images to screen coordinates, which stacks
-        // stale copies over the text on every scroll/redraw.
-        if std::env::var("TERM_PROGRAM").as_deref() == Ok("Orca") {
-            let fallback = queried.get_or_insert_with(ratatui_image::picker::Picker::halfblocks);
-            if fallback.protocol_type() == ratatui_image::picker::ProtocolType::Halfblocks {
-                fallback.set_protocol_type(ratatui_image::picker::ProtocolType::Kitty);
-            }
-        }
-        queried
-    };
+    let queried = ratatui_image::picker::Picker::from_query_stdio().ok();
 
     // crossterm has no pollable fd we own: a thread forwards terminal input into the same queue
     thread::spawn({
