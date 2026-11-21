@@ -7,7 +7,7 @@ use crate::viewer::{PromptState, Viewer};
 use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
-use ratatui::style::Style;
+use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Paragraph, Wrap};
 use serde_json::{Value, json};
@@ -763,6 +763,8 @@ struct ChatRow {
     x: u16,
     /// user rows render as a right-positioned bg bubble (interior left-aligned)
     user: bool,
+    /// thinking rows carry a left "┃ " gutter whose color scrolls while busy
+    think: bool,
     /// rounded top/bottom frame row of a user bubble — styled, never selectable
     border: bool,
 }
@@ -772,6 +774,44 @@ struct ChatRow {
 /// so wrapped lines align inside a rectangle hugging the right margin.
 /// Blank columns kept between a user bubble's right │ and the terminal edge.
 const BUBBLE_MARGIN: usize = 1;
+
+/// The thinking bar's color wave: dim → bright cyan → dim, one slot per row.
+/// A phase of (frame − row) makes the bright band flow down the block.
+static THINK_EPOCH: std::sync::LazyLock<std::time::Instant> =
+    std::sync::LazyLock::new(std::time::Instant::now);
+const THINK_WAVE: [Color; 8] = [
+    Color::Rgb(18, 48, 60),
+    Color::Rgb(24, 84, 104),
+    Color::Rgb(32, 130, 160),
+    Color::Rgb(60, 190, 220),
+    Color::Rgb(120, 225, 240),
+    Color::Rgb(60, 190, 220),
+    Color::Rgb(32, 130, 160),
+    Color::Rgb(24, 84, 104),
+];
+const THINK_FRAME_MS: u128 = 120;
+
+/// Color of the thinking bar cell at global row `g` on animation frame `frame`
+/// (~120ms apart). `animate` false (idle, or no truecolor) → flat dim gray.
+fn thinking_bar_color(frame: u128, local_row: usize, animate: bool) -> Color {
+    if !animate {
+        return Color::DarkGray;
+    }
+    let phase = (frame + THINK_WAVE.len() as u128).wrapping_sub(local_row as u128)
+        % THINK_WAVE.len() as u128;
+    THINK_WAVE[phase as usize]
+}
+
+/// 24-bit color support: COLORTERM=truecolor/24bit or a *-direct TERM. Cached:
+/// the environment does not change while we run.
+fn supports_truecolor() -> bool {
+    static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *CACHED.get_or_init(|| {
+        let colorterm = std::env::var("COLORTERM").unwrap_or_default().to_ascii_lowercase();
+        let term = std::env::var("TERM").unwrap_or_default();
+        colorterm.contains("truecolor") || colorterm.contains("24bit") || term.ends_with("direct")
+    })
+}
 
 fn layout_user_bubbles(rows: &mut Vec<ChatRow>, is_user: &[bool], width: usize, bubble: bool) {
     let mut i = 0;
@@ -802,6 +842,7 @@ fn layout_user_bubbles(rows: &mut Vec<ChatRow>, is_user: &[bool], width: usize, 
                 }
                 // wrap the text rows in top/bottom border rows of the same block
                 let top = ChatRow {
+                    think: false,
                     line: rows[i].line,
                     cs: rows[i].cs,
                     ce: rows[i].cs,
@@ -811,6 +852,7 @@ fn layout_user_bubbles(rows: &mut Vec<ChatRow>, is_user: &[bool], width: usize, 
                     border: true,
                 };
                 let bottom = ChatRow {
+                    think: false,
                     cs: rows[end - 1].ce,
                     ce: rows[end - 1].ce,
                     ..top.clone()
@@ -831,7 +873,9 @@ fn layout_user_bubbles(rows: &mut Vec<ChatRow>, is_user: &[bool], width: usize, 
 /// from the row's own start (bubble rows carry an indent + one interior pad).
 /// Columns left of the row clamp to 0; past the end, to the char count.
 fn row_char_at(row: &ChatRow, column: u16) -> usize {
-    let start = row.x as usize + 2 * usize::from(row.user); // │ + interior pad
+    let start = row.x as usize
+        + 2 * usize::from(row.user)   // │ + interior pad
+        + 2 * usize::from(row.think); // ┃ + gutter pad
     let mut col = (column as usize).saturating_sub(start);
     let mut idx = 0usize;
     for ch in row.text.chars() {
@@ -847,17 +891,26 @@ fn row_char_at(row: &ChatRow, column: u16) -> usize {
 
 /// Wrap with per-line widths: user lines bound for a bordered bubble wrap
 /// narrower (2 border/pad columns each side); everything else uses the full width.
-fn wrap_chat_rows_mixed(texts: &[String], width: usize, is_user: &[bool]) -> Vec<ChatRow> {
+fn wrap_chat_rows_mixed(
+    texts: &[String],
+    width: usize,
+    is_user: &[bool],
+    think: &[bool],
+    bubble: bool,
+) -> Vec<ChatRow> {
     let mut rows = Vec::new();
     let w = width.max(1);
     for (line, text) in texts.iter().enumerate() {
         let user = is_user.get(line).copied().unwrap_or(false);
-        let lw = if user {
+        // thinking lines wrap 2 columns narrower via the flagged wrapper (the "┃ "
+        // gutter); bubble-bound user lines reserve the frame columns
+        let lw = if user && bubble {
             w.saturating_sub(4 + BUBBLE_MARGIN).max(1)
         } else {
             w
         };
-        let mut part = wrap_chat_rows(&[text.clone()], lw);
+        let is_think = think.get(line).copied().unwrap_or(false);
+        let mut part = wrap_chat_rows_flagged(&[text.clone()], lw, &[is_think]);
         for r in &mut part {
             // wrap_chat_rows indexes within the single-line slice — restore the
             // real source-line index so grouping/mapping stay correct
@@ -871,9 +924,16 @@ fn wrap_chat_rows_mixed(texts: &[String], width: usize, is_user: &[bool]) -> Vec
 
 /// Word wrap with char-index tracking; long words (URLs, CJK runs) hard-split at width.
 fn wrap_chat_rows(texts: &[String], width: usize) -> Vec<ChatRow> {
+    wrap_chat_rows_flagged(texts, width, &[])
+}
+
+/// Wrap with per-line flags: a thinking line reserves its 2-column "┃ " gutter,
+/// so it wraps 2 columns narrower to keep the text inside the chat area.
+fn wrap_chat_rows_flagged(texts: &[String], width: usize, think: &[bool]) -> Vec<ChatRow> {
     let mut rows = Vec::new();
-    let w = width.max(1);
     for (line, text) in texts.iter().enumerate() {
+        let think = think.get(line).copied().unwrap_or(false);
+        let w = width.max(1).saturating_sub(if think { 2 } else { 0 }).max(1);
         let chars: Vec<char> = text.chars().collect();
         if chars.is_empty() {
             rows.push(ChatRow {
@@ -883,6 +943,7 @@ fn wrap_chat_rows(texts: &[String], width: usize) -> Vec<ChatRow> {
                 text: String::new(),
                 x: 0,
                 user: false,
+                think,
                 border: false,
             });
             continue;
@@ -896,7 +957,7 @@ fn wrap_chat_rows(texts: &[String], width: usize) -> Vec<ChatRow> {
                 .position(|&c| c == '\n')
                 .map(|n| seg_start + n)
                 .unwrap_or(chars.len());
-            wrap_segment(&mut rows, line, &chars, seg_start, seg_end, w);
+            wrap_segment(&mut rows, line, &chars, seg_start, seg_end, w, think);
             seg_start = seg_end + 1;
         }
     }
@@ -911,6 +972,7 @@ fn wrap_segment(
     start: usize,
     end: usize,
     w: usize,
+    think: bool,
 ) {
     if start == end {
         rows.push(ChatRow {
@@ -920,6 +982,7 @@ fn wrap_segment(
             text: String::new(),
             x: 0,
             user: false,
+            think,
             border: false,
         });
         return;
@@ -970,6 +1033,7 @@ fn wrap_segment(
                 text: piece,
                 x: 0,
                 user: false,
+                think,
                 border: false,
             });
             cs = next;
@@ -1052,7 +1116,9 @@ pub struct App {
     last_visual_total: usize,
     unread_rows: usize,
     focus: bool,
-    busy: bool,
+    pub busy: bool,
+    /// thinking-bar animation frame (~120ms steps); only advances while busy
+    think_frame: u128,
     prompt_id: u64,
     btw_id: Option<u64>,
     btw_title: Option<String>,
@@ -1203,6 +1269,7 @@ impl App {
             unread_rows: 0,
             focus: false,
             busy: false,
+            think_frame: 0,
             prompt_id: 0,
             btw_id: None,
             btw_title: None,
@@ -7076,6 +7143,10 @@ impl App {
         }
         f.render_widget(Paragraph::new(Line::from(spans)), status_a);
 
+        self.think_frame = std::time::Instant::now()
+            .duration_since(*THINK_EPOCH)
+            .as_millis()
+            / THINK_FRAME_MS;
         // chat with bottom-anchored scrolling (scroll_back=0 follows the newest line).
         // We own the wrap (wrap_chat_rows) so every terminal row maps back to an exact
         // (source line, char range) — character-exact mouse selection and click targets.
@@ -7087,11 +7158,9 @@ impl App {
         }
         let tones: Vec<Tone> = self.chat_lines().iter().map(|l| l.tone).collect();
         let user_flags: Vec<bool> = tones.iter().map(|t| *t == Tone::User).collect();
-        let mut all_rows = if self.user_bubble {
-            wrap_chat_rows_mixed(&texts, inner_w, &user_flags)
-        } else {
-            wrap_chat_rows(&texts, inner_w)
-        };
+        let think_flags: Vec<bool> = tones.iter().map(|t| *t == Tone::Thinking).collect();
+        let mut all_rows =
+            wrap_chat_rows_mixed(&texts, inner_w, &user_flags, &think_flags, self.user_bubble);
         layout_user_bubbles(&mut all_rows, &user_flags, inner_w, self.user_bubble);
         let total = all_rows.len();
         if self.last_visual_total > 0 && total > self.last_visual_total && self.scroll_back > 0 {
@@ -7108,6 +7177,29 @@ impl App {
         self.chat_scroll_offset = offset;
         self.chat_inner_w = chat_a.width;
 
+        // the LAST thinking block, but only if it belongs to the running turn
+        // (its rows sit after the newest user prompt): older blocks stay dim.
+        let live_think_block: Option<usize> = {
+            let last_user = user_flags
+                .iter()
+                .rposition(|u| *u)
+                .unwrap_or(usize::MAX);
+            let mut block: Option<usize> = None;
+            let mut open = false;
+            for (i, r) in self.chat_rows.iter().enumerate() {
+                if r.think {
+                    if !open {
+                        open = true;
+                        block = Some(i);
+                    }
+                } else {
+                    open = false;
+                }
+            }
+            block.filter(|&start| {
+                self.chat_rows.get(start).is_some_and(|r| r.line >= last_user)
+            })
+        };
         // render the visible window row by row with char-exact selection highlight
         let sel = self.selection_range(chat_a.y);
         let mut shown: Vec<Line> = Vec::new();
@@ -7158,11 +7250,21 @@ impl App {
                 ]));
                 continue;
             }
-            let pad = if row.user {
+            let mut pad = if row.user {
                 vec![Span::raw(" ".repeat(row.x as usize))]
             } else {
                 Vec::new()
             };
+            if row.think {
+                // "┃ " gutter; the color scrolls down the live block while a turn runs
+                let local = live_think_block.map_or(g, |b| g.saturating_sub(b));
+                let live = self.busy
+                    && supports_truecolor()
+                    && live_think_block.is_some_and(|b| g >= b);
+                let color = thinking_bar_color(self.think_frame, local, live);
+                pad.push(Span::styled("┃".to_string(), Style::default().fg(color)));
+                pad.push(Span::raw(" "));
+            }
             let base = if row.user {
                 self.theme.user_bubble(style)
             } else {
@@ -7199,6 +7301,10 @@ impl App {
                 spans.push(Span::styled("│ ".to_string(), base));
                 spans.push(Span::styled(text, base));
                 spans.push(Span::styled(format!("{} │", " ".repeat(fill)), base));
+                shown.push(Line::from(spans));
+            } else if row.think {
+                let mut spans = pad;
+                spans.push(Span::styled(row.text.clone(), style));
                 shown.push(Line::from(spans));
             } else {
                 shown.push(Line::from(Span::styled(row.text.clone(), style)));
@@ -8321,7 +8427,7 @@ mod tests {
     #[test]
     fn user_prompt_newlines_become_real_rows_in_one_bubble() {
         let texts = vec!["❯ hello\nworld\n\nend".to_string()];
-        let mut rows = wrap_chat_rows_mixed(&texts, 40, &[true]);
+        let mut rows = wrap_chat_rows_mixed(&texts, 40, &[true], &[], true);
         layout_user_bubbles(&mut rows, &[true], 40, true);
         let body: Vec<&str> = rows
             .iter()
@@ -9762,7 +9868,7 @@ mod tests {
         // width 40: the bubble wraps text at 36 (2 border/pad columns each side)
         let texts = vec!["一二三四五六七八九十壹贰".to_string()];
         let flags = vec![true];
-        let rows = wrap_chat_rows_mixed(&texts, 40, &flags);
+        let rows = wrap_chat_rows_mixed(&texts, 40, &flags, &[], true);
         assert!(
             rows.iter()
                 .filter(|r| r.user)
@@ -9812,7 +9918,7 @@ mod tests {
             "一二三四五六七八九十一二三四五六七八".to_string(),
         ];
         let flags = vec![true, true, true];
-        let mut rows = wrap_chat_rows_mixed(&texts, 24, &flags);
+        let mut rows = wrap_chat_rows_mixed(&texts, 24, &flags, &[], true);
         layout_user_bubbles(&mut rows, &flags, 24, true);
         let borders = rows.iter().filter(|r| r.border).count();
         let text_rows = rows.iter().filter(|r| r.user && !r.border).count();
@@ -10132,6 +10238,79 @@ mod tests {
         let mut fresh = App::new();
         assert!(!fresh.history_up());
         assert!(!fresh.history_down());
+    }
+
+    #[test]
+    fn thinking_lines_get_a_two_column_gutter_and_wrap_narrower() {
+        let texts = vec![
+            "普通一行".to_string(),
+            "✻ 思考内容比较长需要折行思考内容比较长需要折行".to_string(),
+        ];
+        let flags = vec![false, true];
+        let rows = wrap_chat_rows_flagged(&texts, 12, &flags);
+        assert!(!rows[0].think);
+        assert!(rows.iter().skip(1).all(|r| r.think), "all rows of the thinking line");
+        assert!(
+            rows.iter().skip(1).all(|r| display_width(&r.text) <= 10),
+            "wraps at 12-2 for the gutter: {:?}",
+            rows.iter().map(|r| r.text.as_str()).collect::<Vec<_>>()
+        );
+        // click mapping skips the "┃ " gutter
+        let mut app = App::new();
+        app.chat_rows = vec![ChatRow {
+            line: 0,
+            cs: 0,
+            ce: 4,
+            text: "汉字汉字".into(),
+            x: 0,
+            user: false,
+            think: true,
+            border: false,
+        }];
+        assert_eq!(app.chat_line_hit(0, 1, 0).map(|(_, _, i)| i), Some(0), "gutter clamps to 0");
+        assert_eq!(app.chat_line_hit(0, 2, 0).map(|(_, _, i)| i), Some(0), "text starts at col 2");
+        assert_eq!(app.chat_line_hit(0, 4, 0).map(|(_, _, i)| i), Some(1), "汉 spans 2-3");
+    }
+
+    #[test]
+    fn thinking_bar_wave_flows_down_and_freezes_when_idle() {
+        // not animating: flat dim
+        assert_eq!(thinking_bar_color(0, 0, false), Color::DarkGray);
+        assert_eq!(thinking_bar_color(99, 5, false), Color::DarkGray);
+        // animating: the wave flows downward — a row's color now reappears one row
+        // below on the next frame
+        for f in 0..16u128 {
+            for r in 0..7usize {
+                assert_eq!(
+                    thinking_bar_color(f, r, true),
+                    thinking_bar_color(f.wrapping_add(1), r + 1, true),
+                    "frame {f} row {r}"
+                );
+            }
+        }
+        // the wave is periodic in rows and covers the bright head
+        let wave: Vec<Color> = (0..8).map(|r| thinking_bar_color(0, r, true)).collect();
+        assert_eq!(wave[0], THINK_WAVE[0]);
+        assert!(wave.iter().any(|c| matches!(c, Color::Rgb(120, 225, 240))));
+        assert_eq!(thinking_bar_color(8, 0, true), thinking_bar_color(0, 0, true));
+    }
+
+    #[test]
+    fn thinking_rows_render_with_the_bar_and_the_text_indented() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.push("✻ 这是思考".to_string(), Tone::Thinking);
+        app.busy = true;
+        let mut t = Terminal::new(TestBackend::new(30, 10)).unwrap();
+        t.draw(|f| app.draw(f)).unwrap();
+        let b = t.backend().buffer();
+        let row: String = (0..30).map(|x| b[(x, 0)].symbol().to_string()).collect();
+        // wide chars leave blank continuation cells — compare with spaces removed
+        let tight = row.replace(' ', "");
+        assert!(tight.starts_with("┃✻这是思考"), "{row:?}");
+        assert_eq!(b[(1, 0)].symbol(), " ", "one space gutter pad");
+        assert!(app.chat_rows.iter().all(|r| r.think));
     }
 
     #[test]
@@ -12251,6 +12430,7 @@ mod tests {
             ce: 6,
             text: "abcdef".into(),
             x: 30,
+            think: false,
             user: true,
             border: false,
         }];
@@ -12269,6 +12449,7 @@ mod tests {
             ce: 4,
             text: "汉字汉字".into(),
             x: 30,
+            think: false,
             user: true,
             border: false,
         }];
@@ -12285,6 +12466,7 @@ mod tests {
             x: 0,
             user: false,
             border: false,
+                think: false,
         };
         app.sel_anchor_pos = Some((0, 1));
         app.sel_end_pos = Some((0, 3));

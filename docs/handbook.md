@@ -51,6 +51,10 @@ git diff | tango "review this patch"
 | Ask a side question | `/btw <question>`. The answer doesn't enter the session |
 | Answer the model's ❓ panel | ↑↓ + Enter, click, or type the option number + Enter. Esc hides it; `/todo` brings it back |
 
+Reasoning the model streamed shows as `✻ …` lines with a `┃` bar on their left. While the
+turn runs, that bar's color scrolls down the newest thinking block (needs a truecolor
+terminal; otherwise, and once idle, it is a flat dim bar).
+
 While a turn runs, Enter queues your next prompt instead of interrupting. Queued prompts
 are sent in order when the turn ends. `/queue` shows them, and its `[并入当前]` button merges
 one into the running turn. Alt+Enter does the same for what you're typing: the text joins the

@@ -103,25 +103,34 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<Exit, Box<dy
     let (tx, rx) = mpsc::channel::<Event>();
     let mut serve = Serve::spawn(tx.clone(), 0, None, None, None)?;
     let input_enabled = Arc::new(AtomicBool::new(true));
+    // while a turn runs, the heartbeat speeds up (~8fps) so the thinking bar's
+    // color wave can scroll; idle stays at the cheap 1s heartbeat
+    let animating = Arc::new(AtomicBool::new(false));
 
     // crossterm has no pollable fd we own: a thread forwards terminal input into the same queue
     thread::spawn({
         let tx = tx.clone();
         let input_enabled = input_enabled.clone();
+        let animating = animating.clone();
         move || {
             let mut last_tick = std::time::Instant::now();
             loop {
-                // 1s heartbeat: elapsed timers and rotating tips redraw even when the
-                // turn is silent (a tool grinding away for minutes)
-                if last_tick.elapsed() >= Duration::from_secs(1) {
+                // heartbeat: 1s while idle (timers and rotating tips), or ~120ms
+                // while animating (the thinking bar's scrolling color wave)
+                let beat = if animating.load(Ordering::Relaxed) {
+                    Duration::from_millis(120)
+                } else {
+                    Duration::from_secs(1)
+                };
+                if last_tick.elapsed() >= beat {
                     last_tick = std::time::Instant::now();
                     let _ = tx.send(Event::Tick);
                 }
                 if !input_enabled.load(Ordering::Relaxed) {
-                    thread::sleep(Duration::from_millis(50));
+                    thread::sleep(beat.min(Duration::from_millis(50)));
                     continue;
                 }
-                match event::poll(Duration::from_millis(200)) {
+                match event::poll(beat.min(Duration::from_millis(200))) {
                     Ok(true) => match event::read() {
                         Ok(CEvent::Key(k)) => {
                             if tx.send(Event::Key(k)).is_err() {
@@ -154,6 +163,7 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<Exit, Box<dy
     });
 
     let mut app = App::new();
+    animating.store(app.busy, Ordering::Relaxed);
     loop {
         terminal.draw(|f| app.draw(f))?;
         match rx.recv()? {
@@ -171,6 +181,7 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<Exit, Box<dy
                 }
             }
         }
+        animating.store(app.busy, Ordering::Relaxed);
         if let Some(enabled) = app.mouse_capture.take() {
             if enabled {
                 execute!(terminal.backend_mut(), crossterm::event::EnableMouseCapture)?;
