@@ -22,8 +22,8 @@ the [README](../README.md).
 4. When tango wants to do something risky (delete files, `git push`, write outside the
    project), a dialog asks first. Press `y` to allow, `n` to refuse, or `a` to allow
    everything for the rest of the session.
-5. Leave with `/exit`. Nothing else closes the session. Ctrl+C only interrupts the
-   current reply, or clears the input when idle.
+5. Leave with `/exit`. Nothing else closes the session. Ctrl+C clears a non-empty
+   input first; only when the input is empty does it interrupt the current reply.
 
 Run a single prompt without the TUI:
 

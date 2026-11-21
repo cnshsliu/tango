@@ -5071,7 +5071,11 @@ impl App {
             }
             return;
         }
-        if self.busy && (self.keys.matches(Action::Interrupt, k) || k.code == KeyCode::Esc) {
+        // ctrl+c is two-stage: a non-empty input is cleared first; only an empty
+        // input lets it (or Esc) interrupt the running turn
+        let interrupt_key =
+            k.code == KeyCode::Esc || (self.keys.matches(Action::Interrupt, k) && self.input.is_empty());
+        if self.busy && interrupt_key {
             serve.notify(json!({ "cmd": "interrupt" }));
             self.goal_text = None;
             if !self.local_queue.is_empty() {
@@ -10025,6 +10029,32 @@ mod tests {
                 .iter()
                 .any(|l| l.text == format!("已复制 {n} 个字符到剪贴板")),
             "the paste label expands to the full text on the clipboard"
+        );
+    }
+
+    #[test]
+    fn ctrl_c_clears_text_first_and_interrupts_only_an_empty_input() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.busy = true;
+        app.input = "draft".chars().collect();
+        app.cursor = 5;
+        app.key(KeyCode::Char('c').into(), &mut serve);
+        assert_eq!(app.input.iter().collect::<String>(), "draftc", "plain c just types");
+        let ctrl_c = crossterm::event::KeyEvent::new(
+            KeyCode::Char('c'),
+            KeyModifiers::CONTROL,
+        );
+        app.key(ctrl_c, &mut serve);
+        assert!(app.input.is_empty(), "first ctrl+c clears the text");
+        assert!(
+            !serve.sent.iter().any(|m| m.contains("interrupt")),
+            "no interrupt while text was present"
+        );
+        app.key(ctrl_c, &mut serve);
+        assert!(
+            serve.sent.iter().any(|m| m.contains("interrupt")),
+            "second ctrl+c interrupts the turn"
         );
     }
 

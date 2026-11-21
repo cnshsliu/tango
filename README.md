@@ -344,9 +344,9 @@ per-model with `"vision": true` in `~/.tango/models.json`. The `read` tool likew
 as images. Limits: 10MB per file; external-editor (`/editor`) round-trips flatten chips back to path
 text.
 Keys follow
-one rule: nothing but `/exit` (or `/quit`) can leave the session. Ctrl+C interrupts a running turn
-and clears the input when idle — press it as often as you like; Esc closes popups, else does the
-same (OpenCode-style). `TANGO_BIN` overrides the server binary (e.g. `TANGO_BIN="node bin/tango.js"`
+one rule: nothing but `/exit` (or `/quit`) can leave the session. Ctrl+C is two-stage: with text
+in the input it clears the input first; only an empty input lets it interrupt the running turn —
+press it as often as you like; Esc closes popups, else does the same (OpenCode-style). `TANGO_BIN` overrides the server binary (e.g. `TANGO_BIN="node bin/tango.js"`
 for dev builds). Bare `/model` and `/resume` open centered pickers; picking a session kills the
 serve child and respawns it with `TANGO_RESUME`, so both the model context and the visible
 transcript come back. `/new` starts fresh while keeping the current model and permission mode.
