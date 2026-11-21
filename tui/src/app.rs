@@ -10,6 +10,7 @@ use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Paragraph, Wrap};
+use ratatui_image::protocol::StatefulProtocol;
 use serde_json::{Value, json};
 use std::cmp::min;
 use std::fs;
@@ -770,6 +771,8 @@ struct ChatRow {
     think: bool,
     /// rounded top/bottom frame row of a user bubble — styled, never selectable
     border: bool,
+    /// inline thumbnail block row (1 of 10): the image's local path
+    image: Option<String>,
 }
 
 /// Right-position the rows of user lines into one bg bubble per line: all rows of
@@ -813,7 +816,11 @@ fn gear_color(frame: u128, animate: bool) -> Color {
         return Color::DarkGray;
     }
     if !supports_truecolor() {
-        return if (frame / 2) % 2 == 0 { Color::Cyan } else { Color::DarkGray };
+        return if (frame / 2) % 2 == 0 {
+            Color::Cyan
+        } else {
+            Color::DarkGray
+        };
     }
     const GEAR_WAVE: [Color; 4] = [
         Color::Rgb(120, 225, 240),
@@ -829,7 +836,9 @@ fn gear_color(frame: u128, animate: bool) -> Color {
 fn supports_truecolor() -> bool {
     static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *CACHED.get_or_init(|| {
-        let colorterm = std::env::var("COLORTERM").unwrap_or_default().to_ascii_lowercase();
+        let colorterm = std::env::var("COLORTERM")
+            .unwrap_or_default()
+            .to_ascii_lowercase();
         let term = std::env::var("TERM").unwrap_or_default();
         colorterm.contains("truecolor") || colorterm.contains("24bit") || term.ends_with("direct")
     })
@@ -872,6 +881,7 @@ fn layout_user_bubbles(rows: &mut Vec<ChatRow>, is_user: &[bool], width: usize, 
                     x,
                     user: true,
                     border: true,
+                    image: None,
                 };
                 let bottom = ChatRow {
                     think: false,
@@ -955,7 +965,10 @@ fn wrap_chat_rows_flagged(texts: &[String], width: usize, think: &[bool]) -> Vec
     let mut rows = Vec::new();
     for (line, text) in texts.iter().enumerate() {
         let think = think.get(line).copied().unwrap_or(false);
-        let w = width.max(1).saturating_sub(if think { 2 } else { 0 }).max(1);
+        let w = width
+            .max(1)
+            .saturating_sub(if think { 2 } else { 0 })
+            .max(1);
         let chars: Vec<char> = text.chars().collect();
         if chars.is_empty() {
             rows.push(ChatRow {
@@ -967,6 +980,7 @@ fn wrap_chat_rows_flagged(texts: &[String], width: usize, think: &[bool]) -> Vec
                 user: false,
                 think,
                 border: false,
+                image: None,
             });
             continue;
         }
@@ -1006,6 +1020,7 @@ fn wrap_segment(
             user: false,
             think,
             border: false,
+            image: None,
         });
         return;
     }
@@ -1057,6 +1072,7 @@ fn wrap_segment(
                 user: false,
                 think,
                 border: false,
+                image: None,
             });
             cs = next;
             idx = next;
@@ -1227,6 +1243,11 @@ pub struct App {
     prompt_menu_buttons: Vec<(Rect, u8)>,
     /// the first line of the turn targeted by 编辑重发 (timeline matching)
     edit_target_head: Option<String>,
+    /// terminal graphics capability (kitty/sixel/iTerm2/halfblocks), queried once
+    /// at startup; None in tests → thumbnails render as blank rows
+    pub img_picker: Option<ratatui_image::picker::Picker>,
+    /// decoded thumbnails by path (None = failed decode, don't retry per frame)
+    thumbs: std::collections::HashMap<String, Option<StatefulProtocol>>,
     /// plan mode badge (/plan)
     plan_mode: bool,
     /// active /goal text (badge)
@@ -1338,6 +1359,8 @@ impl App {
             prompt_menu: None,
             prompt_menu_buttons: Vec::new(),
             edit_target_head: None,
+            img_picker: None,
+            thumbs: std::collections::HashMap::new(),
             ime_restore: None,
             queue_buttons: Vec::new(),
             plan_mode: false,
@@ -1475,8 +1498,8 @@ impl App {
         let mut emitted = false;
         for g in ra..=rb.min(self.chat_rows.len().saturating_sub(1)) {
             let row = self.chat_rows.get(g)?;
-            if row.border {
-                continue; // frame rows are decoration, never copied
+            if row.border || row.image.is_some() {
+                continue; // frame and thumbnail rows are decoration, never copied
             }
             let chars: Vec<char> = row.text.chars().collect();
             let from = if g == ra { ca.min(chars.len()) } else { 0 };
@@ -1536,6 +1559,13 @@ impl App {
     /// cursor opens the image; a file path under the cursor opens the read-only
     /// viewer; a line with collapsed output opens the transcript viewer.
     fn chat_click(&mut self, row: u16, column: u16, chat_y: u16) {
+        // a thumbnail block opens its image in the system viewer
+        if let Some(g) = self.global_row(row, chat_y)
+            && let Some(path) = self.chat_rows.get(g).and_then(|r| r.image.clone())
+        {
+            self.open_image(&path);
+            return;
+        }
         if let Some((li, full, click_idx)) = self.chat_line_hit(row, column, chat_y) {
             if let Some(path) = self.image_chip_at(&full, click_idx) {
                 self.open_image(&path);
@@ -1655,6 +1685,78 @@ impl App {
             }
         }
         None
+    }
+
+    fn is_image_ext(p: &str) -> bool {
+        let lower = p.to_lowercase();
+        [".png", ".jpg", ".jpeg", ".gif", ".webp"]
+            .iter()
+            .any(|e| lower.ends_with(e))
+    }
+
+    /// The images to inline after a chat line: pasted chips ([图片 #N]) plus a
+    /// local image file path mentioned in the text.
+    fn inline_images(&self, text: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut rest = text;
+        while let Some(pos) = rest.find("[图片 #") {
+            let after = &rest[pos + "[图片 #".len()..];
+            let digits: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+            if let Ok(id) = digits.parse::<usize>() {
+                if let Some(img) = self.images.iter().find(|im| im.id == id) {
+                    if !out.contains(&img.path) {
+                        out.push(img.path.clone());
+                    }
+                }
+            }
+            rest = &rest[pos + "[图片 #".len()..];
+        }
+        // first existing local image path in the text
+        let chars: Vec<char> = text.chars().collect();
+        let starts = ['/'];
+        let mut i = 0;
+        while i < chars.len() {
+            if starts.contains(&chars[i]) {
+                let mut j = i;
+                while j < chars.len()
+                    && (chars[j].is_alphanumeric() || "._-/@+=~".contains(chars[j]))
+                {
+                    j += 1;
+                }
+                let raw: String = chars[i..j].iter().collect();
+                let cleaned = raw.trim_end_matches(|c: char| ".,;:!?\"')]".contains(c));
+                let expanded = if let Some(r) = cleaned.strip_prefix('~') {
+                    format!("{}{r}", std::env::var("HOME").unwrap_or_default())
+                } else {
+                    cleaned.to_string()
+                };
+                if Self::is_image_ext(&expanded) && std::path::Path::new(&expanded).is_file() {
+                    if !out.contains(&expanded) {
+                        out.push(expanded);
+                    }
+                }
+                i = j.max(i + 1);
+            } else {
+                i += 1;
+            }
+        }
+        out
+    }
+
+    /// Decode (once) and pre-shrink an image for inline display.
+    fn thumbnail_protocol(&mut self, path: &str) -> Option<&mut StatefulProtocol> {
+        if !self.thumbs.contains_key(path) {
+            let decoded = image::ImageReader::open(path)
+                .ok()
+                .and_then(|r| r.decode().ok())
+                .map(|img| img.thumbnail(480, 240));
+            let proto = match (&mut self.img_picker, decoded) {
+                (Some(picker), Some(img)) => Some(picker.new_resize_protocol(img)),
+                _ => None,
+            };
+            self.thumbs.insert(path.to_string(), proto);
+        }
+        self.thumbs.get_mut(path)?.as_mut()
     }
 
     /// Map a click in the input box to an image chip, if it lands on one. Uses the same
@@ -5168,8 +5270,8 @@ impl App {
         }
         // ctrl+c is two-stage: a non-empty input is cleared first; only an empty
         // input lets it (or Esc) interrupt the running turn
-        let interrupt_key =
-            k.code == KeyCode::Esc || (self.keys.matches(Action::Interrupt, k) && self.input.is_empty());
+        let interrupt_key = k.code == KeyCode::Esc
+            || (self.keys.matches(Action::Interrupt, k) && self.input.is_empty());
         if self.busy && interrupt_key {
             serve.notify(json!({ "cmd": "interrupt" }));
             self.goal_text = None;
@@ -5559,7 +5661,10 @@ impl App {
                     Some("tool_call_start") => {
                         let id = ev["id"].as_str().unwrap_or_default().to_string();
                         self.running_tools.insert(id.clone());
-                        self.push(format!("⚙ {} …", ev["name"].as_str().unwrap_or("?")), Tone::Muted);
+                        self.push(
+                            format!("⚙ {} …", ev["name"].as_str().unwrap_or("?")),
+                            Tone::Muted,
+                        );
                         if let Some(line) = self.lines.last_mut() {
                             line.tool_id = Some(id);
                         }
@@ -7224,11 +7329,49 @@ impl App {
         let gear_running: Vec<bool> = self
             .chat_lines()
             .iter()
-            .map(|l| l.tool_id.as_deref().is_some_and(|id| self.running_tools.contains(id)))
+            .map(|l| {
+                l.tool_id
+                    .as_deref()
+                    .is_some_and(|id| self.running_tools.contains(id))
+            })
             .collect();
         let mut all_rows =
             wrap_chat_rows_mixed(&texts, inner_w, &user_flags, &think_flags, self.user_bubble);
         layout_user_bubbles(&mut all_rows, &user_flags, inner_w, self.user_bubble);
+        // inline thumbnails: a 10-row block rides after each line that carries an
+        // image (pasted chips and local image paths)
+        const THUMB_ROWS: usize = 10;
+        let mut with_thumbs: Vec<ChatRow> = Vec::with_capacity(all_rows.len());
+        let mut i = 0;
+        while i < all_rows.len() {
+            let line = all_rows[i].line;
+            let end = all_rows[i..]
+                .iter()
+                .position(|r| r.line != line)
+                .map(|n| i + n)
+                .unwrap_or(all_rows.len());
+            with_thumbs.extend(all_rows[i..end].iter().cloned());
+            if line != usize::MAX {
+                let text = texts.get(line).cloned().unwrap_or_default();
+                for path in self.inline_images(&text) {
+                    for _ in 0..THUMB_ROWS {
+                        with_thumbs.push(ChatRow {
+                            line: usize::MAX,
+                            cs: 0,
+                            ce: 0,
+                            text: String::new(),
+                            x: 0,
+                            user: false,
+                            think: false,
+                            border: false,
+                            image: Some(path.clone()),
+                        });
+                    }
+                }
+            }
+            i = end;
+        }
+        let all_rows = with_thumbs;
         let total = all_rows.len();
         if self.last_visual_total > 0 && total > self.last_visual_total && self.scroll_back > 0 {
             let added = total - self.last_visual_total;
@@ -7247,10 +7390,7 @@ impl App {
         // the LAST thinking block, but only if it belongs to the running turn
         // (its rows sit after the newest user prompt): older blocks stay dim.
         let live_think_block: Option<usize> = {
-            let last_user = user_flags
-                .iter()
-                .rposition(|u| *u)
-                .unwrap_or(usize::MAX);
+            let last_user = user_flags.iter().rposition(|u| *u).unwrap_or(usize::MAX);
             let mut block: Option<usize> = None;
             let mut open = false;
             for (i, r) in self.chat_rows.iter().enumerate() {
@@ -7264,7 +7404,9 @@ impl App {
                 }
             }
             block.filter(|&start| {
-                self.chat_rows.get(start).is_some_and(|r| r.line >= last_user)
+                self.chat_rows
+                    .get(start)
+                    .is_some_and(|r| r.line >= last_user)
             })
         };
         // render the visible window row by row with char-exact selection highlight
@@ -7274,6 +7416,9 @@ impl App {
             let Some(row) = self.chat_rows.get(g) else {
                 continue;
             };
+            if row.image.is_some() {
+                continue; // thumbnail blocks draw as images, never as text lines
+            }
             let tone = tones.get(row.line).copied().unwrap_or(Tone::Text);
             let style = self.theme.style(tone);
             let chars: Vec<char> = row.text.chars().collect();
@@ -7325,9 +7470,8 @@ impl App {
             if row.think {
                 // "┃ " gutter; the color scrolls down the live block while a turn runs
                 let local = live_think_block.map_or(g, |b| g.saturating_sub(b));
-                let live = self.busy
-                    && supports_truecolor()
-                    && live_think_block.is_some_and(|b| g >= b);
+                let live =
+                    self.busy && supports_truecolor() && live_think_block.is_some_and(|b| g >= b);
                 let color = thinking_bar_color(self.think_frame, local, live);
                 pad.push(Span::styled("┃".to_string(), Style::default().fg(color)));
                 pad.push(Span::raw(" "));
@@ -7390,6 +7534,37 @@ impl App {
             }
         }
         f.render_widget(Paragraph::new(Text::from(shown)), chat_a);
+        // overlay inline thumbnails at their block-start rows (protocol-based
+        // images live outside the cell buffer; without a picker they stay blank)
+        if self.img_picker.is_some() {
+            for g in offset..total.min(offset + chat_h as usize) {
+                let Some(row) = self.chat_rows.get(g) else {
+                    continue;
+                };
+                let Some(path) = row.image.clone() else {
+                    continue;
+                };
+                let block_start = g == 0
+                    || self
+                        .chat_rows
+                        .get(g - 1)
+                        .and_then(|p| p.image.clone())
+                        .is_none();
+                if !block_start {
+                    continue;
+                }
+                let rows_left = (chat_h as usize).saturating_sub(g - offset).max(1);
+                let rect = Rect {
+                    x: chat_a.x + 2,
+                    y: chat_a.y + (g - offset) as u16,
+                    width: chat_a.width.saturating_sub(4),
+                    height: (THUMB_ROWS as u16).min(rows_left as u16),
+                };
+                if let Some(proto) = self.thumbnail_protocol(&path) {
+                    f.render_stateful_widget(ratatui_image::StatefulImage::default(), rect, proto);
+                }
+            }
+        }
         self.prompt_header = None;
         if self.scroll_back > 0
             && chat_a.height > 1
@@ -10225,11 +10400,12 @@ mod tests {
         app.input = "draft".chars().collect();
         app.cursor = 5;
         app.key(KeyCode::Char('c').into(), &mut serve);
-        assert_eq!(app.input.iter().collect::<String>(), "draftc", "plain c just types");
-        let ctrl_c = crossterm::event::KeyEvent::new(
-            KeyCode::Char('c'),
-            KeyModifiers::CONTROL,
+        assert_eq!(
+            app.input.iter().collect::<String>(),
+            "draftc",
+            "plain c just types"
         );
+        let ctrl_c = crossterm::event::KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
         app.key(ctrl_c, &mut serve);
         assert!(app.input.is_empty(), "first ctrl+c clears the text");
         assert!(
@@ -10328,7 +10504,10 @@ mod tests {
         let flags = vec![false, true];
         let rows = wrap_chat_rows_flagged(&texts, 12, &flags);
         assert!(!rows[0].think);
-        assert!(rows.iter().skip(1).all(|r| r.think), "all rows of the thinking line");
+        assert!(
+            rows.iter().skip(1).all(|r| r.think),
+            "all rows of the thinking line"
+        );
         assert!(
             rows.iter().skip(1).all(|r| display_width(&r.text) <= 10),
             "wraps at 12-2 for the gutter: {:?}",
@@ -10345,10 +10524,23 @@ mod tests {
             user: false,
             think: true,
             border: false,
+            image: None,
         }];
-        assert_eq!(app.chat_line_hit(0, 1, 0).map(|(_, _, i)| i), Some(0), "gutter clamps to 0");
-        assert_eq!(app.chat_line_hit(0, 2, 0).map(|(_, _, i)| i), Some(0), "text starts at col 2");
-        assert_eq!(app.chat_line_hit(0, 4, 0).map(|(_, _, i)| i), Some(1), "汉 spans 2-3");
+        assert_eq!(
+            app.chat_line_hit(0, 1, 0).map(|(_, _, i)| i),
+            Some(0),
+            "gutter clamps to 0"
+        );
+        assert_eq!(
+            app.chat_line_hit(0, 2, 0).map(|(_, _, i)| i),
+            Some(0),
+            "text starts at col 2"
+        );
+        assert_eq!(
+            app.chat_line_hit(0, 4, 0).map(|(_, _, i)| i),
+            Some(1),
+            "汉 spans 2-3"
+        );
     }
 
     #[test]
@@ -10400,7 +10592,11 @@ mod tests {
             let mut t = Terminal::new(TestBackend::new(30, 8)).unwrap();
             t.draw(|f| app.draw(f)).unwrap();
             let b = t.backend().buffer();
-            let gear_row = app.chat_rows.iter().position(|r| r.text.starts_with("⚙")).unwrap();
+            let gear_row = app
+                .chat_rows
+                .iter()
+                .position(|r| r.text.starts_with("⚙"))
+                .unwrap();
             assert_eq!(
                 b[(0, gear_row as u16)].fg,
                 Color::DarkGray,
@@ -10433,7 +10629,10 @@ mod tests {
         let wave: Vec<Color> = (0..8).map(|r| thinking_bar_color(0, r, true)).collect();
         assert_eq!(wave[0], THINK_WAVE[0]);
         assert!(wave.iter().any(|c| matches!(c, Color::Rgb(120, 225, 240))));
-        assert_eq!(thinking_bar_color(8, 0, true), thinking_bar_color(0, 0, true));
+        assert_eq!(
+            thinking_bar_color(8, 0, true),
+            thinking_bar_color(0, 0, true)
+        );
     }
 
     #[test]
@@ -11669,6 +11868,56 @@ mod tests {
     }
 
     #[test]
+    fn image_chips_get_inline_thumbnail_rows() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        let img = temp_image("inline-chip");
+        app.insert_paste(&img);
+        app.clear_input();
+        app.push_user("[图片 #1] 这是什么？");
+        let mut terminal = Terminal::new(TestBackend::new(80, 48)).unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        // ten image rows land right after the user line's frame
+        let image_rows: Vec<&ChatRow> =
+            app.chat_rows.iter().filter(|r| r.image.is_some()).collect();
+        assert_eq!(image_rows.len(), 10, "a thumbnail block of 10 rows");
+        assert!(
+            image_rows
+                .iter()
+                .all(|r| r.image.as_deref() == Some(img.as_str())),
+            "rows carry the image path"
+        );
+        // a local image file path in an agent line also gets a thumbnail
+        app.push(&format!("看这张 {}", img), Tone::Text);
+        terminal.draw(|f| app.draw(f)).unwrap();
+        let count = app.chat_rows.iter().filter(|r| r.image.is_some()).count();
+        assert_eq!(count, 20, "path thumbnail block too");
+        // clicking any thumbnail row opens the image (test-mode message)
+        let g = app
+            .chat_rows
+            .iter()
+            .position(|r| r.image.is_some())
+            .unwrap() as u16;
+        app.chat_press(g, 10);
+        app.chat_release(0, g, 10);
+        assert!(
+            app.lines.iter().any(|l| l.text.contains("打开图片")),
+            "click opens the image"
+        );
+        // selection across a thumbnail copies no blank lines
+        app.sel_anchor_pos = Some((0, 0));
+        app.sel_end_pos = Some((g, 5));
+        let sel = app.selected_text(0).unwrap();
+        assert!(
+            !sel.contains("\n\n"),
+            "image rows never leak into copies: {sel:?}"
+        );
+        let _ = std::fs::remove_file(&img);
+        let _ = serve;
+    }
+
+    #[test]
     fn clicking_a_user_bubble_opens_the_prompt_menu() {
         use ratatui::{Terminal, backend::TestBackend};
         let mut app = App::new();
@@ -12574,6 +12823,7 @@ mod tests {
             think: false,
             user: true,
             border: false,
+            image: None,
         }];
         // bubble interior starts at x+2 (│ + pad); column 34 → char 2 ('c')
         assert_eq!(app.chat_line_hit(0, 34, 0).map(|(_, _, i)| i), Some(2));
@@ -12593,6 +12843,7 @@ mod tests {
             think: false,
             user: true,
             border: false,
+            image: None,
         }];
         // interior starts at col 32 (x=30 + │ + pad); 汉 spans 32-33, 字 spans 34-35
         app.sel_anchor_pos = Some((0, 32));
@@ -12607,7 +12858,8 @@ mod tests {
             x: 0,
             user: false,
             border: false,
-                think: false,
+            think: false,
+            image: None,
         };
         app.sel_anchor_pos = Some((0, 1));
         app.sel_end_pos = Some((0, 3));

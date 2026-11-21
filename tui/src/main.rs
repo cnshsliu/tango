@@ -163,6 +163,9 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<Exit, Box<dy
     });
 
     let mut app = App::new();
+    // query the terminal once for graphics capability (kitty/sixel/iTerm2 →
+    // real images; anything else → ratatui-image falls back to halfblocks)
+    app.img_picker = ratatui_image::picker::Picker::from_query_stdio().ok();
     animating.store(app.busy, Ordering::Relaxed);
     loop {
         terminal.draw(|f| app.draw(f))?;
