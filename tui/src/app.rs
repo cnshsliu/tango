@@ -4522,7 +4522,12 @@ impl App {
             && !self.queue_dialog
             && !self.todo_dialog
             && let Some(c) = &self.choices
-            && let Ok(n) = self.input.iter().collect::<String>().trim().parse::<usize>()
+            && let Ok(n) = self
+                .input
+                .iter()
+                .collect::<String>()
+                .trim()
+                .parse::<usize>()
         {
             // the built-in explain row is one past the model's options (not on suggest panels)
             let rows = c.options.len() + usize::from(c.suggest.is_none());
@@ -6455,7 +6460,12 @@ impl App {
 
     /// The newest user prompt whose first row is above the view (global row `offset`),
     /// and the scroll_back that puts that row just under the header row.
-    fn prompt_above(&self, offset: usize, tones: &[Tone], chat_h: usize) -> Option<(String, usize)> {
+    fn prompt_above(
+        &self,
+        offset: usize,
+        tones: &[Tone],
+        chat_h: usize,
+    ) -> Option<(String, usize)> {
         let mut found: Option<(usize, usize)> = None; // (line, first row)
         let mut prev_line = usize::MAX;
         for (g, row) in self.chat_rows.iter().enumerate().take(offset) {
@@ -6467,10 +6477,18 @@ impl App {
             }
         }
         let (line, first) = found?;
-        let text = self.chat_lines().get(line)?.text.lines().next()?.to_string();
+        let text = self
+            .chat_lines()
+            .get(line)?
+            .text
+            .lines()
+            .next()?
+            .to_string();
         let total = self.chat_rows.len();
         // the header covers the top row, so land the prompt's first row on row 1
-        let back = total.saturating_sub(chat_h + first.saturating_sub(1)).max(1);
+        let back = total
+            .saturating_sub(chat_h + first.saturating_sub(1))
+            .max(1);
         Some((text, back))
     }
 
@@ -6603,7 +6621,14 @@ impl App {
             if row.border {
                 // same width as the text rows: x + interior + │ + space each side
                 let block = (inner_w as usize).saturating_sub(row.x as usize);
-                let edge = if g == 0 || !self.chat_rows.get(g - 1).is_some_and(|p| p.user) {
+                // a top border is always followed by this frame's text row; a
+                // bottom one is not (the previous bubble's bottom border is also
+                // user-flagged, so looking backwards misclassifies adjacent bubbles)
+                let is_top = self
+                    .chat_rows
+                    .get(g + 1)
+                    .is_some_and(|n| n.user && !n.border);
+                let edge = if is_top {
                     ("╭", "╮")
                 } else {
                     ("╰", "╯")
@@ -6672,7 +6697,10 @@ impl App {
             && chat_a.height > 1
             && let Some((text, back)) = self.prompt_above(offset, &tones, chat_h)
         {
-            let area = Rect { height: 1, ..chat_a };
+            let area = Rect {
+                height: 1,
+                ..chat_a
+            };
             let label = clip_to_width(&format!("{text}  · 点击跳到这条提示"), area.width as usize);
             f.render_widget(
                 Paragraph::new(label).style(self.theme.style(Tone::Muted).reversed()),
@@ -6684,12 +6712,19 @@ impl App {
         if jump_h == 1 {
             // widest label that fits — on a narrow phone terminal the hint drops first
             let n = self.unread_rows;
-            let news = if n > 0 { format!("{n} 行新内容 · ") } else { String::new() };
+            let news = if n > 0 {
+                format!("{n} 行新内容 · ")
+            } else {
+                String::new()
+            };
             let labels = [
                 format!(" ↓ {news}ctrl+end 回到底部 "),
                 format!(" ↓ {news}点击回到底部 "),
                 format!(" ↓ {news}回到底部 "),
-                format!(" ↓ {}新 · 回到底部 ", if n > 0 { format!("{n}") } else { String::new() }),
+                format!(
+                    " ↓ {}新 · 回到底部 ",
+                    if n > 0 { format!("{n}") } else { String::new() }
+                ),
                 " ↓ 回到底部 ".to_string(),
                 " ↓ ".to_string(),
             ];
@@ -7044,7 +7079,11 @@ impl App {
             tip,
             area.width as usize,
             self.theme.style(Tone::Muted),
-            self.theme.style(if self.busy { Tone::Success } else { Tone::Muted }),
+            self.theme.style(if self.busy {
+                Tone::Success
+            } else {
+                Tone::Muted
+            }),
         );
         f.render_widget(
             Paragraph::new(rule_row),
@@ -7396,53 +7435,74 @@ impl App {
                 .replace("{pct}", &format!("{percent}%"))
                 .replace("{work}", &work);
             return vec![Span::styled(
-                format!(" {} ", clip_to_width(raw.trim(), (width as usize).saturating_sub(2)).trim_end()),
+                format!(
+                    " {} ",
+                    clip_to_width(raw.trim(), (width as usize).saturating_sub(2)).trim_end()
+                ),
                 self.theme.style(Tone::Badge),
             )];
         }
         // (segment, drop order: lower goes first)
         let mut segs: Vec<(Span<'static>, u8)> = vec![
-            (Span::styled(format!(" {} ", self.model), self.theme.style(Tone::Badge)), 5),
-            (Span::styled(format!(" {} ", self.mode), self.theme.style(Tone::Muted)), 6),
-            (Span::styled(
-                format!(" ${:.4} ", self.cost),
-                self.theme.style(Tone::Warning),
-            ), 10),
-            (Span::styled(
-                format!(
-                    " sess {} ",
-                    if self.session_name.is_empty() {
-                        self.session.clone()
-                    } else {
-                        self.session_name.chars().take(16).collect::<String>()
-                    }
+            (
+                Span::styled(format!(" {} ", self.model), self.theme.style(Tone::Badge)),
+                5,
+            ),
+            (
+                Span::styled(format!(" {} ", self.mode), self.theme.style(Tone::Muted)),
+                6,
+            ),
+            (
+                Span::styled(
+                    format!(" ${:.4} ", self.cost),
+                    self.theme.style(Tone::Warning),
                 ),
-                self.theme.style(Tone::Muted),
-            ), 1),
+                10,
+            ),
+            (
+                Span::styled(
+                    format!(
+                        " sess {} ",
+                        if self.session_name.is_empty() {
+                            self.session.clone()
+                        } else {
+                            self.session_name.chars().take(16).collect::<String>()
+                        }
+                    ),
+                    self.theme.style(Tone::Muted),
+                ),
+                1,
+            ),
         ];
         if self.context_window > 0 {
             let percent = self.context_tokens.saturating_mul(100) / self.context_window;
-            segs.push((Span::styled(
-                format!(
-                    " ctx {}/{} {}% ",
-                    Self::token_count(self.context_tokens),
-                    Self::token_count(self.context_window),
-                    percent
+            segs.push((
+                Span::styled(
+                    format!(
+                        " ctx {}/{} {}% ",
+                        Self::token_count(self.context_tokens),
+                        Self::token_count(self.context_window),
+                        percent
+                    ),
+                    self.theme.style(self.context_tone()),
                 ),
-                self.theme.style(self.context_tone()),
-            ), 0));
+                0,
+            ));
         }
         if let Some(p) = self.current_prompt.clone() {
-            segs.push((Span::styled(
-                format!(" ▶ {p} "),
-                self.theme.style(Tone::Badge),
-            ), 2));
+            segs.push((
+                Span::styled(format!(" ▶ {p} "), self.theme.style(Tone::Badge)),
+                2,
+            ));
         }
         if !self.todos.is_empty() {
-            segs.push((Span::styled(
-                format!(" ❓{}待 /todo ", self.todos.len()),
-                self.theme.style(Tone::Warning),
-            ), 8));
+            segs.push((
+                Span::styled(
+                    format!(" ❓{}待 /todo ", self.todos.len()),
+                    self.theme.style(Tone::Warning),
+                ),
+                8,
+            ));
         }
         if self.focus {
             segs.push((Span::styled(" focus ", self.theme.style(Tone::Badge)), 4));
@@ -7461,10 +7521,10 @@ impl App {
             } else {
                 "NORMAL"
             };
-            segs.push((Span::styled(
-                format!(" VIM {mode} "),
-                self.theme.style(Tone::Badge),
-            ), 7));
+            segs.push((
+                Span::styled(format!(" VIM {mode} "), self.theme.style(Tone::Badge)),
+                7,
+            ));
         }
         Self::fit_status(segs, width as usize)
     }
@@ -7476,7 +7536,11 @@ impl App {
             segs.iter().map(|(s, _)| display_width(&s.content)).sum()
         };
         while total(&segs) > width {
-            let Some((i, _)) = segs.iter().enumerate().min_by_key(|(_, (s, p))| (*p, s.content.len())) else {
+            let Some((i, _)) = segs
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, (s, p))| (*p, s.content.len()))
+            else {
                 break;
             };
             let text = segs[i].0.content.trim().to_string();
@@ -7485,7 +7549,12 @@ impl App {
                 16
             } else if text.starts_with('❓') {
                 4
-            } else if text.starts_with("\\o") || text.starts_with("_o") || text.starts_with("/o") || text == "idle" || text.starts_with("♪") {
+            } else if text.starts_with("\\o")
+                || text.starts_with("_o")
+                || text.starts_with("/o")
+                || text == "idle"
+                || text.starts_with("♪")
+            {
                 // the work segment: counter first, then the timer — the dancer stays to the last
                 if display_width(&text) > 9 { 9 } else { 3 }
             } else if i == 0 {
@@ -7543,7 +7612,13 @@ impl App {
     /// The input rule: work state on the left, a rotating tip on the right, dashes between.
     /// Too narrow for both → the tip goes; narrower still → the work text sheds the counter,
     /// then the timer, keeping the dancer.
-    fn rule_line(work: &str, tip: Option<&str>, width: usize, dash: Style, live: Style) -> Line<'static> {
+    fn rule_line(
+        work: &str,
+        tip: Option<&str>,
+        width: usize,
+        dash: Style,
+        live: Style,
+    ) -> Line<'static> {
         let mut work = work.to_string();
         let mut tip = tip.map(str::to_string);
         let room = width.saturating_sub(4); // "─ " left, " ─" right
@@ -10429,6 +10504,43 @@ mod tests {
     }
 
     #[test]
+    fn adjacent_bubble_top_border_renders_as_top() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut app = App::new();
+        let long = "请执行这条建议：这可以写成一篇问陈国基的评论，主线是「正日政府做什么，原址留什么」。动笔前先按 SOP 补核汶川纪念馆、防灾减灾日、克拉玛依遇难人数、上海胶州路这几项我凭记忆写的事实。";
+        app.push_user("短消息");
+        app.push_user(long);
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        // find the screen row of the second bubble's first text row; the row
+        // above must be a TOP border (╭…╮), not the bottom glyphs
+        let rows: Vec<String> = (0..30)
+            .map(|y| {
+                terminal.backend().buffer().content[y * 120..(y + 1) * 120]
+                    .iter()
+                    .map(|c| c.symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect();
+        let text_y = rows
+            .iter()
+            .position(|r| r.replace(' ', "").contains("请执行这条建议"))
+            .expect("second bubble text on screen");
+        let above = &rows[text_y - 1];
+        assert!(above.contains('╭'), "top border above the text: {above:?}");
+        assert!(
+            !above.contains('╰'),
+            "no bottom corner on the top border: {above:?}"
+        );
+        // and every bubble still closes
+        let bottom = &rows[text_y + 2];
+        assert!(
+            bottom.contains('╰'),
+            "bottom border closes the frame: {bottom:?}"
+        );
+    }
+
+    #[test]
     fn choice_panel_has_an_explain_row_that_asks_without_retiring() {
         use ratatui::{Terminal, backend::TestBackend};
         let mut app = App::new();
@@ -10868,11 +10980,17 @@ mod tests {
         app.stream = "要改吗？\n?choice\n1. 现在就改\n2. 不改\n3. 先不动".into();
         app.commit_stream();
         for ch in "3".chars() {
-            app.key(crossterm::event::KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE), &mut serve);
+            app.key(
+                crossterm::event::KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE),
+                &mut serve,
+            );
         }
         app.key(enter, &mut serve);
         let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
-        assert_eq!(sent["text"], "先不动", "the option label goes out, not \"3\"");
+        assert_eq!(
+            sent["text"], "先不动",
+            "the option label goes out, not \"3\""
+        );
         assert!(app.choices.is_none() && app.input.is_empty());
 
         // 4 = the built-in explain row; it asks for a walkthrough
@@ -10905,15 +11023,28 @@ mod tests {
         app.load_history(&json!({"total": 4, "items": [
             {"kind": "user", "text": "q1"}, ask("old"), {"kind": "user", "text": "a"}, {"kind": "assistant", "text": "ok"}
         ]}));
-        assert!(app.choices.is_none(), "an answered choice doesn't reopen on resume");
-        assert!(app.todos.is_empty(), "answered choice / old suggestion stay out of todo");
+        assert!(
+            app.choices.is_none(),
+            "an answered choice doesn't reopen on resume"
+        );
+        assert!(
+            app.todos.is_empty(),
+            "answered choice / old suggestion stay out of todo"
+        );
 
         let mut app = App::new();
         app.load_history(&json!({"total": 4, "items": [
             {"kind": "user", "text": "q1"}, ask("old"), {"kind": "user", "text": "a"}, ask("new")
         ]}));
-        assert_eq!(app.choices.as_ref().map(|c| c.question.as_str()), Some("new"));
-        assert_eq!(app.todos.len(), 2, "the trailing, unanswered choice and suggestion survive");
+        assert_eq!(
+            app.choices.as_ref().map(|c| c.question.as_str()),
+            Some("new")
+        );
+        assert_eq!(
+            app.todos.len(),
+            2,
+            "the trailing, unanswered choice and suggestion survive"
+        );
     }
 
     #[test]
@@ -11326,7 +11457,10 @@ mod tests {
         let s = app.work_text();
         assert!(s.contains("↓14.0k"), "received chars shown while busy: {s}");
         assert!(s.contains('s'), "elapsed shown: {s}");
-        assert!(!app.status_segments_text().contains("↓14.0k"), "not in the status bar anymore");
+        assert!(
+            !app.status_segments_text().contains("↓14.0k"),
+            "not in the status bar anymore"
+        );
         // idle stays clean
         app.busy = false;
         app.turn_started = None;
@@ -11792,7 +11926,12 @@ mod tests {
     fn input_rule_carries_work_on_the_left_and_the_tip_on_the_right() {
         use ratatui::{Terminal, backend::TestBackend};
         let plain = Style::new();
-        let text = |l: &Line| l.spans.iter().map(|s| s.content.to_string()).collect::<String>();
+        let text = |l: &Line| {
+            l.spans
+                .iter()
+                .map(|s| s.content.to_string())
+                .collect::<String>()
+        };
 
         let l = App::rule_line("idle", None, 40, plain, plain);
         assert_eq!(display_width(&text(&l)), 40);
@@ -11805,7 +11944,13 @@ mod tests {
         assert!(t.ends_with(" ctrl+o 看工具 ─"), "{t}");
 
         // too narrow for both: the tip goes, then the counter, then the timer
-        let t = text(&App::rule_line("\\o/ 12s · ↓14.0k", Some("ctrl+o 看工具"), 24, plain, plain));
+        let t = text(&App::rule_line(
+            "\\o/ 12s · ↓14.0k",
+            Some("ctrl+o 看工具"),
+            24,
+            plain,
+            plain,
+        ));
         assert!(t.contains("12s") && !t.contains("看工具"), "{t}");
         let t = text(&App::rule_line("\\o/ 12s · ↓14.0k", None, 12, plain, plain));
         assert!(t.contains("\\o/") && !t.contains("↓"), "{t}");
@@ -11821,8 +11966,14 @@ mod tests {
         terminal.draw(|f| app.draw(f)).unwrap();
         let b = terminal.backend().buffer();
         let row: String = (0..70).map(|x| b[(x, app.input_area.y)].symbol()).collect();
-        assert!(row.starts_with("─ ") && row.contains("45s") && row.contains("↓14.0k"), "{row}");
-        assert!(row.ends_with('─') && row.contains("/queue"), "long-turn tip on the right: {row}");
+        assert!(
+            row.starts_with("─ ") && row.contains("45s") && row.contains("↓14.0k"),
+            "{row}"
+        );
+        assert!(
+            row.ends_with('─') && row.contains("/queue"),
+            "long-turn tip on the right: {row}"
+        );
     }
 
     #[test]
@@ -11830,7 +11981,10 @@ mod tests {
         use ratatui::{Terminal, backend::TestBackend};
         let mut app = App::new();
         // a collapsed paste: the first row fills the bubble exactly, the rest are shorter
-        let text = format!("给香港政府一些建议，你要说人话，口语化 {}", "补充说明 ".repeat(60));
+        let text = format!(
+            "给香港政府一些建议，你要说人话，口语化 {}",
+            "补充说明 ".repeat(60)
+        );
         app.push_user(&text);
         for w in [120u16, 80, 40, 24] {
             let mut t = Terminal::new(TestBackend::new(w, 24)).unwrap();
@@ -11843,8 +11997,15 @@ mod tests {
                 }
             }
             assert!(cols.len() >= 3, "a framed bubble at width {w}: {cols:?}");
-            assert!(cols.iter().all(|c| *c == cols[0]), "right edge misaligned at width {w}: {cols:?}");
-            assert_eq!(cols[0], w - 1, "the bubble hugs the right edge at width {w}");
+            assert!(
+                cols.iter().all(|c| *c == cols[0]),
+                "right edge misaligned at width {w}: {cols:?}"
+            );
+            assert_eq!(
+                cols[0],
+                w - 1,
+                "the bubble hugs the right edge at width {w}"
+            );
         }
     }
 
@@ -11861,7 +12022,9 @@ mod tests {
         app.context_window = 200_000;
         app.context_tokens = 54_000;
         app.current_prompt = Some("帮我优化数据库查询性能的问题".into());
-        app.todos.push(TodoItem { kind: TodoKind::Suggest { text: "x".into() } });
+        app.todos.push(TodoItem {
+            kind: TodoKind::Suggest { text: "x".into() },
+        });
 
         let text_at = |app: &mut App, w: u16| -> String {
             let spans = app.status_spans(w);
@@ -11870,15 +12033,24 @@ mod tests {
             s
         };
         let wide = text_at(&mut app, 200);
-        assert!(wide.contains("sess") && wide.contains("ctx") && wide.contains("▶"), "{wide}");
+        assert!(
+            wide.contains("sess") && wide.contains("ctx") && wide.contains("▶"),
+            "{wide}"
+        );
 
         for w in [60u16, 40, 30, 20, 12, 6] {
             let s = text_at(&mut app, w);
             if w >= 12 {
                 assert!(s.contains("$0.1234"), "cost stays at {w}: {s}");
             }
-            assert!(!s.contains("idle") && !s.contains('↓'), "work moved to the input rule: {s}");
-            assert!(!s.contains("ctx") && !s.contains("sess"), "ctx/sess go first at {w}: {s}");
+            assert!(
+                !s.contains("idle") && !s.contains('↓'),
+                "work moved to the input rule: {s}"
+            );
+            assert!(
+                !s.contains("ctx") && !s.contains("sess"),
+                "ctx/sess go first at {w}: {s}"
+            );
             if w >= 30 {
                 assert!(s.contains("❓"), "todo badge stays at {w}: {s}");
             }
@@ -11893,14 +12065,21 @@ mod tests {
         assert!(frames.iter().all(|f| display_width(f) == 3), "{frames:?}");
         assert!(frames.windows(2).any(|w| w[0] != w[1]), "it moves");
         assert_eq!(App::tango_frame(0), App::tango_frame(8 * 1000), "loops");
-        assert_eq!(App::tango_frame(100), App::tango_frame(999), "holds within a frame");
+        assert_eq!(
+            App::tango_frame(100),
+            App::tango_frame(999),
+            "holds within a frame"
+        );
 
         let mut app = App::new();
         app.busy = true;
         app.turn_started = Some(std::time::Instant::now());
         app.turn_chars = 14_000;
         let s = app.work_text();
-        assert!(s.contains("↓14.0k") && !s.contains('●'), "dancer replaces the dot: {s}");
+        assert!(
+            s.contains("↓14.0k") && !s.contains('●'),
+            "dancer replaces the dot: {s}"
+        );
         app.busy = false;
         assert_eq!(app.work_text(), "idle");
     }
@@ -11924,13 +12103,23 @@ mod tests {
             terminal.draw(|f| app.draw(f)).unwrap();
             let a = app.jump_area;
             assert_eq!(a.height, 1);
-            assert_eq!(a.y, app.input_area.y - 1, "its own row right above the input");
-            assert!((a.x + a.width / 2).abs_diff(w / 2) <= 1, "centered at width {w}: {a:?}");
+            assert_eq!(
+                a.y,
+                app.input_area.y - 1,
+                "its own row right above the input"
+            );
+            assert!(
+                (a.x + a.width / 2).abs_diff(w / 2) <= 1,
+                "centered at width {w}: {a:?}"
+            );
             assert!(a.width <= w, "fits width {w}");
             let text = row_text(&terminal, a.y, w);
             assert!(text.contains("↓"), "pill drawn at width {w}: {text}");
             // the chat row above it is untouched conversation text
-            assert!(row_text(&terminal, a.y - 1, w).starts_with("line-"), "no overlay");
+            assert!(
+                row_text(&terminal, a.y - 1, w).starts_with("line-"),
+                "no overlay"
+            );
         }
         // clicking it goes back to the bottom and the pill disappears
         let mut terminal = Terminal::new(TestBackend::new(30, 16)).unwrap();
@@ -11968,18 +12157,28 @@ mod tests {
         let screen = |t: &Terminal<TestBackend>| {
             let b = t.backend().buffer();
             (0..b.area.height)
-                .map(|y| (0..b.area.width).map(|x| b[(x, y)].symbol()).collect::<String>())
+                .map(|y| {
+                    (0..b.area.width)
+                        .map(|x| b[(x, y)].symbol())
+                        .collect::<String>()
+                })
                 .collect::<Vec<_>>()
         };
 
         terminal.draw(|f| app.draw(f)).unwrap();
-        assert!(app.prompt_header.is_none(), "following the bottom: no header");
+        assert!(
+            app.prompt_header.is_none(),
+            "following the bottom: no header"
+        );
 
         // scroll into answer two: header names the second prompt
         app.scroll_back = 10;
         terminal.draw(|f| app.draw(f)).unwrap();
         let top = &screen(&terminal)[app.chat_area.y as usize];
-        assert!(top.contains("❯ second question") && top.replace(' ', "").contains("点击跳到"), "{top}");
+        assert!(
+            top.contains("❯ second question") && top.replace(' ', "").contains("点击跳到"),
+            "{top}"
+        );
 
         // further up into answer one: it changes to the first prompt
         app.scroll_back = 45;
@@ -12000,9 +12199,18 @@ mod tests {
         );
         terminal.draw(|f| app.draw(f)).unwrap();
         let rows = screen(&terminal);
-        let at = rows.iter().position(|r| r.contains("❯ first question")).expect("prompt visible");
-        assert!(at <= app.chat_area.y as usize + 2, "prompt lands at the top, row {at}");
-        assert!(app.scroll_back > 0, "still scrolled up, not jumped to bottom");
+        let at = rows
+            .iter()
+            .position(|r| r.contains("❯ first question"))
+            .expect("prompt visible");
+        assert!(
+            at <= app.chat_area.y as usize + 2,
+            "prompt lands at the top, row {at}"
+        );
+        assert!(
+            app.scroll_back > 0,
+            "still scrolled up, not jumped to bottom"
+        );
     }
 
     #[test]
