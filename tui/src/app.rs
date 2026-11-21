@@ -875,9 +875,41 @@ fn wrap_chat_rows(texts: &[String], width: usize) -> Vec<ChatRow> {
             });
             continue;
         }
+        // a newline is a hard row break: wrap each segment on its own, with char
+        // offsets still indexing the whole line (the '\n' itself belongs to no row)
+        let mut seg_start = 0usize;
+        while seg_start <= chars.len() {
+            let seg_end = chars[seg_start..]
+                .iter()
+                .position(|&c| c == '\n')
+                .map(|n| seg_start + n)
+                .unwrap_or(chars.len());
+            wrap_segment(&mut rows, line, &chars, seg_start, seg_end, w);
+            seg_start = seg_end + 1;
+        }
+    }
+    rows
+}
+
+/// Wrap chars[start..end] (no newlines inside) into rows of at most `w` columns.
+fn wrap_segment(rows: &mut Vec<ChatRow>, line: usize, chars: &[char], start: usize, end: usize, w: usize) {
+    if start == end {
+        rows.push(ChatRow {
+            line,
+            cs: start,
+            ce: start,
+            text: String::new(),
+            x: 0,
+            user: false,
+            border: false,
+        });
+        return;
+    }
+    let chars = &chars[..end];
+    {
         // split into tokens: runs of spaces stay attached to the preceding word end
-        let mut cs = 0usize;
-        let mut idx = 0usize;
+        let mut cs = start;
+        let mut idx = start;
         while idx < chars.len() {
             // find the next break candidate: end of a word + space run
             let mut end = idx;
@@ -896,7 +928,16 @@ fn wrap_chat_rows(texts: &[String], width: usize) -> Vec<ChatRow> {
             }
             let (row_end, next) = if end >= chars.len() {
                 (end, end)
-            } else if let Some(sp) = last_space.filter(|&s| s > idx) {
+            } else if let Some(sp) = last_space.filter(|&s| {
+                // a word that can't fit a whole row anyway (CJK run, URL) is hard-split
+                // right here instead — otherwise a lone "❯ " is left on its own row
+                let word_w: usize = chars[s + 1..]
+                    .iter()
+                    .take_while(|&&c| c != ' ')
+                    .map(|c| display_width(&c.to_string()))
+                    .sum();
+                s > idx && word_w <= w
+            }) {
                 // break after the last space inside the window (word wrap)
                 (sp + 1, sp + 1)
             } else {
@@ -924,7 +965,6 @@ fn wrap_chat_rows(texts: &[String], width: usize) -> Vec<ChatRow> {
             }
         }
     }
-    rows
 }
 
 fn parse_utc_offset(s: &str) -> Option<i64> {
@@ -1798,7 +1838,8 @@ impl App {
                 Some(text.to_string()),
             );
         } else {
-            self.push(format!("❯ {}", text.replace('\n', " ⏎ ")), Tone::User);
+            // one ChatLine (one bubble) whose newlines the wrapper turns into real rows
+            self.push_tool(format!("❯ {text}"), Tone::User, None);
         }
         if let Some(line) = self.lines.last_mut() {
             line.prompt_state = Some(PromptState::Draft);
@@ -7745,8 +7786,35 @@ mod tests {
     fn short_user_prompt_stays_inline() {
         let mut app = App::new();
         app.push_user("hello\nworld");
-        assert_eq!(app.lines[0].text, "❯ hello ⏎ world");
+        assert_eq!(app.lines.len(), 1, "one prompt, one bubble");
+        assert_eq!(app.lines[0].text, "❯ hello\nworld");
         assert_eq!(app.lines[0].output, None);
+    }
+
+    #[test]
+    fn user_prompt_newlines_become_real_rows_in_one_bubble() {
+        let texts = vec!["❯ hello\nworld\n\nend".to_string()];
+        let mut rows = wrap_chat_rows_mixed(&texts, 40, &[true]);
+        layout_user_bubbles(&mut rows, &[true], 40, true);
+        let body: Vec<&str> = rows.iter().filter(|r| !r.border).map(|r| r.text.as_str()).collect();
+        assert_eq!(body, vec!["❯ hello", "world", "", "end"]);
+        assert_eq!(rows.iter().filter(|r| r.border).count(), 2, "a single frame");
+        // char offsets still index the whole text, skipping each '\n'
+        let spans: Vec<(usize, usize)> =
+            rows.iter().filter(|r| !r.border).map(|r| (r.cs, r.ce)).collect();
+        assert_eq!(spans, vec![(0, 7), (8, 13), (14, 14), (15, 18)]);
+    }
+
+    #[test]
+    fn prompt_marker_stays_on_the_first_row_of_a_long_cjk_run() {
+        let texts = vec!["❯ 这是一个很长很长的中文句子没有空格一直写下去".to_string()];
+        let rows = wrap_chat_rows(&texts, 20);
+        assert!(rows[0].text.starts_with("❯ 这是"), "{:?}", rows[0].text);
+        assert!(rows.iter().all(|r| display_width(&r.text) <= 20));
+        // short words still wrap at spaces
+        let rows = wrap_chat_rows(&["❯ hello wonderful world".to_string()], 12);
+        let got: Vec<&str> = rows.iter().map(|r| r.text.as_str()).collect();
+        assert_eq!(got, vec!["❯ hello ", "wonderful ", "world"]);
     }
 
     #[test]
@@ -11974,6 +12042,26 @@ mod tests {
             row.ends_with('─') && row.contains("/queue"),
             "long-turn tip on the right: {row}"
         );
+    }
+
+    #[test]
+    fn multiline_prompt_renders_as_rows_inside_one_frame() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut app = App::new();
+        app.push_user("第一行\n\nthird");
+        let mut t = Terminal::new(TestBackend::new(40, 12)).unwrap();
+        t.draw(|f| app.draw(f)).unwrap();
+        let b = t.backend().buffer();
+        let rows: Vec<String> = (0..12)
+            .map(|y| (0..40).map(|x| b[(x, y)].symbol().to_string()).collect())
+            .collect();
+        // wide chars leave a blank continuation cell, so compare with spaces removed
+        let at = |needle: &str| rows.iter().position(|r| r.replace(' ', "").contains(needle));
+        let first = at("❯第一行").expect("marker and first line share a row");
+        assert_eq!(at("third"), Some(first + 2), "{rows:#?}");
+        assert!(rows[first - 1].contains('╭') && rows[first + 3].contains('╰'), "{rows:#?}");
+        assert!(rows[first + 1].trim_end().ends_with('│'), "blank row is framed: {rows:#?}");
+        assert!(!rows.iter().any(|r| r.contains('⏎')));
     }
 
     #[test]
