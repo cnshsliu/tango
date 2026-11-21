@@ -45,7 +45,7 @@ git diff | tango "review this patch"
 | Park a half-written draft | Alt+S (press again to restore) |
 | Edit a draft in Neovim | Ctrl+E, or `/nvim` |
 | See a full tool output | Ctrl+O, or click the tool line |
-| Check whether it's still working | The rule above the input: `idle`, or a dancing figure with the elapsed time and received characters |
+| Check whether it's still working | The rule above the input: a breathing wave (`▁▃▅▃▁`) when idle, or a dancing braille figure with the elapsed time and received characters — plus a `■ ⬝ ⬝` bouncing loader at the status bar's left end |
 | Get back to the prompt you're reading about | Scrolled up, the dim top row shows that prompt; click it to jump there |
 | Hop between your prompts | `alt+↑` / `alt+↓` walk to the previous / next prompt, landing it at the top of the view; the last `alt+↓` returns to the bottom |
 | Search the whole transcript | Ctrl+T, then `/` |

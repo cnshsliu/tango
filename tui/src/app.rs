@@ -809,6 +809,38 @@ fn thinking_bar_color(frame: u128, local_row: usize, animate: bool) -> Color {
 /// The running gear's color cycle: same cyan family as the thinking wave, one
 /// step every 2 frames (~240ms). Without truecolor it alternates dark-gray and
 /// cyan, which is the most any 256-color terminal can express.
+/// grok-cli's PromptLoadingBoxes, ported: three cells with the bright one
+/// bouncing left→right→left, a fading trail where it just left (truecolor
+/// steps within the cyan family; plain cyan/gray two-tone without it).
+/// One step per ~120ms animation frame.
+fn loader_spans(frame: u128) -> Vec<Span<'static>> {
+    const POS: [usize; 4] = [0, 1, 2, 1];
+    let pos = POS[(frame % 4) as usize];
+    let trail = POS[((frame + 3) % 4) as usize];
+    let truecolor = supports_truecolor();
+    (0..3)
+        .map(|i| {
+            let (ch, color) = if i == pos {
+                (
+                    "■",
+                    if truecolor { Color::Rgb(120, 225, 240) } else { Color::Cyan },
+                )
+            } else if i == trail {
+                (
+                    "⬝",
+                    if truecolor { Color::Rgb(46, 150, 180) } else { Color::DarkGray },
+                )
+            } else {
+                (
+                    "⬝",
+                    if truecolor { Color::Rgb(26, 80, 100) } else { Color::DarkGray },
+                )
+            };
+            Span::styled(ch, Style::default().fg(color))
+        })
+        .collect()
+}
+
 fn gear_color(frame: u128, animate: bool) -> Color {
     if !animate {
         return Color::DarkGray;
@@ -8332,6 +8364,15 @@ impl App {
                 1,
             ),
         ];
+        if self.busy {
+            // grok's three-cell bouncing loader rides the left end while a turn runs
+            let lead: Vec<(Span<'static>, u8)> = loader_spans(self.think_frame)
+                .into_iter()
+                .chain(std::iter::once(Span::raw(" ")))
+                .map(|s| (s, 0))
+                .collect();
+            segs.splice(0..0, lead);
+        }
         if self.context_window > 0 {
             let percent = self.context_tokens.saturating_mul(100) / self.context_window;
             segs.push((
@@ -8407,13 +8448,15 @@ impl App {
                 16
             } else if text.starts_with('❓') {
                 4
-            } else if text.starts_with("\\o")
-                || text.starts_with("_o")
-                || text.starts_with("/o")
-                || text == "idle"
-                || text.starts_with("♪")
+            } else if text
+                .chars()
+                .next()
+                .is_some_and(|c| {
+                    matches!(c, '\u{2800}'..='\u{28FF}' | '▁'..='▉' | '■')
+                })
             {
-                // the work segment: counter first, then the timer — the dancer stays to the last
+                // the work segment (braille dancer/spinner or the idle wave):
+                // counter first, then the timer — the figure stays to the last
                 if display_width(&text) > 9 { 9 } else { 3 }
             } else if i == 0 {
                 12
@@ -8447,11 +8490,12 @@ impl App {
         }
     }
 
-    /// "\o/ 12s · ↓14.0k" while a turn runs, "idle" otherwise. Lives on the input rule's
+    /// "⣋ 12s · ↓14.0k" (braille dancer) while a turn runs, a breathing block
+    /// wave while idle. Lives on the input rule's
     /// left end (and in a custom statusline's {work}); the default status bar no longer carries it.
     fn work_text(&self) -> String {
         if !self.busy {
-            return "idle".to_string();
+            return Self::idle_wave(Self::now_secs()).to_string();
         }
         match self.turn_started {
             Some(t0) => {
@@ -8463,7 +8507,11 @@ impl App {
                     Self::fmt_tokens(self.turn_chars)
                 )
             }
-            None => "♪ working".to_string(),
+            None => {
+                // braille spinner (grok's ⬒ quads, upgraded): one dot orbit
+                const SPINNER: [&str; 8] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"];
+                format!("{} working", SPINNER[(self.think_frame % 8) as usize])
+            }
         }
     }
 
@@ -8508,9 +8556,53 @@ impl App {
     /// The working dot, dancing: a couple swaying and dipping the tango, one frame
     /// once per heartbeat tick off the turn clock, so every step is actually drawn.
     /// Every frame is 3 columns wide so the rest of the status bar never shifts.
-    fn tango_frame(ms: u128) -> &'static str {
-        const FRAMES: [&str; 8] = ["\\o/", "_o/", "_o_", "\\o_", "\\o/", "/o_", "_o_", "/o\\"];
-        FRAMES[(ms / 1000) as usize % FRAMES.len()]
+    /// The working figure, dancing the tango in braille: a 6×4-dot stick
+    /// figure — head, torso, swinging arms, stepping legs — one pose per
+    /// 120ms animation frame (the busy heartbeat), eight poses to a full
+    /// sway. Every frame is 3 cells wide so the rest of the line never shifts.
+    fn tango_frame(ms: u128) -> String {
+        const POSES: [&[(u8, u8)]; 8] = [
+            &[(2, 0), (3, 0), (2, 1), (3, 1), (2, 2), (3, 2), (1, 0), (4, 0), (1, 3), (4, 3)], // arms up, legs apart
+            &[(2, 0), (3, 0), (2, 1), (3, 1), (2, 2), (3, 2), (1, 2), (4, 2), (2, 3), (3, 3)], // arms down, feet together
+            &[(2, 0), (3, 0), (2, 1), (3, 1), (2, 2), (3, 2), (0, 0), (4, 2), (1, 3), (3, 3)], // lean left
+            &[(2, 0), (3, 0), (2, 1), (3, 1), (2, 2), (3, 2), (1, 1), (4, 1), (2, 3), (3, 3)], // arms mid
+            &[(2, 0), (3, 0), (2, 1), (3, 1), (2, 2), (3, 2), (1, 0), (4, 0), (1, 3), (4, 3)], // arms up, legs apart
+            &[(2, 0), (3, 0), (2, 1), (3, 1), (2, 2), (3, 2), (1, 2), (4, 2), (2, 3), (3, 3)], // arms down, feet together
+            &[(2, 0), (3, 0), (2, 1), (3, 1), (2, 2), (3, 2), (5, 0), (1, 2), (4, 3), (2, 3)], // lean right
+            &[(2, 0), (3, 0), (2, 1), (3, 1), (2, 2), (3, 2), (1, 1), (4, 1), (2, 3), (3, 3)], // arms mid
+        ];
+        Self::braille_fig(POSES[((ms / 120) % POSES.len() as u128) as usize])
+    }
+
+    /// Render dot coordinates on a 6×4 canvas as three braille cells
+    /// (2×4 dots each: dot1..8 bits of U+2800).
+    fn braille_fig(dots: &[(u8, u8)]) -> String {
+        const BIT: [[u16; 4]; 2] = [[0x01, 0x02, 0x04, 0x40], [0x08, 0x10, 0x20, 0x80]];
+        let mut cells = [0u16; 3];
+        for &(x, y) in dots {
+            if let (c @ 0..=2, y @ 0..=3) = (x / 2, y) {
+                cells[c as usize] |= BIT[(x % 2) as usize][y as usize];
+            }
+        }
+        cells
+            .iter()
+            .map(|&m| char::from_u32(0x2800 + m as u32).unwrap())
+            .collect()
+    }
+
+    /// The idle "breathing" wave on the rule line: block shades rising and
+    /// falling over a 4s cycle (grok's logo twinkle, re-toned for tango —
+    /// the same idea of a slow shimmer while nothing runs).
+    fn idle_wave(secs: u64) -> &'static str {
+        const WAVES: [&str; 4] = ["▁▃▅▃▁", "▃▅▇▅▃", "▄▆█▆▄", "▃▅▇▅▃"];
+        WAVES[(secs % 4) as usize]
+    }
+
+    fn now_secs() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
     }
 
     /// 500 · 14.0k · 1.5M
@@ -12945,7 +13037,11 @@ mod tests {
         // idle stays clean
         app.busy = false;
         app.turn_started = None;
-        assert_eq!(app.work_text(), "idle");
+        let idle = app.work_text();
+        assert!(
+            (0..4).any(|i| App::idle_wave(i) == idle),
+            "idle wave: {idle}"
+        );
     }
 
     #[test]
@@ -13554,7 +13650,7 @@ mod tests {
                 assert!(s.contains("$0.1234"), "cost stays at {w}: {s}");
             }
             assert!(
-                !s.contains("idle") && !s.contains('↓'),
+                !s.contains("↓") && !s.contains("working"),
                 "work moved to the input rule: {s}"
             );
             assert!(
@@ -13570,14 +13666,20 @@ mod tests {
     }
 
     #[test]
-    fn working_dot_dances_the_tango_in_fixed_width_frames() {
-        let frames: Vec<&str> = (0..8).map(|i| App::tango_frame(i * 1000)).collect();
+    fn working_figure_dances_the_tango_in_fixed_width_frames() {
+        let frames: Vec<String> = (0..8).map(|i| App::tango_frame(i * 120)).collect();
         assert!(frames.iter().all(|f| display_width(f) == 3), "{frames:?}");
+        assert!(
+            frames.iter().all(|f| f
+                .chars()
+                .all(|c| ('\u{2800}'..='\u{28FF}').contains(&c))),
+            "braille cells: {frames:?}"
+        );
         assert!(frames.windows(2).any(|w| w[0] != w[1]), "it moves");
-        assert_eq!(App::tango_frame(0), App::tango_frame(8 * 1000), "loops");
+        assert_eq!(App::tango_frame(0), App::tango_frame(8 * 120), "loops");
         assert_eq!(
-            App::tango_frame(100),
-            App::tango_frame(999),
+            App::tango_frame(10),
+            App::tango_frame(119),
             "holds within a frame"
         );
 
@@ -13587,11 +13689,43 @@ mod tests {
         app.turn_chars = 14_000;
         let s = app.work_text();
         assert!(
-            s.contains("↓14.0k") && !s.contains('●'),
-            "dancer replaces the dot: {s}"
+            s.contains("↓14.0k") && s.chars().next().is_some_and(|c| ('\u{2800}'..='\u{28FF}').contains(&c)),
+            "the braille dancer leads the work text: {s}"
         );
         app.busy = false;
-        assert_eq!(app.work_text(), "idle");
+        let idle = app.work_text();
+        assert!(
+            (0..4).any(|i| App::idle_wave(i) == idle),
+            "idle shows the breathing wave: {idle}"
+        );
+        assert!(display_width(&idle) == 5);
+    }
+
+    #[test]
+    fn grok_loader_bounces_three_cells_in_the_status_bar() {
+        let mut app = App::new();
+        app.busy = true;
+        app.model = "tknet/qwen".into();
+        let spans = app.status_spans(80);
+        let head: String = spans
+            .iter()
+            .take(3)
+            .map(|s| s.content.as_ref())
+            .collect::<String>();
+        assert_eq!(display_width(&head), 3, "three loader cells");
+        assert!(head.contains('■'), "the bright cell: {head}");
+        assert_eq!(head.matches('⬝').count(), 2, "two dim cells: {head}");
+        // the bounce: position cycles 0,1,2,1 (frame 1 → cell 1)
+        let f1: String = loader_spans(1)
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(f1.starts_with('⬝') && f1.contains('■'), "{f1}");
+        // idle: no loader, the model still leads
+        app.busy = false;
+        let spans = app.status_spans(80);
+        let first = spans[0].content.as_ref();
+        assert!(first.contains("tknet"), "no loader while idle: {first}");
     }
 
     #[test]
