@@ -1018,6 +1018,10 @@ pub struct App {
     next_image: usize,
     prompt_history: Vec<String>,
     stashed_draft: Option<InputDraft>,
+    /// up/down history navigation: index into prompt_history of the shown
+    /// entry, with the unsent draft stashed aside until sent or left
+    history_nav: Option<usize>,
+    history_draft: Option<InputDraft>,
     popup: Option<Popup>,
     picker: Option<Picker>,
     viewer: Option<Viewer>,
@@ -1164,6 +1168,8 @@ impl App {
             next_image: 1,
             prompt_history: Vec::new(),
             stashed_draft: None,
+            history_nav: None,
+            history_draft: None,
             popup: None,
             picker: None,
             viewer: None,
@@ -2647,7 +2653,105 @@ impl App {
         self.popup = None;
     }
 
+    /// (line the cursor sits on, total lines) of the input box
+    fn cursor_line(&self) -> (usize, usize) {
+        let mut current = 0usize;
+        let mut total = 1usize;
+        for (i, c) in self.input.iter().enumerate() {
+            if *c == '\n' {
+                total += 1;
+                if self.cursor > i {
+                    current += 1;
+                }
+            }
+        }
+        (current, total)
+    }
+
+    /// Show the history entry under `history_nav`, cursor at its end.
+    fn show_history_entry(&mut self) {
+        if let Some(i) = self.history_nav
+            && let Some(text) = self.prompt_history.get(i)
+        {
+            self.restore_prompt(text.clone());
+        }
+    }
+
+    fn take_history_draft(&mut self) -> Option<InputDraft> {
+        self.history_nav = None;
+        self.history_draft.take()
+    }
+
+    fn restore_draft(&mut self, draft: Option<InputDraft>) {
+        if let Some(d) = draft {
+            self.input = d.input;
+            self.cursor = d.cursor;
+            self.pastes = d.pastes;
+            self.popup = None;
+        }
+    }
+
+    /// Leave history navigation, putting the unsent draft back in the box.
+    fn exit_history_nav(&mut self) {
+        let draft = self.take_history_draft();
+        self.restore_draft(draft);
+    }
+
+    /// Up in the input box: inside a multi-line entry the cursor climbs a line
+    /// first; at the top edge it walks back through sent prompts. Returns false
+    /// (key falls through to chat scroll) when there is nothing to recall.
+    fn history_up(&mut self) -> bool {
+        if self.cursor_line().0 > 0 {
+            self.move_input_vertical(false);
+            return true;
+        }
+        match self.history_nav {
+            None if self.prompt_history.is_empty() => false,
+            None => {
+                self.history_draft = Some(InputDraft {
+                    input: std::mem::take(&mut self.input),
+                    cursor: self.cursor,
+                    pastes: std::mem::take(&mut self.pastes),
+                });
+                self.history_nav = Some(self.prompt_history.len() - 1);
+                self.show_history_entry();
+                true
+            }
+            Some(0) => true, // already the oldest
+            Some(i) => {
+                self.history_nav = Some(i - 1);
+                self.show_history_entry();
+                true
+            }
+        }
+    }
+
+    /// Down is the mirror: last line of a multi-line entry moves the cursor;
+    /// past the newest entry the unsent draft comes back to the box.
+    fn history_down(&mut self) -> bool {
+        let (current, total) = self.cursor_line();
+        if current + 1 < total {
+            self.move_input_vertical(true);
+            return true;
+        }
+        match self.history_nav {
+            None => false, // not navigating → let the key scroll the chat
+            Some(i) if i + 1 < self.prompt_history.len() => {
+                self.history_nav = Some(i + 1);
+                self.show_history_entry();
+                true
+            }
+            Some(_) => {
+                self.exit_history_nav();
+                true
+            }
+        }
+    }
+
     fn toggle_draft_stash(&mut self) {
+        if self.history_nav.is_some() {
+            self.exit_history_nav(); // never stash a recalled entry as the draft
+        }
         if !self.input.is_empty() {
             self.stashed_draft = Some(InputDraft {
                 input: std::mem::take(&mut self.input),
@@ -3820,6 +3924,8 @@ impl App {
         self.pastes.clear();
         self.cursor = 0;
         self.popup = None;
+        self.history_nav = None;
+        self.history_draft = None;
     }
 
     fn backspace_input(&mut self) {
@@ -4750,11 +4856,13 @@ impl App {
         if ctrl && k.code == KeyCode::Char('s') && self.picker.is_none() && self.popup.is_none() {
             if self.busy && !self.input.is_empty() {
                 let (text, images) = self.take_submission();
+                let draft = self.take_history_draft();
                 self.clear_input();
                 self.local_queue.push(QueuedPrompt {
                     text: text.clone(),
                     images,
                 });
+                self.restore_draft(draft);
                 let head: String = text.lines().next().unwrap_or("").chars().take(40).collect();
                 self.push(
                     format!(
@@ -4973,8 +5081,24 @@ impl App {
         }
         if self.keys.matches(Action::Interrupt, k) || self.keys.matches(Action::ClearInput, k) {
             self.editlast_armed = false; // esc backs out of the armed confirm too
+            if self.history_nav.is_some() {
+                // esc while browsing history: back to the draft, not wiping it
+                self.exit_history_nav();
+                return;
+            }
             self.clear_input();
             return;
+        }
+        // up/down in the input box walk the sent-prompt history (the unsent draft
+        // stashed aside); inside a multi-line entry they move the cursor by lines
+        // first. Falls through to chat scroll when there is nothing to recall.
+        if !self.vim || self.edit_mode == EditMode::Insert {
+            if k.code == KeyCode::Up && self.history_up() {
+                return;
+            }
+            if k.code == KeyCode::Down && self.history_down() {
+                return;
+            }
         }
         if self.keys.matches(Action::ScrollUp, k) {
             self.scroll_back += 1;
@@ -5023,8 +5147,10 @@ impl App {
                 // judge by the displayed text: an image chip's raw path also starts
                 // with '/', but it is an attachment, not a slash command
                 let text: String = self.input.iter().collect();
+                let draft = self.take_history_draft();
                 self.clear_input();
                 self.run_slash(&text, serve); // commands stay live during a turn
+                self.restore_draft(draft);
             }
             KeyCode::Enter if self.vim && self.edit_mode == EditMode::Insert => {
                 self.insert_char('\n');
@@ -5040,11 +5166,13 @@ impl App {
                 // actually queue it: sent in order when the running turn finishes;
                 // ctrl+c interrupts the turn AND drops the queue
                 let (text, images) = self.take_submission();
+                let draft = self.take_history_draft();
                 self.clear_input();
                 self.local_queue.push(QueuedPrompt {
                     text: text.clone(),
                     images,
                 });
+                self.restore_draft(draft);
                 let head: String = text.lines().next().unwrap_or("").chars().take(40).collect();
                 self.push(
                     format!(
@@ -5096,9 +5224,12 @@ impl App {
         if text.trim().is_empty() && images.is_empty() {
             return;
         }
+        // sending from a recalled entry: the unsent draft returns to the box after
+        let draft = self.take_history_draft();
         self.clear_input();
         if text.trim().starts_with('/') || text.trim() == ":q" {
             self.run_slash(&text, serve);
+            self.restore_draft(draft);
             return;
         }
         if self.prompt_history.last() != Some(&text) {
@@ -5118,6 +5249,7 @@ impl App {
         if let Some(line) = self.lines.last_mut() {
             line.prompt_state = Some(PromptState::Running);
         }
+        self.restore_draft(draft);
     }
 
     fn frame(&mut self, v: Value, serve: &mut Serve) {
@@ -9626,6 +9758,78 @@ mod tests {
             app.lines.iter().any(|l| l.text == format!("已复制 {n} 个字符到剪贴板")),
             "the paste label expands to the full text on the clipboard"
         );
+    }
+
+    #[test]
+    fn up_down_in_the_input_walk_history_and_restore_the_draft() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        for t in ["first", "second", "third"] {
+            app.input = t.chars().collect();
+            app.send_prompt(&mut serve);
+        }
+        assert_eq!(app.prompt_history, vec!["first", "second", "third"]);
+        // type an unsent draft, then walk back through history
+        app.input = "ABC".chars().collect();
+        app.cursor = 3;
+        let text = |app: &App| app.input.iter().collect::<String>();
+        let up = |app: &mut App| app.history_up();
+        let down = |app: &mut App| app.history_down();
+        assert!(up(&mut app) && up(&mut app) && up(&mut app));
+        assert_eq!(app.history_nav, Some(0));
+        assert_eq!(text(&app), "first");
+        assert!(up(&mut app), "stays at the oldest");
+        assert_eq!(app.history_nav, Some(0));
+        assert!(down(&mut app));
+        assert_eq!(text(&app), "second");
+        // down past the newest entry lands back on the unsent draft
+        assert!(down(&mut app) && down(&mut app));
+        assert_eq!(app.history_nav, None);
+        assert_eq!(text(&app), "ABC");
+        assert_eq!(app.cursor, 3);
+        // the user's exact story: recall XYZ over draft ABC, edit, send
+        app.prompt_history.push("XYZ".into());
+        app.input = "ABC".chars().collect();
+        app.cursor = 3;
+        assert!(up(&mut app));
+        assert_eq!(text(&app), "XYZ");
+        for c in "O".chars() {
+            app.insert_char(c);
+        }
+        app.send_prompt(&mut serve);
+        assert_eq!(app.prompt_history.last().map(String::as_str), Some("XYZO"));
+        assert_eq!(text(&app), "ABC", "the draft comes back after sending");
+        assert_eq!(app.history_nav, None, "navigation ended by the send");
+        // esc while browsing (turn done, so esc is not interrupt): draft back
+        app.busy = false;
+        app.input = "keep".chars().collect();
+        app.cursor = 4;
+        assert!(up(&mut app));
+        assert_eq!(text(&app), "XYZO");
+        app.key(KeyCode::Esc.into(), &mut serve);
+        assert_eq!(text(&app), "keep");
+    }
+
+    #[test]
+    fn up_down_in_a_multiline_input_move_the_cursor_until_the_edge() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.prompt_history.push("old".into());
+        app.input = "one\ntwo\nthree".chars().collect();
+        app.cursor = app.input.len(); // end of line 3
+        assert!(app.history_up());
+        assert_eq!(app.cursor_line(), (1, 3), "climbed to line 2");
+        assert_eq!(app.history_nav, None, "not history yet");
+        assert!(app.history_up());
+        assert_eq!(app.cursor_line(), (0, 3));
+        assert!(app.history_up(), "now it recalls history");
+        assert!(app.history_nav.is_some());
+        assert!(app.history_down());
+        assert_eq!(app.cursor_line(), (0, 3), "down enters the recalled text first");
+        // empty history + empty input: the key is not consumed
+        let mut fresh = App::new();
+        assert!(!fresh.history_up());
+        assert!(!fresh.history_down());
     }
 
     #[test]

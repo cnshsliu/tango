@@ -162,6 +162,11 @@ tools and checkpoints follow live); `/add_dir <dir>` registers an extra writable
   `/insights` writes the same data as an offline single-file HTML report.
 - `/timestamps` toggles `[HH:MM]` prefixes; `/density 0|1|2` sets tool-detail level (compact /
   default-errors-only / full) and applies to restored history too.
+- **Input history**: Up/Down in the input box walk through sent prompts (empty input
+  recalls the newest). The unsent draft is stashed aside and comes back when you press
+  Down past the newest entry, or Esc — and after you edit a recalled entry and send it,
+  the draft returns to the box. Inside a multi-line entry Up/Down move the cursor between
+  lines first. With no history at all, Up/Down still scroll the chat.
 - **Mouse basics** (Claude Code / OpenCode parity): drag in the chat to select — whole
   logical lines highlight and release copies them to the system clipboard; a click on a
   complete local file path (absolute, `./…`, `~/…`, `:line` suffix tolerated) opens the file
