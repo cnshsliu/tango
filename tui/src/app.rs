@@ -7,6 +7,7 @@ use crate::viewer::{PromptState, Viewer};
 use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Paragraph, Wrap};
 use serde_json::{Value, json};
@@ -7028,7 +7029,7 @@ impl App {
             f.render_widget(Paragraph::new(rows), inner);
         }
 
-        // input rule; on long turns a rotating tip rides the rule itself
+        // input rule: work state on the left, and on long turns a rotating tip on the right
         // (Claude Code-style "⌞ Tip:" without spending a layout row)
         let tip = if self.busy
             && let Some(t0) = self.turn_started
@@ -7038,23 +7039,13 @@ impl App {
         } else {
             None
         };
-        let rule_row = match tip {
-            Some(t) => {
-                let text = format!(" {t} ");
-                let tw = display_width(&text) as u16;
-                let left = area.width.saturating_sub(tw + 2);
-                let dash = self.theme.style(Tone::Muted);
-                Line::from(vec![
-                    Span::styled("─".repeat(left as usize), dash),
-                    Span::styled(text, dash),
-                    Span::styled("──".to_string(), dash),
-                ])
-            }
-            None => Line::from(Span::styled(
-                "─".repeat(area.width as usize),
-                self.theme.style(Tone::Muted),
-            )),
-        };
+        let rule_row = Self::rule_line(
+            &self.work_text(),
+            tip,
+            area.width as usize,
+            self.theme.style(Tone::Muted),
+            self.theme.style(if self.busy { Tone::Success } else { Tone::Muted }),
+        );
         f.render_widget(
             Paragraph::new(rule_row),
             Rect {
@@ -7378,22 +7369,7 @@ impl App {
     fn status_spans(&mut self, width: u16) -> Vec<Span<'static>> {
         // while a turn runs, replace the dumb "working" with live numbers: how long
         // it's been and how much has arrived — the "is it stuck?" check at a glance
-        let work = if self.busy {
-            match self.turn_started {
-                Some(t0) => {
-                    let ms = t0.elapsed().as_millis();
-                    format!(
-                        "{} {} · ↓{}",
-                        Self::tango_frame(ms),
-                        Self::fmt_elapsed(ms as u64 / 1000),
-                        Self::fmt_tokens(self.turn_chars)
-                    )
-                }
-                None => "♪ working".to_string(),
-            }
-        } else {
-            "idle".to_string()
-        };
+        let work = self.work_text();
         if let Some(template) = self.statusline.clone() {
             let percent = if self.context_window > 0 {
                 self.context_tokens.saturating_mul(100) / self.context_window
@@ -7432,14 +7408,6 @@ impl App {
                 format!(" ${:.4} ", self.cost),
                 self.theme.style(Tone::Warning),
             ), 10),
-            (Span::styled(
-                format!(" {work} "),
-                if self.busy {
-                    self.theme.style(Tone::Success)
-                } else {
-                    self.theme.style(Tone::Muted)
-                },
-            ), 9),
             (Span::styled(
                 format!(
                     " sess {} ",
@@ -7550,6 +7518,58 @@ impl App {
         } else {
             format!("{}h{:02}m", secs / 3600, (secs % 3600) / 60)
         }
+    }
+
+    /// "\o/ 12s · ↓14.0k" while a turn runs, "idle" otherwise. Lives on the input rule's
+    /// left end (and in a custom statusline's {work}); the default status bar no longer carries it.
+    fn work_text(&self) -> String {
+        if !self.busy {
+            return "idle".to_string();
+        }
+        match self.turn_started {
+            Some(t0) => {
+                let ms = t0.elapsed().as_millis();
+                format!(
+                    "{} {} · ↓{}",
+                    Self::tango_frame(ms),
+                    Self::fmt_elapsed(ms as u64 / 1000),
+                    Self::fmt_tokens(self.turn_chars)
+                )
+            }
+            None => "♪ working".to_string(),
+        }
+    }
+
+    /// The input rule: work state on the left, a rotating tip on the right, dashes between.
+    /// Too narrow for both → the tip goes; narrower still → the work text sheds the counter,
+    /// then the timer, keeping the dancer.
+    fn rule_line(work: &str, tip: Option<&str>, width: usize, dash: Style, live: Style) -> Line<'static> {
+        let mut work = work.to_string();
+        let mut tip = tip.map(str::to_string);
+        let room = width.saturating_sub(4); // "─ " left, " ─" right
+        loop {
+            let need = display_width(&work) + tip.as_ref().map_or(0, |t| display_width(t) + 3);
+            if need <= room || (tip.is_none() && display_width(&work) <= room) {
+                break;
+            }
+            if tip.is_some() {
+                tip = None;
+            } else if let Some((head, _)) = work.split_once(" · ") {
+                work = head.to_string();
+            } else if let Some((dancer, _)) = work.split_once(' ') {
+                work = dancer.to_string();
+            } else {
+                break;
+            }
+        }
+        let left = format!("─ {work} ");
+        let right = tip.map(|t| format!(" {t} ─")).unwrap_or_default();
+        let fill = width.saturating_sub(display_width(&left) + display_width(&right));
+        Line::from(vec![
+            Span::styled(left, live),
+            Span::styled("─".repeat(fill), dash),
+            Span::styled(right, dash),
+        ])
     }
 
     /// The working dot, dancing: a couple swaying and dipping the tango, one frame
@@ -11298,18 +11318,19 @@ mod tests {
     }
 
     #[test]
-    fn busy_status_shows_elapsed_and_received() {
+    fn busy_rule_shows_elapsed_and_received() {
         let mut app = App::new();
         app.busy = true;
         app.turn_started = Some(std::time::Instant::now());
         app.turn_chars = 14_000;
-        let s = app.status_segments_text();
+        let s = app.work_text();
         assert!(s.contains("↓14.0k"), "received chars shown while busy: {s}");
         assert!(s.contains('s'), "elapsed shown: {s}");
+        assert!(!app.status_segments_text().contains("↓14.0k"), "not in the status bar anymore");
         // idle stays clean
         app.busy = false;
         app.turn_started = None;
-        assert!(!app.status_segments_text().contains("↓"));
+        assert_eq!(app.work_text(), "idle");
     }
 
     #[test]
@@ -11768,6 +11789,43 @@ mod tests {
     }
 
     #[test]
+    fn input_rule_carries_work_on_the_left_and_the_tip_on_the_right() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let plain = Style::new();
+        let text = |l: &Line| l.spans.iter().map(|s| s.content.to_string()).collect::<String>();
+
+        let l = App::rule_line("idle", None, 40, plain, plain);
+        assert_eq!(display_width(&text(&l)), 40);
+        assert!(text(&l).starts_with("─ idle ─"), "{}", text(&l));
+
+        let l = App::rule_line("\\o/ 12s · ↓14.0k", Some("ctrl+o 看工具"), 60, plain, plain);
+        let t = text(&l);
+        assert_eq!(display_width(&t), 60);
+        assert!(t.starts_with("─ \\o/ 12s · ↓14.0k ─"), "{t}");
+        assert!(t.ends_with(" ctrl+o 看工具 ─"), "{t}");
+
+        // too narrow for both: the tip goes, then the counter, then the timer
+        let t = text(&App::rule_line("\\o/ 12s · ↓14.0k", Some("ctrl+o 看工具"), 24, plain, plain));
+        assert!(t.contains("12s") && !t.contains("看工具"), "{t}");
+        let t = text(&App::rule_line("\\o/ 12s · ↓14.0k", None, 12, plain, plain));
+        assert!(t.contains("\\o/") && !t.contains("↓"), "{t}");
+        let t = text(&App::rule_line("\\o/ 12s · ↓14.0k", None, 8, plain, plain));
+        assert_eq!(display_width(&t), 8, "{t}");
+
+        // on screen it is the input box's first row
+        let mut app = App::new();
+        app.busy = true;
+        app.turn_started = Some(std::time::Instant::now() - std::time::Duration::from_secs(45));
+        app.turn_chars = 14_000;
+        let mut terminal = Terminal::new(TestBackend::new(70, 14)).unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        let b = terminal.backend().buffer();
+        let row: String = (0..70).map(|x| b[(x, app.input_area.y)].symbol()).collect();
+        assert!(row.starts_with("─ ") && row.contains("45s") && row.contains("↓14.0k"), "{row}");
+        assert!(row.ends_with('─') && row.contains("/queue"), "long-turn tip on the right: {row}");
+    }
+
+    #[test]
     fn bubble_right_bar_lines_up_with_the_frame_corners() {
         use ratatui::{Terminal, backend::TestBackend};
         let mut app = App::new();
@@ -11819,6 +11877,7 @@ mod tests {
             if w >= 12 {
                 assert!(s.contains("$0.1234"), "cost stays at {w}: {s}");
             }
+            assert!(!s.contains("idle") && !s.contains('↓'), "work moved to the input rule: {s}");
             assert!(!s.contains("ctx") && !s.contains("sess"), "ctx/sess go first at {w}: {s}");
             if w >= 30 {
                 assert!(s.contains("❓"), "todo badge stays at {w}: {s}");
@@ -11826,11 +11885,6 @@ mod tests {
         }
         let s = text_at(&mut app, 40);
         assert!(!s.contains("claude-opus-5-5"), "model name shortened: {s}");
-        assert!(s.contains('↓') || s.contains('o'), "the dancing work segment stays: {s}");
-
-        // idle: work segment still there, no dancer
-        app.busy = false;
-        assert!(text_at(&mut app, 30).contains("idle"));
     }
 
     #[test]
@@ -11845,10 +11899,10 @@ mod tests {
         app.busy = true;
         app.turn_started = Some(std::time::Instant::now());
         app.turn_chars = 14_000;
-        let s = app.status_segments_text();
+        let s = app.work_text();
         assert!(s.contains("↓14.0k") && !s.contains('●'), "dancer replaces the dot: {s}");
         app.busy = false;
-        assert!(app.status_segments_text().contains("idle"));
+        assert_eq!(app.work_text(), "idle");
     }
 
     #[test]
