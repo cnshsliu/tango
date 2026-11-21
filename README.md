@@ -166,6 +166,10 @@ tools and checkpoints follow live); `/add_dir <dir>` registers an extra writable
   while the turn runs, the newest thinking block's bar color scrolls down (a dim→bright
   cyan wave, ~8fps, only with truecolor terminals — `$COLORTERM=truecolor` — and only the
   block that belongs to the running turn; older blocks and idle chats show a flat dim bar).
+- **Running tools**: while a bash/other tool call is in flight its `⚙ …` line keeps the
+  gear cycling through the same cyan wave (~2.5 steps/s); the result line settles it back
+  to the muted tone. Same truecolor requirement as the thinking bar (gray↔cyan blink
+  otherwise).
 - **Input history**: Up/Down in the input box walk through sent prompts (empty input
   recalls the newest). The unsent draft is stashed aside and comes back when you press
   Down past the newest entry, or Esc — and after you edit a recalled entry and send it,

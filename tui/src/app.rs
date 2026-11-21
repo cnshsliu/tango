@@ -91,6 +91,9 @@ struct ChatLine {
     /// full tool output or collapsed user prompt; shown in the independent viewer
     output: Option<String>,
     prompt_state: Option<PromptState>,
+    /// live tool-call id while this ⚙ line's tool is still running (drives the
+    /// gear's animated color); the result line clears it by id
+    tool_id: Option<String>,
     source_index: usize,
 }
 
@@ -802,6 +805,25 @@ fn thinking_bar_color(frame: u128, local_row: usize, animate: bool) -> Color {
     THINK_WAVE[phase as usize]
 }
 
+/// The running gear's color cycle: same cyan family as the thinking wave, one
+/// step every 2 frames (~240ms). Without truecolor it alternates dark-gray and
+/// cyan, which is the most any 256-color terminal can express.
+fn gear_color(frame: u128, animate: bool) -> Color {
+    if !animate {
+        return Color::DarkGray;
+    }
+    if !supports_truecolor() {
+        return if (frame / 2) % 2 == 0 { Color::Cyan } else { Color::DarkGray };
+    }
+    const GEAR_WAVE: [Color; 4] = [
+        Color::Rgb(120, 225, 240),
+        Color::Rgb(60, 190, 220),
+        Color::Rgb(32, 130, 160),
+        Color::Rgb(24, 84, 104),
+    ];
+    GEAR_WAVE[(frame / 2 % 4) as usize]
+}
+
 /// 24-bit color support: COLORTERM=truecolor/24bit or a *-direct TERM. Cached:
 /// the environment does not change while we run.
 fn supports_truecolor() -> bool {
@@ -1117,6 +1139,9 @@ pub struct App {
     unread_rows: usize,
     focus: bool,
     pub busy: bool,
+    /// ids of tool calls that started but have not produced a result yet —
+    /// their ⚙ lines keep the gear color cycling
+    running_tools: std::collections::HashSet<String>,
     /// thinking-bar animation frame (~120ms steps); only advances while busy
     think_frame: u128,
     prompt_id: u64,
@@ -1269,6 +1294,7 @@ impl App {
             unread_rows: 0,
             focus: false,
             busy: false,
+            running_tools: std::collections::HashSet::new(),
             think_frame: 0,
             prompt_id: 0,
             btw_id: None,
@@ -2107,6 +2133,7 @@ impl App {
                 ts: Some(ts.clone()),
                 output: None,
                 prompt_state: None,
+                tool_id: None,
                 source_index: usize::MAX,
             });
         }
@@ -2119,6 +2146,7 @@ impl App {
             ts: Some(self.hhmm()),
             output,
             prompt_state: None,
+            tool_id: None,
             source_index: usize::MAX,
         });
     }
@@ -5528,10 +5556,14 @@ impl App {
                         self.thinking.push_str(d);
                         self.turn_chars += d.chars().count() as u64;
                     }
-                    Some("tool_call_start") => self.push(
-                        format!("⚙ {} …", ev["name"].as_str().unwrap_or("?")),
-                        Tone::Muted,
-                    ),
+                    Some("tool_call_start") => {
+                        let id = ev["id"].as_str().unwrap_or_default().to_string();
+                        self.running_tools.insert(id.clone());
+                        self.push(format!("⚙ {} …", ev["name"].as_str().unwrap_or("?")), Tone::Muted);
+                        if let Some(line) = self.lines.last_mut() {
+                            line.tool_id = Some(id);
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -5544,6 +5576,9 @@ impl App {
                 }
             }
             "tool_result" => {
+                if let Some(id) = v["call"]["id"].as_str() {
+                    self.running_tools.remove(id);
+                }
                 let name = v["call"]["name"].as_str().unwrap_or("?");
                 let summary = Self::call_summary(&v["call"]["input"]);
                 let ms = v["ms"].as_u64().unwrap_or(0);
@@ -5577,6 +5612,7 @@ impl App {
                 self.ime_for_dialog(); // y/n/a need a roman keyboard through a CJK IME
             }
             "turn_end" => {
+                self.running_tools.clear();
                 if let Some(c) = v["totalCostUsd"].as_f64() {
                     self.cost = c;
                 }
@@ -7032,6 +7068,7 @@ impl App {
                     ts: line.ts.clone(),
                     output: line.output.clone(),
                     prompt_state: line.prompt_state,
+                    tool_id: line.tool_id.clone(),
                     source_index,
                 }
             })
@@ -7143,10 +7180,18 @@ impl App {
         }
         f.render_widget(Paragraph::new(Line::from(spans)), status_a);
 
-        self.think_frame = std::time::Instant::now()
-            .duration_since(*THINK_EPOCH)
-            .as_millis()
-            / THINK_FRAME_MS;
+        if !self.busy {
+            // an interrupted/abandoned turn must not leave a gear spinning forever
+            self.running_tools.clear();
+        }
+        self.think_frame = if cfg!(test) {
+            0 // deterministic colors; the wave math is unit-tested separately
+        } else {
+            std::time::Instant::now()
+                .duration_since(*THINK_EPOCH)
+                .as_millis()
+                / THINK_FRAME_MS
+        };
         // chat with bottom-anchored scrolling (scroll_back=0 follows the newest line).
         // We own the wrap (wrap_chat_rows) so every terminal row maps back to an exact
         // (source line, char range) — character-exact mouse selection and click targets.
@@ -7159,6 +7204,11 @@ impl App {
         let tones: Vec<Tone> = self.chat_lines().iter().map(|l| l.tone).collect();
         let user_flags: Vec<bool> = tones.iter().map(|t| *t == Tone::User).collect();
         let think_flags: Vec<bool> = tones.iter().map(|t| *t == Tone::Thinking).collect();
+        let gear_running: Vec<bool> = self
+            .chat_lines()
+            .iter()
+            .map(|l| l.tool_id.as_deref().is_some_and(|id| self.running_tools.contains(id)))
+            .collect();
         let mut all_rows =
             wrap_chat_rows_mixed(&texts, inner_w, &user_flags, &think_flags, self.user_bubble);
         layout_user_bubbles(&mut all_rows, &user_flags, inner_w, self.user_bubble);
@@ -7305,6 +7355,18 @@ impl App {
             } else if row.think {
                 let mut spans = pad;
                 spans.push(Span::styled(row.text.clone(), style));
+                shown.push(Line::from(spans));
+            } else if gear_running.get(row.line).copied().unwrap_or(false)
+                && row.text.starts_with("⚙")
+            {
+                // the tool is still running: the gear itself cycles color
+                let rest = row.text.strip_prefix("⚙ ").unwrap_or(&row.text).to_string();
+                let mut spans = pad;
+                spans.push(Span::styled(
+                    "⚙ ".to_string(),
+                    Style::default().fg(gear_color(self.think_frame, true)),
+                ));
+                spans.push(Span::styled(rest, style));
                 shown.push(Line::from(spans));
             } else {
                 shown.push(Line::from(Span::styled(row.text.clone(), style)));
@@ -10270,6 +10332,58 @@ mod tests {
         assert_eq!(app.chat_line_hit(0, 1, 0).map(|(_, _, i)| i), Some(0), "gutter clamps to 0");
         assert_eq!(app.chat_line_hit(0, 2, 0).map(|(_, _, i)| i), Some(0), "text starts at col 2");
         assert_eq!(app.chat_line_hit(0, 4, 0).map(|(_, _, i)| i), Some(1), "汉 spans 2-3");
+    }
+
+    #[test]
+    fn running_gear_cycles_color_and_settles_when_the_tool_finishes() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.busy = true;
+        app.handle(
+            Event::Server(
+                0,
+                serde_json::json!({"type":"stream","event":{"type":"tool_call_start","id":"t1","name":"bash"}}),
+            ),
+            &mut serve,
+        );
+        assert_eq!(app.lines.last().unwrap().text, "⚙ bash …");
+        assert!(app.running_tools.contains("t1"));
+        {
+            let mut t = Terminal::new(TestBackend::new(30, 8)).unwrap();
+            t.draw(|f| app.draw(f)).unwrap();
+            let b = t.backend().buffer();
+            // frame is frozen at 0 under test: truecolor gives GEAR_WAVE[0], a
+            // 256-color terminal gives the blink's first Cyan — both are "lit"
+            let fg = b[(0, 0)].fg;
+            assert!(
+                matches!(fg, Color::Cyan | Color::Rgb(120, 225, 240)),
+                "running gear is lit: {fg:?}"
+            );
+        }
+        app.handle(
+            Event::Server(
+                0,
+                serde_json::json!({"type":"tool_result","call":{"id":"t1","name":"bash","input":{"command":"ls"}},"ms":5,"isError":false,"output":"x"}),
+            ),
+            &mut serve,
+        );
+        assert!(app.running_tools.is_empty(), "the result retires the id");
+        {
+            let mut t = Terminal::new(TestBackend::new(30, 8)).unwrap();
+            t.draw(|f| app.draw(f)).unwrap();
+            let b = t.backend().buffer();
+            let gear_row = app.chat_rows.iter().position(|r| r.text.starts_with("⚙")).unwrap();
+            assert_eq!(
+                b[(0, gear_row as u16)].fg,
+                Color::DarkGray,
+                "finished gears settle back to the muted tone"
+            );
+        }
+        // and the pure cycle steps through the wave as frames advance
+        assert_eq!(gear_color(0, true), gear_color(8, true), "period 8 frames");
+        assert_ne!(gear_color(0, true), gear_color(2, true), "color moves");
+        assert_eq!(gear_color(7, false), Color::DarkGray, "idle is flat");
     }
 
     #[test]
