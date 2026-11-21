@@ -107,6 +107,7 @@ struct Permission {
 enum Pending {
     SessionPreview,
     EditLast,
+    TimelineMenu,
     Model,
     Models,
     Sessions,
@@ -851,7 +852,11 @@ fn wrap_chat_rows_mixed(texts: &[String], width: usize, is_user: &[bool]) -> Vec
     let w = width.max(1);
     for (line, text) in texts.iter().enumerate() {
         let user = is_user.get(line).copied().unwrap_or(false);
-        let lw = if user { w.saturating_sub(4 + BUBBLE_MARGIN).max(1) } else { w };
+        let lw = if user {
+            w.saturating_sub(4 + BUBBLE_MARGIN).max(1)
+        } else {
+            w
+        };
         let mut part = wrap_chat_rows(&[text.clone()], lw);
         for r in &mut part {
             // wrap_chat_rows indexes within the single-line slice — restore the
@@ -899,7 +904,14 @@ fn wrap_chat_rows(texts: &[String], width: usize) -> Vec<ChatRow> {
 }
 
 /// Wrap chars[start..end] (no newlines inside) into rows of at most `w` columns.
-fn wrap_segment(rows: &mut Vec<ChatRow>, line: usize, chars: &[char], start: usize, end: usize, w: usize) {
+fn wrap_segment(
+    rows: &mut Vec<ChatRow>,
+    line: usize,
+    chars: &[char],
+    start: usize,
+    end: usize,
+    w: usize,
+) {
     if start == end {
         rows.push(ChatRow {
             line,
@@ -1118,6 +1130,12 @@ pub struct App {
     /// alt+e armed: the destructive confirm (interrupt + code rollback) waits
     /// for a second press
     editlast_armed: bool,
+    /// the prompt menu (click a user bubble): anchored line index
+    prompt_menu: Option<usize>,
+    /// clickable rows of the prompt menu, rebuilt every draw
+    prompt_menu_buttons: Vec<(Rect, u8)>,
+    /// the first line of the turn targeted by 编辑重发 (timeline matching)
+    edit_target_head: Option<String>,
     /// plan mode badge (/plan)
     plan_mode: bool,
     /// active /goal text (badge)
@@ -1224,6 +1242,9 @@ impl App {
             perm_scroll: 0,
             perm_wrap_w: 76,
             editlast_armed: false,
+            prompt_menu: None,
+            prompt_menu_buttons: Vec::new(),
+            edit_target_head: None,
             ime_restore: None,
             queue_buttons: Vec::new(),
             plan_mode: false,
@@ -1422,13 +1443,23 @@ impl App {
     /// cursor opens the image; a file path under the cursor opens the read-only
     /// viewer; a line with collapsed output opens the transcript viewer.
     fn chat_click(&mut self, row: u16, column: u16, chat_y: u16) {
-        if let Some((_li, full, click_idx)) = self.chat_line_hit(row, column, chat_y) {
+        if let Some((li, full, click_idx)) = self.chat_line_hit(row, column, chat_y) {
             if let Some(path) = self.image_chip_at(&full, click_idx) {
                 self.open_image(&path);
                 return;
             }
             if let Some(path) = find_existing_file_path(&full, click_idx) {
                 self.open_file_viewer(&path);
+                return;
+            }
+            // a plain user bubble opens the prompt menu; collapsed pastes (lines
+            // with output) keep their expand-to-viewer click below
+            let source = self.chat_lines().get(li).map(|l| l.source_index);
+            if source
+                .and_then(|i| self.lines.get(i))
+                .is_some_and(|l| l.tone == Tone::User && l.output.is_none())
+            {
+                self.prompt_menu = source;
                 return;
             }
         }
@@ -1440,6 +1471,78 @@ impl App {
         ) {
             self.open_line_viewer_quiet(index);
         }
+    }
+
+    /// The original prompt behind a user bubble: strip the ❯ prefix, restore
+    /// real newlines from the ⏎ flattening push_user applied.
+    fn prompt_original(&self) -> Option<String> {
+        let idx = self.prompt_menu?;
+        let text = &self.lines.get(idx)?.text;
+        let body = text.strip_prefix("❯ ").unwrap_or(text);
+        Some(body.replace(" ⏎ ", "\n"))
+    }
+
+    /// 1 复制原文
+    fn prompt_menu_copy(&mut self, serve: &mut Serve) {
+        let _ = serve;
+        if let Some(original) = self.prompt_original() {
+            let head: String = original
+                .lines()
+                .next()
+                .unwrap_or("")
+                .chars()
+                .take(40)
+                .collect();
+            match self.copy_to_clipboard(&original) {
+                Ok(()) => self.push(format!("已复制原文：{head}"), Tone::Success),
+                Err(e) => self.push(format!("复制失败：{e}"), Tone::Error),
+            }
+        }
+        self.prompt_menu = None;
+    }
+
+    /// 2 编辑重发: locate the turn on the timeline, then editlast to it
+    fn prompt_menu_edit(&mut self, serve: &mut Serve) {
+        if let Some(original) = self.prompt_original() {
+            let head: String = original
+                .lines()
+                .next()
+                .unwrap_or("")
+                .chars()
+                .take(40)
+                .collect();
+            self.edit_target_head = Some(head);
+            let id = serve.command("timeline", vec![]);
+            self.pending.push((id, Pending::TimelineMenu));
+            self.push("⟲ 定位该回合中 …", Tone::Muted);
+        }
+        self.prompt_menu = None;
+    }
+
+    /// 3 原样重发
+    fn prompt_menu_resend(&mut self, serve: &mut Serve) {
+        if let Some(original) = self.prompt_original() {
+            self.push("↻ 原样重发（忙碌时自动排队）", Tone::Muted);
+            self.submit_text(serve, original, vec![]);
+        } else {
+            self.prompt_menu = None;
+        }
+    }
+
+    /// 4 引用到输入框
+    fn prompt_menu_quote(&mut self) {
+        if let Some(original) = self.prompt_original() {
+            let head: String = original
+                .lines()
+                .next()
+                .unwrap_or("")
+                .chars()
+                .take(40)
+                .collect();
+            self.input = format!("关于「{head}」：").chars().collect();
+            self.cursor = self.input.len();
+        }
+        self.prompt_menu = None;
     }
 
     /// The attached image whose `[图片 #N]` chip covers char index `click_idx` of a line.
@@ -4158,6 +4261,29 @@ impl App {
                     self.queue_buttons.clear();
                     return false;
                 }
+                // the prompt menu's clickable rows
+                if self.prompt_menu.is_some()
+                    && let MouseEventKind::Down(MouseButton::Left) = m.kind
+                {
+                    let pos = Position::new(m.column, m.row);
+                    if let Some((_, n)) = self
+                        .prompt_menu_buttons
+                        .iter()
+                        .find(|(rect, _)| rect.contains(pos))
+                        .cloned()
+                    {
+                        match n {
+                            1 => self.prompt_menu_copy(serve),
+                            2 => self.prompt_menu_edit(serve),
+                            3 => self.prompt_menu_resend(serve),
+                            _ => self.prompt_menu_quote(),
+                        }
+                        return false;
+                    }
+                    self.prompt_menu = None;
+                    self.prompt_menu_buttons.clear();
+                    return false;
+                }
                 // the /todo dialog's clickable buttons
                 if self.todo_dialog
                     && let MouseEventKind::Down(MouseButton::Left) = m.kind
@@ -4899,6 +5025,34 @@ impl App {
             return;
         }
         // Ctrl+C always remains a safe interrupt even when the action is remapped.
+        // the prompt menu grabs number keys; anything else closes it first
+        if self.prompt_menu.is_some() {
+            match k.code {
+                KeyCode::Char('1') => {
+                    self.prompt_menu_copy(serve);
+                    return;
+                }
+                KeyCode::Char('2') => {
+                    self.prompt_menu_edit(serve);
+                    return;
+                }
+                KeyCode::Char('3') => {
+                    self.prompt_menu_resend(serve);
+                    return;
+                }
+                KeyCode::Char('4') => {
+                    self.prompt_menu_quote();
+                    return;
+                }
+                KeyCode::Esc => {
+                    self.prompt_menu = None;
+                    return;
+                }
+                _ => {
+                    self.prompt_menu = None; // close, then handle the key normally
+                }
+            }
+        }
         // alt+e: edit the last prompt — interrupt + rewind + preload, two presses
         // because the rewind also rolls back code
         if self.keys.matches(Action::EditLast, k) {
@@ -5551,6 +5705,39 @@ impl App {
                                         })
                                         .unwrap_or_default();
                                     self.picker = Some(picker);
+                                }
+                            }
+                        }
+                        (Pending::TimelineMenu, true) => {
+                            // locate the clicked bubble's turn by its first line,
+                            // then editlast straight to that entry
+                            let head = self.edit_target_head.clone().unwrap_or_default();
+                            let hhead: String = head.trim().chars().take(8).collect();
+                            let hit = d["nodes"].as_array().and_then(|nodes| {
+                                nodes.iter().find_map(|n| {
+                                    let f = n["firstLine"].as_str()?.trim();
+                                    // match in either direction over the shorter
+                                    // prefix: serve truncates at 80, we hold 40
+                                    let n8: String = f.chars().take(8).collect();
+                                    let matched = (n8.len() <= hhead.len()
+                                        && hhead.starts_with(&n8))
+                                        || (hhead.len() <= n8.len() && n8.starts_with(&hhead));
+                                    matched.then(|| n["entryIndex"].as_u64().unwrap_or(0))
+                                })
+                            });
+                            match hit {
+                                Some(entry) => {
+                                    let id = serve.command(
+                                        "editlast",
+                                        vec![("entryIndex", Value::from(entry))],
+                                    );
+                                    self.pending.push((id, Pending::EditLast));
+                                }
+                                None => {
+                                    self.push(
+                                        "没在时间轴上找到这条消息（可能已被回滚）",
+                                        Tone::Error,
+                                    );
                                 }
                             }
                         }
@@ -7235,6 +7422,37 @@ impl App {
             }
         }
 
+        // the prompt menu: a small centered dialog anchored to a user bubble
+        if self.prompt_menu.is_some() {
+            let w = 44u16.min(area.width);
+            let h = 6;
+            let pop = Rect {
+                x: (area.width.saturating_sub(w)) / 2,
+                y: (area.height.saturating_sub(h)) / 2,
+                width: w,
+                height: h,
+            };
+            let inner = render_dialog(f, pop, "这条消息", "数字键或点击 · esc 关闭", self.theme);
+            self.prompt_menu_buttons.clear();
+            let mut y = inner.y;
+            for (n, label) in [
+                (1u8, "复制原文（还原换行）"),
+                (2u8, "编辑重发（回滚到这句之前）"),
+                (3u8, "原样重发"),
+                (4u8, "引用到输入框"),
+            ] {
+                let row = Rect {
+                    x: inner.x,
+                    y,
+                    width: inner.width,
+                    height: 1,
+                };
+                f.render_widget(Paragraph::new(format!("{n}. {label}")), row);
+                self.prompt_menu_buttons.push((row, n));
+                y += 1;
+            }
+        }
+
         // the choices panel: a reserved layout row between chat and input (the
         // chat scrolls up to make room — never covered), question wrapped whole
         if let Some(c) = self.choices.clone()
@@ -8101,12 +8319,23 @@ mod tests {
         let texts = vec!["❯ hello\nworld\n\nend".to_string()];
         let mut rows = wrap_chat_rows_mixed(&texts, 40, &[true]);
         layout_user_bubbles(&mut rows, &[true], 40, true);
-        let body: Vec<&str> = rows.iter().filter(|r| !r.border).map(|r| r.text.as_str()).collect();
+        let body: Vec<&str> = rows
+            .iter()
+            .filter(|r| !r.border)
+            .map(|r| r.text.as_str())
+            .collect();
         assert_eq!(body, vec!["❯ hello", "world", "", "end"]);
-        assert_eq!(rows.iter().filter(|r| r.border).count(), 2, "a single frame");
+        assert_eq!(
+            rows.iter().filter(|r| r.border).count(),
+            2,
+            "a single frame"
+        );
         // char offsets still index the whole text, skipping each '\n'
-        let spans: Vec<(usize, usize)> =
-            rows.iter().filter(|r| !r.border).map(|r| (r.cs, r.ce)).collect();
+        let spans: Vec<(usize, usize)> = rows
+            .iter()
+            .filter(|r| !r.border)
+            .map(|r| (r.cs, r.ce))
+            .collect();
         assert_eq!(spans, vec![(0, 7), (8, 13), (14, 14), (15, 18)]);
     }
 
@@ -9692,12 +9921,34 @@ mod tests {
         app.cursor = app.input.len();
         input_screen(&mut app, 40, 12);
         let y = app.input_area.y + 1; // first text row under the input rule
-        mouse(&mut app, &mut serve, MouseEventKind::Down(MouseButton::Left), 6, y);
-        mouse(&mut app, &mut serve, MouseEventKind::Drag(MouseButton::Left), 11, y);
-        mouse(&mut app, &mut serve, MouseEventKind::Up(MouseButton::Left), 11, y);
+        mouse(
+            &mut app,
+            &mut serve,
+            MouseEventKind::Down(MouseButton::Left),
+            6,
+            y,
+        );
+        mouse(
+            &mut app,
+            &mut serve,
+            MouseEventKind::Drag(MouseButton::Left),
+            11,
+            y,
+        );
+        mouse(
+            &mut app,
+            &mut serve,
+            MouseEventKind::Up(MouseButton::Left),
+            11,
+            y,
+        );
         assert_eq!(app.input_sel, Some((6, 11)));
         assert_eq!(app.input_raw_text(6, 11), "brave");
-        assert!(app.lines.iter().any(|l| l.text == "已复制 5 个字符到剪贴板"));
+        assert!(
+            app.lines
+                .iter()
+                .any(|l| l.text == "已复制 5 个字符到剪贴板")
+        );
         // the selection stays highlighted until the next key
         let b = {
             use ratatui::{Terminal, backend::TestBackend};
@@ -9732,7 +9983,10 @@ mod tests {
         click(&mut app, &mut serve, 30, y); // past the end of row 1
         assert_eq!(app.cursor, 3, "before the newline");
         assert_eq!(app.input_sel, None);
-        assert!(!app.lines.iter().any(|l| l.text.contains("已复制")), "a click copies nothing");
+        assert!(
+            !app.lines.iter().any(|l| l.text.contains("已复制")),
+            "a click copies nothing"
+        );
     }
 
     #[test]
@@ -9746,8 +10000,20 @@ mod tests {
         let y = app.input_area.y + 1;
         assert!(screen[y as usize].contains("[Pasted text #"), "{screen:#?}");
         for _ in 0..2 {
-            mouse(&mut app, &mut serve, MouseEventKind::Down(MouseButton::Left), 2, y);
-            mouse(&mut app, &mut serve, MouseEventKind::Up(MouseButton::Left), 2, y);
+            mouse(
+                &mut app,
+                &mut serve,
+                MouseEventKind::Down(MouseButton::Left),
+                2,
+                y,
+            );
+            mouse(
+                &mut app,
+                &mut serve,
+                MouseEventKind::Up(MouseButton::Left),
+                2,
+                y,
+            );
         }
         let total = app.rendered_input().text.chars().count();
         assert_eq!(app.input_sel, Some((0, total)), "everything is selected");
@@ -9755,7 +10021,9 @@ mod tests {
         assert!(raw.contains("line three"));
         let n = raw.chars().filter(|c| *c != '\n').count();
         assert!(
-            app.lines.iter().any(|l| l.text == format!("已复制 {n} 个字符到剪贴板")),
+            app.lines
+                .iter()
+                .any(|l| l.text == format!("已复制 {n} 个字符到剪贴板")),
             "the paste label expands to the full text on the clipboard"
         );
     }
@@ -9825,7 +10093,11 @@ mod tests {
         assert!(app.history_up(), "now it recalls history");
         assert!(app.history_nav.is_some());
         assert!(app.history_down());
-        assert_eq!(app.cursor_line(), (0, 3), "down enters the recalled text first");
+        assert_eq!(
+            app.cursor_line(),
+            (0, 3),
+            "down enters the recalled text first"
+        );
         // empty history + empty input: the key is not consumed
         let mut fresh = App::new();
         assert!(!fresh.history_up());
@@ -11044,6 +11316,98 @@ mod tests {
             screen(&mut terminal).contains("第39行"),
             "scrolling reveals the tail"
         );
+    }
+
+    #[test]
+    fn clicking_a_user_bubble_opens_the_prompt_menu() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.push_user("帮我看看这个");
+        app.chat_inner_w = 80;
+        app.chat_scroll_offset = 0;
+        app.chat_rows = wrap_chat_rows(&["❯ 帮我看看这个".to_string()], 80);
+        {
+            let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+            terminal.draw(|f| app.draw(f)).unwrap();
+        }
+        // click (press+release, no drag) inside the bubble
+        let x = app
+            .chat_rows
+            .iter()
+            .find(|r| r.user && !r.border)
+            .unwrap()
+            .x as u16;
+        app.chat_press(0, x + 3);
+        app.chat_release(0, 0, x + 3);
+        eprintln!(
+            "dbg: x={x} prompt_menu={:?} line0 tone={:?} output={:?} lavr={:?}",
+            app.prompt_menu,
+            app.lines.first().map(|l| l.tone),
+            app.lines.first().and_then(|l| l.output.as_deref()),
+            app.line_at_visual_row(80, 17, 0)
+        );
+        assert_eq!(app.prompt_menu, Some(0), "menu opens anchored to the line");
+        {
+            let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+            terminal.draw(|f| app.draw(f)).unwrap();
+        }
+        assert_eq!(app.prompt_menu_buttons.len(), 4, "four clickable menu rows");
+        let _ = serve;
+    }
+
+    #[test]
+    fn prompt_menu_actions_copy_resend_quote_and_edit() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.push_user("第一行\n第二行");
+        app.prompt_menu = Some(0);
+        // 1 复制原文: ⏎ restored, ❯ stripped — the flattened form is what chat holds
+        app.prompt_menu_copy(&mut serve);
+        assert!(
+            app.lines
+                .iter()
+                .any(|l| l.text.contains("已复制") && l.text.contains("第一行")),
+            "copy confirms with the original text"
+        );
+        // 3 原样重发: submits the restored original
+        app.prompt_menu = Some(0);
+        app.prompt_menu_resend(&mut serve);
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        assert_eq!(sent["cmd"], "prompt");
+        assert_eq!(sent["text"], "第一行\n第二行");
+        // 4 引用: preloads a quote head into the input
+        app.prompt_menu = Some(0);
+        app.prompt_menu_quote();
+        let typed: String = app.input.iter().collect();
+        assert!(typed.starts_with("关于「第一行"), "{typed}");
+        assert!(app.prompt_menu.is_none(), "actions close the menu");
+        // 2 编辑重发 asks the timeline first, then editlast with that entry
+        app.prompt_menu = Some(0);
+        app.prompt_menu_edit(&mut serve);
+        let sent: Value = serde_json::from_str(&serve.sent.last().unwrap()).unwrap();
+        assert_eq!(sent["cmd"], "timeline");
+        let tid = sent["id"].as_u64().unwrap();
+        // the timeline reply carries the turn (matched by first line)…
+        app.frame(
+            json!({"type": "result", "id": tid, "ok": true, "data": {"nodes": [
+                {"entryIndex": 3, "ts": "t", "firstLine": "第一行第二行", "hasSnapshot": false, "orphaned": false}
+            ]}}),
+            &mut serve,
+        );
+        // …editlast goes straight to that entry…
+        let sent: Value = serde_json::from_str(&serve.sent.last().unwrap()).unwrap();
+        assert_eq!(sent["cmd"], "editlast");
+        assert_eq!(sent["entryIndex"], 3);
+        let eid = sent["id"].as_u64().unwrap();
+        // …and the rewound prompt comes back into the input box
+        app.frame(
+            json!({"type": "result", "id": eid, "ok": true,
+                   "data": {"prompt": "第一行\n第二行", "turnDropped": 1}}),
+            &mut serve,
+        );
+        let typed: String = app.input.iter().collect();
+        assert_eq!(typed, "第一行\n第二行");
     }
 
     #[test]
@@ -12531,11 +12895,20 @@ mod tests {
             .map(|y| (0..40).map(|x| b[(x, y)].symbol().to_string()).collect())
             .collect();
         // wide chars leave a blank continuation cell, so compare with spaces removed
-        let at = |needle: &str| rows.iter().position(|r| r.replace(' ', "").contains(needle));
+        let at = |needle: &str| {
+            rows.iter()
+                .position(|r| r.replace(' ', "").contains(needle))
+        };
         let first = at("❯第一行").expect("marker and first line share a row");
         assert_eq!(at("third"), Some(first + 2), "{rows:#?}");
-        assert!(rows[first - 1].contains('╭') && rows[first + 3].contains('╰'), "{rows:#?}");
-        assert!(rows[first + 1].trim_end().ends_with('│'), "blank row is framed: {rows:#?}");
+        assert!(
+            rows[first - 1].contains('╭') && rows[first + 3].contains('╰'),
+            "{rows:#?}"
+        );
+        assert!(
+            rows[first + 1].trim_end().ends_with('│'),
+            "blank row is framed: {rows:#?}"
+        );
         assert!(!rows.iter().any(|r| r.contains('⏎')));
     }
 

@@ -1780,7 +1780,12 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
           }
         }
         const list = turns();
-        const last = lastVisibleTurn(list);
+        // default: the last visible turn; entryIndex targets any turn by its
+        // timeline entry (the prompt menu's 编辑重发 for older messages)
+        const last =
+          cmd.entryIndex !== undefined
+            ? list.findIndex((t) => t.entryIndex === Number(cmd.entryIndex))
+            : lastVisibleTurn(list);
         if (last < 0) return reply(cmd, false, undefined, 'editlast: no turn to edit');
         const turn = list[last];
         const entry = store.indexedEntries().find((e) => e.index === turn.entryIndex)?.entry;
