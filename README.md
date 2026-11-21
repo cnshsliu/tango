@@ -26,21 +26,21 @@ prices come from pricing groups, which tango doesn't see). If
 
 `tango --models` lists presets in three groups: the tknet gateway, then by where the endpoint is served:
 
-| Group | Presets | Key variable |
-|---|---|---|
-| tknet (own gateway) | `tknet/qwen3.8-flash-next`, `tknet/deepseek-v4.1-flash`, `tknet/deepseek-v4-pro` (tknet.ai, Tencent Cloud Silicon Valley) | `TKNET_API_KEY` |
-| China (mainland endpoints, no proxy) | `deepseek/deepseek-flash`, `deepseek/deepseek-v4-pro` | `DEEPSEEK_API_KEY` |
-| | `kimi/kimi-k3.1-pro`, `kimi/kimi-k3.1-pro-highspeed` (moonshot.cn) | `KIMI_API_KEY` |
-| | `kimi-code/kimi-for-coding` (api.kimi.com/coding, Kimi Code plan) | `KIMI_CODE_API_KEY` |
-| | `qwen/qwen3.8-max`, `qwen/qwen3.8-flash` (dashscope.aliyuncs.com) | `DASHSCOPE_API_KEY` |
-| | `zhipu/glm-5.3`, `zhipu/glm-5.3-flash` (bigmodel.cn) | `Z_API_KEY` |
-| | `zhipu-plan/glm-5.3`, `-flash` (GLM Coding Plan, Anthropic 协议) | `ZHIPU_CODING_PLAN_API_KEY` |
-| International | `kimi-intl/kimi-k3.1-pro`, `kimi-intl/kimi-k3.1-pro-highspeed` (moonshot.ai) | `KIMI_API_KEY` |
-| | `qwen-us/qwen3.8-max`, `qwen-us/qwen3.8-flash` (dashscope-us) | `DASHSCOPE_US_API_KEY` |
-| | `anthropic/claude-opus-5-5`, `anthropic/claude-haiku-5-5` | `ANTHROPIC_API_KEY` |
-| | `openai/gpt-6-astra`, `openai/gpt-6.1-terra` | `OPENAI_API_KEY` |
-| | `google/gemini-4-carbon`, `google/gemini-3.8-flash` | `GEMINI_API_KEY` |
-| | `xai/grok-4.7`, `xai/grok-build-0.1` | `XAI_API_KEY` |
+| Group                                | Presets                                                                                                                   | Key variable                |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------- | --------------------------- |
+| tknet (own gateway)                  | `tknet/qwen3.8-flash-next`, `tknet/deepseek-v4.1-flash`, `tknet/deepseek-v4-pro` (tknet.ai, Tencent Cloud Silicon Valley) | `TKNET_API_KEY`             |
+| China (mainland endpoints, no proxy) | `deepseek/deepseek-flash`, `deepseek/deepseek-v4-pro`                                                                     | `DEEPSEEK_API_KEY`          |
+|                                      | `kimi/kimi-k3.1-pro`, `kimi/kimi-k3.1-pro-highspeed` (moonshot.cn)                                                        | `KIMI_API_KEY`              |
+|                                      | `kimi-code/kimi-for-coding` (api.kimi.com/coding, Kimi Code plan)                                                         | `KIMI_CODE_API_KEY`         |
+|                                      | `qwen/qwen3.8-max`, `qwen/qwen3.8-flash` (dashscope.aliyuncs.com)                                                         | `DASHSCOPE_API_KEY`         |
+|                                      | `zhipu/glm-5.3`, `zhipu/glm-5.3-flash` (bigmodel.cn)                                                                      | `Z_API_KEY`                 |
+|                                      | `zhipu-plan/glm-5.3`, `-flash` (GLM Coding Plan, Anthropic 协议)                                                          | `ZHIPU_CODING_PLAN_API_KEY` |
+| International                        | `kimi-intl/kimi-k3.1-pro`, `kimi-intl/kimi-k3.1-pro-highspeed` (moonshot.ai)                                              | `KIMI_API_KEY`              |
+|                                      | `qwen-us/qwen3.8-max`, `qwen-us/qwen3.8-flash` (dashscope-us)                                                             | `DASHSCOPE_US_API_KEY`      |
+|                                      | `anthropic/claude-opus-5-5`, `anthropic/claude-haiku-5-5`                                                                 | `ANTHROPIC_API_KEY`         |
+|                                      | `openai/gpt-6-astra`, `openai/gpt-6.1-terra`                                                                              | `OPENAI_API_KEY`            |
+|                                      | `google/gemini-4-carbon`, `google/gemini-3.8-flash`                                                                       | `GEMINI_API_KEY`            |
+|                                      | `xai/grok-4.7`, `xai/grok-build-0.1`                                                                                      | `XAI_API_KEY`               |
 
 China and international accounts of the same vendor use different keys. `kimi/kimi-k3.1-pro` and
 `kimi-intl/kimi-k3.1-pro` both read `KIMI_API_KEY`, so only the one matching your account works;
@@ -196,7 +196,7 @@ tools and checkpoints follow live); `/add_dir <dir>` registers an extra writable
 - `/autocompact [N%|0.N|off]` shows or sets the auto-compaction threshold (default 75% of the
   window); persisted in config.
 - `/statusline '<tpl>'` customizes the bottom bar with `{model} {mode} {cost} {ctx} {pct} {session}
-  {tokens} {work}`; unknown placeholders pass through; `off` restores the default.
+{tokens} {work}`; unknown placeholders pass through; `off` restores the default.
 - `/preset save <name>` stores the current draft as a reusable template (`~/.tango/presets.json`);
   bare `/preset` opens a filtered picker and fills the input without sending.
 
@@ -207,10 +207,10 @@ Every prompt turn is checkpointed automatically: before a turn's first write-eff
 (`refs`-only commits — your branch, index and `git status` are never touched), and the turn's end
 state is snapshotted too. Snapshots live in the session log; the JSONL log is the single truth.
 
-- `/rewind` opens a timeline picker (one node per turn, newest on top with the cursor on it); choosing one rolls **code + conversation
-  + model context** back to just before that turn. Smart delete removes agent leftovers (files that
-  exist in a later snapshot but not the target), keeps files no snapshot knows about (your own
-  hand-made files are reported, never deleted) and never touches `.gitignore`d files.
+- `/rewind` opens a timeline picker (one node per turn, newest on top with the cursor on it); choosing one rolls \*\*code + conversation
+  - model context\*\* back to just before that turn. Smart delete removes agent leftovers (files that
+    exist in a later snapshot but not the target), keeps files no snapshot knows about (your own
+    hand-made files are reported, never deleted) and never touches `.gitignore`d files.
 - `/undo` / `/redo` step one turn back/forward. The abandoned future is never lost: it stays in the
   log (marked `⟲`), `/redo` restores it, `/find <text>` searches all sessions including abandoned
   futures, `/export [md|html]` writes the full transcript (rewind boundaries marked) to a local file.
@@ -270,12 +270,13 @@ sources API keys from `~/.tango/env` (KEY=VALUE, chmod 600); logs go to `~/Libra
 
 Global skills live in `~/.tango/skills/<name>/SKILL.md` (project: `.tango/skills/`); only name +
 description enter the system prompt. `/save-as-skill 名称` distils the current session (user turns
-+ tool calls) into a draft under `~/.tango/skill-drafts/`. Edit the draft — above all write a real
-`description:` — then `/save-as-skill finish <file>` installs it as a project skill.
+
+- tool calls) into a draft under `~/.tango/skill-drafts/`. Edit the draft — above all write a real
+  `description:` — then `/save-as-skill finish <file>` installs it as a project skill.
 
 ## Coding feedback loop
 
-After every `write`/`edit` of a source file tango runs the project's *own* checker and appends any
+After every `write`/`edit` of a source file tango runs the project's _own_ checker and appends any
 errors to the tool result, so the model sees a broken edit immediately: `tsc --noEmit` for
 TypeScript, `pyright` (then `ruff`) from `.venv` or `node_modules` for Python, `go vet`, `cargo check`.
 Silent when the project has no checker installed. The `diff` tool (read-only) shows what changed:
@@ -401,11 +402,11 @@ interrupt/clear binding even when `interrupt` is remapped. Example:
 
 Three modes, set with flags or `/mode`:
 
-| mode | flag | behaviour |
-| --- | --- | --- |
-| `ask` | (default) | reads and writes inside cwd run; deletes, `git push`/`reset --hard`, `sudo`, `curl … \| sh`, writes outside cwd and unknown tools ask first |
-| `auto` | `-y` / `--yes` | everything runs |
-| `readonly` | `--readonly` | reads only; writes and shell are refused |
+| mode       | flag           | behaviour                                                                                                                                   |
+| ---------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ask`      | (default)      | reads and writes inside cwd run; deletes, `git push`/`reset --hard`, `sudo`, `curl … \| sh`, writes outside cwd and unknown tools ask first |
+| `auto`     | `-y` / `--yes` | everything runs                                                                                                                             |
+| `readonly` | `--readonly`   | reads only; writes and shell are refused                                                                                                    |
 
 In the TUI's permission dialog, answer `y`, `n` or `a` (always: switches to `auto` for the rest of
 the session, taking effect mid-turn). One-shot runs
@@ -435,13 +436,13 @@ it can't remember.
 
 `office_read` extracts text from PDF, Word, Excel and PowerPoint with no npm dependencies.
 
-| type | how | options |
-| --- | --- | --- |
-| .docx | built-in ZIP + XML reader; headings become `#`, lists `-`, tables markdown | |
-| .xlsx | tab-separated rows prefixed with the row number; dates converted from serials | `sheet` (name or index), `rows` (default first 500) |
-| .pptx | slides in presentation order, plus speaker notes | `pages` (slide range) |
-| .pdf | `pdftotext -layout` (poppler), else macOS PDFKit; says so when a PDF has no text layer (scanned) | `pages` |
-| .doc .rtf .odt .wps | macOS `textutil` | |
+| type                | how                                                                                              | options                                             |
+| ------------------- | ------------------------------------------------------------------------------------------------ | --------------------------------------------------- |
+| .docx               | built-in ZIP + XML reader; headings become `#`, lists `-`, tables markdown                       |                                                     |
+| .xlsx               | tab-separated rows prefixed with the row number; dates converted from serials                    | `sheet` (name or index), `rows` (default first 500) |
+| .pptx               | slides in presentation order, plus speaker notes                                                 | `pages` (slide range)                               |
+| .pdf                | `pdftotext -layout` (poppler), else macOS PDFKit; says so when a PDF has no text layer (scanned) | `pages`                                             |
+| .doc .rtf .odt .wps | macOS `textutil`                                                                                 |                                                     |
 
 Old binary .xls/.ppt are refused with a hint to re-save as .xlsx/.pptx. `brew install poppler`
 gives much better PDF output than the PDFKit fallback. Counts as a read for permissions.
@@ -455,14 +456,14 @@ open in Word, WPS, Numbers and macOS textutil. Counts as a write for permissions
 
 All user state lives in `~/.tango/` (override with `TANGO_HOME`):
 
-| file | purpose |
-| --- | --- |
-| `config.json` | default model (`/model <id>` writes it); `feishuWebhook` for notify/tasks; `theme`: `dark` (default), `light`, or `auto` from the terminal's `COLORFGBG` |
-| `models.json` | extra/overriding model specs, same shape as built-in presets |
-| `tasks.json` | scheduled tasks (`tango task add`) |
-| `AGENTS.md` | global instructions appended to the system prompt |
-| `skills/<name>/SKILL.md` | global skills (project-level: `<cwd>/.tango/skills/`) |
-| `sessions/*.jsonl` | append-only sessions, one line per entry |
+| file                     | purpose                                                                                                                                                  |
+| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `config.json`            | default model (`/model <id>` writes it); `feishuWebhook` for notify/tasks; `theme`: `dark` (default), `light`, or `auto` from the terminal's `COLORFGBG` |
+| `models.json`            | extra/overriding model specs, same shape as built-in presets                                                                                             |
+| `tasks.json`             | scheduled tasks (`tango task add`)                                                                                                                       |
+| `AGENTS.md`              | global instructions appended to the system prompt                                                                                                        |
+| `skills/<name>/SKILL.md` | global skills (project-level: `<cwd>/.tango/skills/`)                                                                                                    |
+| `sessions/*.jsonl`       | append-only sessions, one line per entry                                                                                                                 |
 
 `apiKey` is either an environment variable name or the key itself. A value made only of uppercase
 letters, digits and underscores (`"DEEPSEEK_API_KEY"`) is read from that variable; anything else is
@@ -491,6 +492,7 @@ src/cli.ts      REPL / one-shot entry
 ```
 
 Design rules (keep them):
+
 1. `core` stays UI-free; shells (REPL, TUI, message bots) sit on top of `Agent`.
 2. New capability = a tool or an event handler, not a change to the loop.
 3. `types.ts` imports nothing; adapters translate, core never speaks vendor formats.

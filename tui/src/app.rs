@@ -7407,6 +7407,9 @@ impl App {
         // render the visible window row by row with char-exact selection highlight
         let sel = self.selection_range(chat_a.y);
         let mut shown: Vec<Line> = Vec::new();
+        if let Some(splash) = self.splash_lines(chat_a.width as usize, chat_h) {
+            shown = splash;
+        } else {
         for g in offset..total.min(offset + chat_h as usize) {
             let Some(row) = self.chat_rows.get(g) else {
                 continue;
@@ -7525,6 +7528,7 @@ impl App {
             } else {
                 shown.push(Line::from(Span::styled(row.text.clone(), style)));
             }
+        }
         }
         f.render_widget(Paragraph::new(Text::from(shown)), chat_a);
         self.prompt_header = None;
@@ -8603,6 +8607,99 @@ impl App {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0)
+    }
+
+    /// The empty-session splash: a "tango" wordmark in 5×5 block letters —
+    /// per-row cyan gradient with grok's star twinkle on top (each cell steps
+    /// a 5-brightness palette by (i*7 + t*3 + i*t) % 5) — over a slowly posing
+    /// braille dancer and a hint line. None once any conversation content
+    /// exists, while a stream runs, or when the terminal is too narrow/short.
+    fn splash_lines(&self, chat_w: usize, chat_h: usize) -> Option<Vec<Line<'static>>> {
+        const W: usize = 26; // wordmark width
+        if chat_w < W + 4
+            || chat_h < 9
+            || !self.stream.is_empty()
+            || self.lines.iter().any(|l| !l.text.starts_with("tango serve"))
+        {
+            return None;
+        }
+        const FONT: [&[&str; 5]; 5] = [
+            // t
+            &["█████", "  █  ", "  █  ", "  █  ", "  █  "],
+            // a
+            &[" ██ ", "█  █", "████", "█  █", "█  █"],
+            // n
+            &["█  █", "██ █", "█ ██", "█  █", "█  █"],
+            // g
+            &["███ ", "█   ", "█ ██", "█  █", "███ "],
+            // o
+            &[" ███ ", "█   █", "█   █", "█   █", " ███ "],
+        ];
+        const GRAD: [(u8, u8, u8); 5] = [
+            (140, 235, 250),
+            (110, 215, 240),
+            (80, 190, 225),
+            (55, 160, 205),
+            (35, 125, 180),
+        ];
+        const TWINKLE: [f32; 5] = [0.68, 0.82, 0.95, 1.08, 1.18];
+        let t = Self::now_secs();
+        let tick = (t % 60) as u128;
+        let truecolor = supports_truecolor();
+        let theme_k = if self.theme.light { 0.8 } else { 1.0 };
+        let mut block_h = 5;
+        let mut lines: Vec<Line> = Vec::new();
+        for r in 0..5 {
+            let mut spans: Vec<Span> = Vec::new();
+            let mut pad = (chat_w.saturating_sub(W)) / 2;
+            let mut col = 0usize; // global wordmark column, drives the twinkle
+            for (li, letter) in FONT.iter().enumerate() {
+                if li > 0 {
+                    pad = pad.saturating_sub(1);
+                    spans.push(Span::raw(" ".repeat(pad.max(1))));
+                    pad = 0;
+                }
+                for c in letter[r].chars() {
+                    if c == '█' {
+                        let style = if truecolor {
+                            // grok's logo shimmer formula over the row gradient
+                            let idx =
+                                ((col as u128 * 7 + tick * 3 + col as u128 * tick) % 5) as usize;
+                            let k = TWINKLE[idx] * theme_k;
+                            let (cr, cg, cb) = GRAD[r];
+                            Style::default().fg(Color::Rgb(
+                                (cr as f32 * k).min(255.0) as u8,
+                                (cg as f32 * k).min(255.0) as u8,
+                                (cb as f32 * k).min(255.0) as u8,
+                            ))
+                        } else {
+                            Style::default().fg(Color::Cyan)
+                        };
+                        spans.push(Span::styled("█", style));
+                    } else {
+                        spans.push(Span::raw(" "));
+                    }
+                    col += 1;
+                }
+            }
+            lines.push(Line::from(spans));
+        }
+        block_h += 3; // dancer row + blank + hint
+        let center = |w: usize, text: &str| {
+            format!("{}{}", " ".repeat((w.saturating_sub(display_width(text))) / 2), text)
+        };
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            center(chat_w, &Self::tango_frame(((t % 8) as u128) * 120)),
+            self.theme.style(Tone::User),
+        )));
+        lines.push(Line::from(Span::styled(
+            center(chat_w, "输入问题开始 · /help 查看命令"),
+            self.theme.style(Tone::Muted),
+        )));
+        let mut out: Vec<Line> = vec![Line::from(""); chat_h.saturating_sub(block_h) / 2];
+        out.extend(lines);
+        Some(out)
     }
 
     /// 500 · 14.0k · 1.5M
@@ -13699,6 +13796,40 @@ mod tests {
             "idle shows the breathing wave: {idle}"
         );
         assert!(display_width(&idle) == 5);
+    }
+
+    #[test]
+    fn splash_wordmark_showcases_until_the_first_message() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut app = App::new();
+        app.push(
+            "tango serve · session 1234abcd · 20 tools · /help",
+            Tone::Muted,
+        );
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        fn text(t: &mut ratatui::Terminal<ratatui::backend::TestBackend>) -> String {
+            let buffer = t.backend().buffer();
+            (0..24usize)
+                .map(|y| {
+                    (0..80usize)
+                        .map(|x| buffer[(x as u16, y as u16)].symbol())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+        terminal.draw(|f| app.draw(f)).unwrap();
+        let s = text(&mut terminal);
+        assert!(s.contains('█'), "the wordmark's block letters: {s}");
+        let flat: String = s.chars().filter(|c| !c.is_whitespace()).collect();
+        assert!(flat.contains("输入问题开始"), "the hint line: {s}");
+        // a user message replaces the splash with the normal chat
+        app.push_user("开始干活");
+        terminal.draw(|f| app.draw(f)).unwrap();
+        let s2 = text(&mut terminal);
+        let flat2: String = s2.chars().filter(|c| !c.is_whitespace()).collect();
+        assert!(!flat2.contains("输入问题开始"), "splash gone: {s2}");
+        assert!(flat2.contains("开始干活"), "chat instead: {s2}");
     }
 
     #[test]
