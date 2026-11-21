@@ -5576,8 +5576,9 @@ impl App {
                 }
             }
             "tool_result" => {
-                if let Some(id) = v["call"]["id"].as_str() {
-                    self.running_tools.remove(id);
+                let id = v["call"]["id"].as_str().unwrap_or_default().to_string();
+                if !id.is_empty() {
+                    self.running_tools.remove(&id);
                 }
                 let name = v["call"]["name"].as_str().unwrap_or("?");
                 let summary = Self::call_summary(&v["call"]["input"]);
@@ -5594,7 +5595,23 @@ impl App {
                     out
                 });
                 let note = if ok { "" } else { " · error (ctrl+o)" };
-                self.push_tool(format!("⚙ {name} {summary} · {ms}ms{note}"), style, full);
+                let text = format!("⚙ {name} {summary} · {ms}ms{note}");
+                // freeze the RUNNING line into its summary in place: one line per call,
+                // and the animation settles exactly where it played. A result without
+                // a seen start (resumed session) still appends a line.
+                let hit = self
+                    .lines
+                    .iter()
+                    .rposition(|l| !id.is_empty() && l.tool_id.as_deref() == Some(id.as_str()));
+                if let Some(i) = hit {
+                    let line = &mut self.lines[i];
+                    line.text = text;
+                    line.tone = style;
+                    line.output = full;
+                    line.tool_id = None;
+                } else {
+                    self.push_tool(text, style, full);
+                }
             }
             "permission_request" => {
                 let name = v["call"]["name"].as_str().unwrap_or("?").to_string();
@@ -10369,6 +10386,16 @@ mod tests {
             &mut serve,
         );
         assert!(app.running_tools.is_empty(), "the result retires the id");
+        // the running line froze INTO the summary: one ⚙ line, not two
+        let gears: Vec<&str> = app
+            .lines
+            .iter()
+            .filter(|l| l.text.starts_with("⚙"))
+            .map(|l| l.text.as_str())
+            .collect();
+        assert_eq!(gears, vec!["⚙ bash ls · 5ms"], "{gears:?}");
+        assert_eq!(app.lines.last().unwrap().output.as_deref(), Some("x"));
+        assert_eq!(app.lines.last().unwrap().tool_id, None);
         {
             let mut t = Terminal::new(TestBackend::new(30, 8)).unwrap();
             t.draw(|f| app.draw(f)).unwrap();

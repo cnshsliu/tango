@@ -51,8 +51,8 @@ git diff | tango "review this patch"
 | Ask a side question | `/btw <question>`. The answer doesn't enter the session |
 | Answer the model's ❓ panel | ↑↓ + Enter, click, or type the option number + Enter. Esc hides it; `/todo` brings it back |
 
-A tool call in flight shows as `⚙ bash …` with the gear color cycling; the finished call
-settles into `⚙ bash <command> · <ms>` (click it or press ctrl+o for the output).
+A tool call in flight shows as `⚙ bash …` with the gear color cycling; when it finishes
+the same line becomes `⚙ bash <command> · <ms>` (click it or press ctrl+o for the output).
 
 Reasoning the model streamed shows as `✻ …` lines with a `┃` bar on their left. While the
 turn runs, that bar's color scrolls down the newest thinking block (needs a truecolor
