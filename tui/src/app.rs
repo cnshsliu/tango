@@ -95,6 +95,9 @@ struct ChatLine {
     /// live tool-call id while this ⚙ line's tool is still running (drives the
     /// gear's animated color); the result line clears it by id
     tool_id: Option<String>,
+    /// internal notices (🖼 opened-image confirmations) never inline the image
+    /// path they mention — otherwise every click grows another thumbnail
+    no_thumb: bool,
     source_index: usize,
 }
 
@@ -2100,7 +2103,7 @@ impl App {
     /// chip; clicking it is the deliberate "let me see it" gesture.
     fn open_image(&mut self, path: &str) {
         if cfg!(test) {
-            self.push(format!("🖼 打开图片 {path}"), Tone::Muted);
+            self.push_nothumb(format!("🖼 打开图片 {path}"), Tone::Muted);
             return;
         }
         #[cfg(target_os = "macos")]
@@ -2114,8 +2117,8 @@ impl App {
             .stderr(Stdio::null())
             .spawn()
         {
-            Ok(_) => self.push(format!("🖼 已用系统查看器打开图片：{path}"), Tone::Muted),
-            Err(e) => self.push(format!("无法打开图片 {path}：{e}"), Tone::Error),
+            Ok(_) => self.push_nothumb(format!("🖼 已用系统查看器打开图片：{path}"), Tone::Muted),
+            Err(e) => self.push_nothumb(format!("无法打开图片 {path}：{e}"), Tone::Error),
         }
     }
 
@@ -2226,6 +2229,14 @@ impl App {
         format!("[{:02}:{:02}]", local / 3600, (local / 60) % 60)
     }
 
+    /// push an internal notice that must never inline the image path it names
+    fn push_nothumb(&mut self, text: impl Into<String>, tone: Tone) {
+        self.push(text, tone);
+        if let Some(last) = self.lines.last_mut() {
+            last.no_thumb = true;
+        }
+    }
+
     fn push(&mut self, text: impl Into<String>, tone: Tone) {
         let ts = self.hhmm();
         for line in text.into().split('\n') {
@@ -2236,6 +2247,7 @@ impl App {
                 output: None,
                 prompt_state: None,
                 tool_id: None,
+                no_thumb: false,
                 source_index: usize::MAX,
             });
         }
@@ -2249,6 +2261,7 @@ impl App {
             output,
             prompt_state: None,
             tool_id: None,
+            no_thumb: false,
             source_index: usize::MAX,
         });
     }
@@ -7191,6 +7204,7 @@ impl App {
                     output: line.output.clone(),
                     prompt_state: line.prompt_state,
                     tool_id: line.tool_id.clone(),
+                    no_thumb: line.no_thumb,
                     source_index,
                 }
             })
@@ -7352,8 +7366,13 @@ impl App {
                 .unwrap_or(all_rows.len());
             with_thumbs.extend(all_rows[i..end].iter().cloned());
             if line != usize::MAX {
+                let flagged = self.chat_lines().get(line).is_some_and(|l| l.no_thumb);
                 let text = texts.get(line).cloned().unwrap_or_default();
-                for path in self.inline_images(&text) {
+                for path in if flagged {
+                    Vec::new()
+                } else {
+                    self.inline_images(&text)
+                } {
                     for _ in 0..THUMB_ROWS {
                         with_thumbs.push(ChatRow {
                             line: usize::MAX,
@@ -11905,6 +11924,10 @@ mod tests {
             app.lines.iter().any(|l| l.text.contains("打开图片")),
             "click opens the image"
         );
+        // the click's own confirmation line must NOT grow another thumbnail
+        terminal.draw(|f| app.draw(f)).unwrap();
+        let after = app.chat_rows.iter().filter(|r| r.image.is_some()).count();
+        assert_eq!(after, 20, "notices never inline their own path: {after}");
         // selection across a thumbnail copies no blank lines
         app.sel_anchor_pos = Some((0, 0));
         app.sel_end_pos = Some((g, 5));

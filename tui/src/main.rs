@@ -165,7 +165,17 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<Exit, Box<dy
     let mut app = App::new();
     // query the terminal once for graphics capability (kitty/sixel/iTerm2 →
     // real images; anything else → ratatui-image falls back to halfblocks)
-    app.img_picker = ratatui_image::picker::Picker::from_query_stdio().ok();
+    let mut queried = ratatui_image::picker::Picker::from_query_stdio().ok();
+    // Orca's terminal answers DA1 with sixel (`?1;2;4c`) and the kitty query,
+    // but delivers responses out of order — the picker's DSR early-exit misses
+    // them and falls to halfblocks. Its DA1 said sixel; force it.
+    if std::env::var("TERM_PROGRAM").as_deref() == Ok("Orca") {
+        let fallback = queried.get_or_insert_with(ratatui_image::picker::Picker::halfblocks);
+        if fallback.protocol_type() == ratatui_image::picker::ProtocolType::Halfblocks {
+            fallback.set_protocol_type(ratatui_image::picker::ProtocolType::Sixel);
+        }
+    }
+    app.img_picker = queried;
     animating.store(app.busy, Ordering::Relaxed);
     loop {
         terminal.draw(|f| app.draw(f))?;
