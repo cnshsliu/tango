@@ -107,11 +107,6 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<Exit, Box<dy
     // color wave can scroll; idle stays at the cheap 1s heartbeat
     let animating = Arc::new(AtomicBool::new(false));
 
-    // query the terminal's graphics capability BEFORE the input thread exists —
-    // the query responses arrive on stdin and must be read here, not typed
-    // into the input box (iTerm2's fast `_Gi=31;OK` reply landed as keystrokes)
-    let queried = ratatui_image::picker::Picker::from_query_stdio().ok();
-
     // crossterm has no pollable fd we own: a thread forwards terminal input into the same queue
     thread::spawn({
         let tx = tx.clone();
@@ -168,7 +163,6 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<Exit, Box<dy
     });
 
     let mut app = App::new();
-    app.img_picker = queried;
     animating.store(app.busy, Ordering::Relaxed);
     loop {
         terminal.draw(|f| app.draw(f))?;
