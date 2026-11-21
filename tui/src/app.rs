@@ -1249,8 +1249,11 @@ pub struct App {
     /// terminal graphics capability (kitty/sixel/iTerm2/halfblocks), queried once
     /// at startup; None in tests → thumbnails render as blank rows
     pub img_picker: Option<ratatui_image::picker::Picker>,
-    /// decoded thumbnails by path (None = failed decode, don't retry per frame)
-    thumbs: std::collections::HashMap<String, Option<StatefulProtocol>>,
+    /// decoded thumbnails by path: optional protocol (needs a picker) plus the
+    /// source dimensions (always, when decodable) for click-area math
+    thumbs: std::collections::HashMap<String, (Option<StatefulProtocol>, (f64, f64))>,
+    /// click targets for on-screen thumbnails: the actually-drawn rect only
+    thumb_click_areas: Vec<(Rect, String)>,
     /// /queue auto append: busy-Enter supplements the running turn instead of
     /// queueing a new prompt
     queue_auto_append: bool,
@@ -1367,6 +1370,7 @@ impl App {
             edit_target_head: None,
             img_picker: None,
             thumbs: std::collections::HashMap::new(),
+            thumb_click_areas: Vec::new(),
             queue_auto_append: false,
             ime_restore: None,
             queue_buttons: Vec::new(),
@@ -1566,9 +1570,14 @@ impl App {
     /// cursor opens the image; a file path under the cursor opens the read-only
     /// viewer; a line with collapsed output opens the transcript viewer.
     fn chat_click(&mut self, row: u16, column: u16, chat_y: u16) {
-        // a thumbnail block opens its image in the system viewer
-        if let Some(g) = self.global_row(row, chat_y)
-            && let Some(path) = self.chat_rows.get(g).and_then(|r| r.image.clone())
+        // only the actually-drawn thumbnail area opens the image — the blank
+        // margin beside halfblocks art is not part of the picture
+        let pos = Position::new(column, row);
+        if let Some((_, path)) = self
+            .thumb_click_areas
+            .iter()
+            .find(|(rect, _)| rect.contains(pos))
+            .cloned()
         {
             self.open_image(&path);
             return;
@@ -1750,20 +1759,48 @@ impl App {
         out
     }
 
-    /// Decode (once) and pre-shrink an image for inline display.
+    /// Decode (once) and pre-shrink an image for inline display. Dims are kept
+    /// even without a picker — click areas need them.
     fn thumbnail_protocol(&mut self, path: &str) -> Option<&mut StatefulProtocol> {
         if !self.thumbs.contains_key(path) {
             let decoded = image::ImageReader::open(path)
                 .ok()
                 .and_then(|r| r.decode().ok())
-                .map(|img| img.thumbnail(480, 240));
-            let proto = match (&mut self.img_picker, decoded) {
-                (Some(picker), Some(img)) => Some(picker.new_resize_protocol(img)),
-                _ => None,
+                .map(|img| {
+                    let dims = (img.width() as f64, img.height() as f64);
+                    (img.thumbnail(480, 240), dims)
+                });
+            let entry = match (decoded, &mut self.img_picker) {
+                (Some((img, dims)), Some(picker)) => (Some(picker.new_resize_protocol(img)), dims),
+                (Some((_, dims)), None) => (None, dims),
+                (None, _) => (None, (1.0, 1.0)),
             };
-            self.thumbs.insert(path.to_string(), proto);
+            self.thumbs.insert(path.to_string(), entry);
         }
-        self.thumbs.get_mut(path)?.as_mut()
+        self.thumbs.get_mut(path)?.0.as_mut()
+    }
+
+    /// The cells an aspect-fit drawing of the image actually covers in `rect`
+    /// (blank margin around halfblocks art must not be clickable).
+    fn drawn_cells(&self, path: &str, rect: Rect) -> Rect {
+        let Some((_, (iw, ih))) = self.thumbs.get(path) else {
+            return rect;
+        };
+        let (cw, ch) = self
+            .img_picker
+            .as_ref()
+            .map(|p| p.font_size())
+            .unwrap_or((10, 20));
+        let (cw, ch) = (cw as f64, ch as f64);
+        let scale = ((rect.width as f64 * cw) / iw).min((rect.height as f64 * ch) / ih);
+        let w = ((iw * scale) / cw).ceil() as u16;
+        let h = ((ih * scale) / ch).ceil() as u16;
+        Rect {
+            x: rect.x,
+            y: rect.y,
+            width: w.min(rect.width).max(1),
+            height: h.min(rect.height).max(1),
+        }
     }
 
     /// Map a click in the input box to an image chip, if it lands on one. Uses the same
@@ -7601,33 +7638,37 @@ impl App {
         f.render_widget(Paragraph::new(Text::from(shown)), chat_a);
         // overlay inline thumbnails at their block-start rows (protocol-based
         // images live outside the cell buffer; without a picker they stay blank)
-        if self.img_picker.is_some() {
-            for g in offset..total.min(offset + chat_h as usize) {
-                let Some(row) = self.chat_rows.get(g) else {
-                    continue;
-                };
-                let Some(path) = row.image.clone() else {
-                    continue;
-                };
-                let block_start = g == 0
-                    || self
-                        .chat_rows
-                        .get(g - 1)
-                        .and_then(|p| p.image.clone())
-                        .is_none();
-                if !block_start {
-                    continue;
-                }
-                let rows_left = (chat_h as usize).saturating_sub(g - offset).max(1);
-                let rect = Rect {
-                    x: chat_a.x + 2,
-                    y: chat_a.y + (g - offset) as u16,
-                    width: chat_a.width.saturating_sub(4),
-                    height: (THUMB_ROWS as u16).min(rows_left as u16),
-                };
-                if let Some(proto) = self.thumbnail_protocol(&path) {
-                    f.render_stateful_widget(ratatui_image::StatefulImage::default(), rect, proto);
-                }
+        self.thumb_click_areas.clear();
+        for g in offset..total.min(offset + chat_h as usize) {
+            let Some(row) = self.chat_rows.get(g) else {
+                continue;
+            };
+            let Some(path) = row.image.clone() else {
+                continue;
+            };
+            let block_start = g == 0
+                || self
+                    .chat_rows
+                    .get(g - 1)
+                    .and_then(|p| p.image.clone())
+                    .is_none();
+            if !block_start {
+                continue;
+            }
+            let rows_left = (chat_h as usize).saturating_sub(g - offset).max(1);
+            let rect = Rect {
+                x: chat_a.x + 2,
+                y: chat_a.y + (g - offset) as u16,
+                width: chat_a.width.saturating_sub(4),
+                height: (THUMB_ROWS as u16).min(rows_left as u16),
+            };
+            // decode first (dims feed the click area), then render — the
+            // mutable protocol borrow must not overlap the area math
+            self.thumbnail_protocol(&path);
+            let area = self.drawn_cells(&path, rect);
+            self.thumb_click_areas.push((area, path.clone()));
+            if let Some(proto) = self.thumbnail_protocol(&path) {
+                f.render_stateful_widget(ratatui_image::StatefulImage::default(), rect, proto);
             }
         }
         self.prompt_header = None;
@@ -12011,25 +12052,36 @@ mod tests {
         terminal.draw(|f| app.draw(f)).unwrap();
         let count = app.chat_rows.iter().filter(|r| r.image.is_some()).count();
         assert_eq!(count, 20, "path thumbnail block too");
-        // clicking any thumbnail row opens the image (test-mode message)
-        let g = app
-            .chat_rows
-            .iter()
-            .position(|r| r.image.is_some())
-            .unwrap() as u16;
-        app.chat_press(g, 10);
-        app.chat_release(0, g, 10);
+        // clicking INSIDE the drawn area opens the image (test-mode message)
+        let (area, _) = app
+            .thumb_click_areas
+            .first()
+            .cloned()
+            .expect("thumbnail click area registered");
+        let cy = area.y;
+        let cx = area.x + area.width.saturating_sub(1);
+        app.chat_press(cy, cx);
+        app.chat_release(0, cy, cx);
         assert!(
             app.lines.iter().any(|l| l.text.contains("打开图片")),
-            "click opens the image"
+            "click inside the picture opens it"
         );
+        // a click on the same row but in the blank margin does nothing
+        app.chat_press(cy, 79);
+        app.chat_release(0, cy, 79);
+        let opens = app
+            .lines
+            .iter()
+            .filter(|l| l.text.contains("打开图片"))
+            .count();
+        assert_eq!(opens, 1, "margin clicks stay inert");
         // the click's own confirmation line must NOT grow another thumbnail
         terminal.draw(|f| app.draw(f)).unwrap();
         let after = app.chat_rows.iter().filter(|r| r.image.is_some()).count();
         assert_eq!(after, 20, "notices never inline their own path: {after}");
         // selection across a thumbnail copies no blank lines
         app.sel_anchor_pos = Some((0, 0));
-        app.sel_end_pos = Some((g, 5));
+        app.sel_end_pos = Some((cy, 5));
         let sel = app.selected_text(0).unwrap();
         assert!(
             !sel.contains("\n\n"),
@@ -13418,7 +13470,10 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        std::fs::write(&p, b"fake-png-bytes").unwrap();
+        // a real decodable 64x64 png (click-area math needs true dimensions)
+        image::RgbaImage::from_pixel(64, 64, image::Rgba([120, 160, 200, 255]))
+            .save(&p)
+            .unwrap();
         p.display().to_string()
     }
 
