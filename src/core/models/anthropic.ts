@@ -82,8 +82,10 @@ export const anthropicAdapter: ModelAdapter = {
     const partialJson = new Map<number, string>();
     const usage: Usage = { input: 0, output: 0 };
     let stopReason: Message['stopReason'] = 'stop';
+    let sawEvent = false;
 
     for await (const data of sseLines(res.body!)) {
+      sawEvent = true;
       const ev = parseEvent(spec, data);
       switch (ev.type) {
         case 'message_start': {
@@ -142,6 +144,14 @@ export const anthropicAdapter: ModelAdapter = {
         case 'error':
           throw new Error(`${spec.id}: ${JSON.stringify(ev.error)}`);
       }
+    }
+    if (!sawEvent) {
+      // HTTP 200 with a non-SSE body (a gateway 404 wrapper, an HTML error page)
+      // must surface, not end the stream as an empty answer — check the baseUrl
+      // (anthropic-compatible gateways usually end in /v1) and the model name
+      throw new Error(
+        `${spec.id}: endpoint returned no SSE events (HTTP ${res.status}) — likely a wrong baseUrl or model name for this gateway`
+      );
     }
 
     yield {

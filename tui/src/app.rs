@@ -6522,7 +6522,7 @@ impl App {
         self.input_area = input_a;
 
         // status bar
-        let spans = self.status_spans();
+        let spans = self.status_spans(status_a.width);
         // the " sess … " span is clickable (copies the full id): find it and its offset
         self.session_id_area = Rect::default();
         if !self.session_full.is_empty() {
@@ -7366,8 +7366,10 @@ impl App {
         }
     }
 
-    /// Status bar spans; a custom {placeholder} template replaces the whole bar.
-    fn status_spans(&mut self) -> Vec<Span<'static>> {
+    /// Status bar spans fitted to `width`; a custom {placeholder} template replaces the whole bar.
+    /// On a narrow terminal the least useful segments go first (ctx, sess, the pinned ▶),
+    /// then the model name shortens — work/idle, cost and the ❓ badge always stay.
+    fn status_spans(&mut self, width: u16) -> Vec<Span<'static>> {
         // while a turn runs, replace the dumb "working" with live numbers: how long
         // it's been and how much has arrived — the "is it stuck?" check at a glance
         let work = if self.busy {
@@ -7412,26 +7414,27 @@ impl App {
                 .replace("{pct}", &format!("{percent}%"))
                 .replace("{work}", &work);
             return vec![Span::styled(
-                format!(" {} ", raw.chars().take(200).collect::<String>()),
+                format!(" {} ", clip_to_width(raw.trim(), (width as usize).saturating_sub(2)).trim_end()),
                 self.theme.style(Tone::Badge),
             )];
         }
-        let mut spans = vec![
-            Span::styled(format!(" {} ", self.model), self.theme.style(Tone::Badge)),
-            Span::styled(format!(" {} ", self.mode), self.theme.style(Tone::Muted)),
-            Span::styled(
+        // (segment, drop order: lower goes first)
+        let mut segs: Vec<(Span<'static>, u8)> = vec![
+            (Span::styled(format!(" {} ", self.model), self.theme.style(Tone::Badge)), 5),
+            (Span::styled(format!(" {} ", self.mode), self.theme.style(Tone::Muted)), 6),
+            (Span::styled(
                 format!(" ${:.4} ", self.cost),
                 self.theme.style(Tone::Warning),
-            ),
-            Span::styled(
+            ), 10),
+            (Span::styled(
                 format!(" {work} "),
                 if self.busy {
                     self.theme.style(Tone::Success)
                 } else {
                     self.theme.style(Tone::Muted)
                 },
-            ),
-            Span::styled(
+            ), 9),
+            (Span::styled(
                 format!(
                     " sess {} ",
                     if self.session_name.is_empty() {
@@ -7441,11 +7444,11 @@ impl App {
                     }
                 ),
                 self.theme.style(Tone::Muted),
-            ),
+            ), 1),
         ];
         if self.context_window > 0 {
             let percent = self.context_tokens.saturating_mul(100) / self.context_window;
-            spans.push(Span::styled(
+            segs.push((Span::styled(
                 format!(
                     " ctx {}/{} {}% ",
                     Self::token_count(self.context_tokens),
@@ -7453,28 +7456,28 @@ impl App {
                     percent
                 ),
                 self.theme.style(self.context_tone()),
-            ));
+            ), 0));
         }
         if let Some(p) = self.current_prompt.clone() {
-            spans.push(Span::styled(
+            segs.push((Span::styled(
                 format!(" ▶ {p} "),
                 self.theme.style(Tone::Badge),
-            ));
+            ), 2));
         }
         if !self.todos.is_empty() {
-            spans.push(Span::styled(
+            segs.push((Span::styled(
                 format!(" ❓{}待 /todo ", self.todos.len()),
                 self.theme.style(Tone::Warning),
-            ));
+            ), 8));
         }
         if self.focus {
-            spans.push(Span::styled(" focus ", self.theme.style(Tone::Badge)));
+            segs.push((Span::styled(" focus ", self.theme.style(Tone::Badge)), 4));
         }
         if self.plan_mode {
-            spans.push(Span::styled(" PLAN ", self.theme.style(Tone::Warning)));
+            segs.push((Span::styled(" PLAN ", self.theme.style(Tone::Warning)), 7));
         }
         if self.goal_text.is_some() {
-            spans.push(Span::styled(" ●goal ", self.theme.style(Tone::Badge)));
+            segs.push((Span::styled(" ●goal ", self.theme.style(Tone::Badge)), 4));
         }
         if self.vim {
             let mode = if self.vim_command.is_some() {
@@ -7484,12 +7487,52 @@ impl App {
             } else {
                 "NORMAL"
             };
-            spans.push(Span::styled(
+            segs.push((Span::styled(
                 format!(" VIM {mode} "),
                 self.theme.style(Tone::Badge),
-            ));
+            ), 7));
         }
-        spans
+        Self::fit_status(segs, width as usize)
+    }
+
+    /// Drop the lowest-priority segments until the bar fits; shorten the model name and
+    /// the pinned prompt before dropping them. Whatever is left is clipped, never wrapped.
+    fn fit_status(mut segs: Vec<(Span<'static>, u8)>, width: usize) -> Vec<Span<'static>> {
+        let total = |segs: &[(Span<'static>, u8)]| -> usize {
+            segs.iter().map(|(s, _)| display_width(&s.content)).sum()
+        };
+        while total(&segs) > width {
+            let Some((i, _)) = segs.iter().enumerate().min_by_key(|(_, (s, p))| (*p, s.content.len())) else {
+                break;
+            };
+            let text = segs[i].0.content.trim().to_string();
+            // shrink before dropping: model name → 12 cols, pinned prompt → 16, ❓ badge → just the count
+            let limit = if text.starts_with('▶') {
+                16
+            } else if text.starts_with('❓') {
+                4
+            } else if text.starts_with("\\o") || text.starts_with("_o") || text.starts_with("/o") || text == "idle" || text.starts_with("♪") {
+                // the work segment: counter first, then the timer — the dancer stays to the last
+                if display_width(&text) > 9 { 9 } else { 3 }
+            } else if i == 0 {
+                12
+            } else {
+                0
+            };
+            if limit > 0 && display_width(&text) > limit {
+                let style = segs[i].0.style;
+                let short = clip_to_width(&text, limit);
+                segs[i].0 = Span::styled(format!(" {} ", short.trim_end()), style);
+                continue;
+            }
+            if segs.len() == 1 {
+                let style = segs[i].0.style;
+                segs[i].0 = Span::styled(clip_to_width(&text, width.saturating_sub(2)), style);
+                break;
+            }
+            segs.remove(i);
+        }
+        segs.into_iter().map(|(s, _)| s).collect()
     }
 
     /// 42s · 13m22s · 1h30m
@@ -7542,7 +7585,7 @@ impl App {
 
     /// plain text of the status bar (tests and /statusline preview)
     fn status_segments_text(&mut self) -> String {
-        self.status_spans()
+        self.status_spans(200)
             .iter()
             .map(|s| s.content.to_string())
             .collect::<Vec<_>>()
@@ -10055,7 +10098,7 @@ mod tests {
             &mut serve,
         );
         assert!(app.plan_mode);
-        let spans = app.status_spans();
+        let spans = app.status_spans(200);
         let text: String = spans.iter().map(|s| s.content.to_string()).collect();
         assert!(text.contains("PLAN"), "status bar shows PLAN badge: {text}");
         app.run_slash("/plan", &mut serve);
@@ -10147,7 +10190,7 @@ mod tests {
             &mut serve,
         );
         assert!(app.goal_text.is_some());
-        let spans = app.status_spans();
+        let spans = app.status_spans(200);
         let text: String = spans.iter().map(|s| s.content.to_string()).collect();
         assert!(text.contains("goal"), "badge shows: {text}");
         app.run_slash("/goal off", &mut serve);
@@ -11475,7 +11518,7 @@ mod tests {
             app.current_prompt.as_deref(),
             Some("帮我优化数据库查询性能的问题")
         );
-        let spans = app.status_spans();
+        let spans = app.status_spans(200);
         let text: String = spans.iter().map(|s| s.content.to_string()).collect();
         assert!(
             text.contains("▶ 帮我优化数据库查询性能的问题"),
@@ -11497,7 +11540,7 @@ mod tests {
             "auto recap pushed"
         );
         // pinned prompt span stops showing after completion
-        let spans2 = app.status_spans();
+        let spans2 = app.status_spans(200);
         let text2: String = spans2.iter().map(|s| s.content.to_string()).collect();
         assert!(
             !text2.contains("▶ 帮我优化"),
@@ -11716,6 +11759,49 @@ mod tests {
         assert_eq!(text, "[图片 #1]");
         assert_eq!(images, vec![img.clone()]);
         let _ = std::fs::remove_file(&img);
+    }
+
+    #[test]
+    fn narrow_status_bar_keeps_work_cost_and_todo_and_drops_the_rest() {
+        let mut app = App::new();
+        app.model = "apikeyfan/claude-opus-5-5".into();
+        app.mode = "ask".into();
+        app.cost = 0.1234;
+        app.busy = true;
+        app.turn_started = Some(std::time::Instant::now());
+        app.session = "1d587483".into();
+        app.session_full = "1d587483-0000".into();
+        app.context_window = 200_000;
+        app.context_tokens = 54_000;
+        app.current_prompt = Some("帮我优化数据库查询性能的问题".into());
+        app.todos.push(TodoItem { kind: TodoKind::Suggest { text: "x".into() } });
+
+        let text_at = |app: &mut App, w: u16| -> String {
+            let spans = app.status_spans(w);
+            let s: String = spans.iter().map(|s| s.content.to_string()).collect();
+            assert!(display_width(&s) <= w as usize, "width {w} overflowed: {s}");
+            s
+        };
+        let wide = text_at(&mut app, 200);
+        assert!(wide.contains("sess") && wide.contains("ctx") && wide.contains("▶"), "{wide}");
+
+        for w in [60u16, 40, 30, 20, 12, 6] {
+            let s = text_at(&mut app, w);
+            if w >= 12 {
+                assert!(s.contains("$0.1234"), "cost stays at {w}: {s}");
+            }
+            assert!(!s.contains("ctx") && !s.contains("sess"), "ctx/sess go first at {w}: {s}");
+            if w >= 30 {
+                assert!(s.contains("❓"), "todo badge stays at {w}: {s}");
+            }
+        }
+        let s = text_at(&mut app, 40);
+        assert!(!s.contains("claude-opus-5-5"), "model name shortened: {s}");
+        assert!(s.contains('↓') || s.contains('o'), "the dancing work segment stays: {s}");
+
+        // idle: work segment still there, no dancer
+        app.busy = false;
+        assert!(text_at(&mut app, 30).contains("idle"));
     }
 
     #[test]

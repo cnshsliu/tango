@@ -12,7 +12,7 @@ test('zhipu coding-plan presets ride the anthropic-compatible endpoint', async (
   const plan = models.find((m) => m.id === 'zhipu-plan/glm-5.3');
   assert.ok(plan, 'coding-plan glm-5.3 preset registered');
   assert.equal(plan.api, 'anthropic-messages');
-  assert.equal(plan.baseUrl, 'https://open.bigmodel.cn/api/anthropic');
+  assert.equal(plan.baseUrl, 'https://open.bigmodel.cn/api/anthropic/v1');
   assert.equal(plan.apiKey, 'ZHIPU_CODING_PLAN_API_KEY');
   const flash = models.find((m) => m.id === 'zhipu-plan/glm-5.3-flash');
   assert.ok(flash, 'flash variant registered');
