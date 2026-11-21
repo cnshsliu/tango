@@ -165,7 +165,7 @@ tools and checkpoints follow live); `/add_dir <dir>` registers an extra writable
 - **Mouse basics** (Claude Code / OpenCode parity): drag in the chat to select — whole
   logical lines highlight and release copies them to the system clipboard; a click on a
   complete local file path (absolute, `./…`, `~/…`, `:line` suffix tolerated) opens the file
-  in the read-only viewer; in the input box, drag selects text and release copies it, and a
+  in the read-only viewer; in the input box, a click moves the cursor there, drag selects text and release copies it, and a
   double-click selects the whole prompt and copies it (paste chips expand to the full pasted
   text), the highlight clearing on the next key; the permission modal takes `c` to copy the pending command before
   answering y/n/a. `/mouse off` still hands selection back to the terminal natively.

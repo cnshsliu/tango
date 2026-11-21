@@ -1611,7 +1611,8 @@ impl App {
         }
     }
 
-    /// Release after a drag copies the covered text; a plain click clears the selection.
+    /// Release after a drag copies the covered text; a plain click moves the
+    /// cursor there (a click on a paste label lands just before it).
     fn input_release(&mut self) {
         self.input_dragging = false;
         let Some((a, b)) = self.input_sel else {
@@ -1620,6 +1621,12 @@ impl App {
         let (a, b) = (a.min(b), a.max(b));
         if a == b {
             self.input_sel = None;
+            self.cursor = self
+                .rendered_input()
+                .display_raw
+                .get(a)
+                .map(|r| r.0)
+                .unwrap_or(self.input.len());
             return;
         }
         let text = self.input_raw_text(a, b);
@@ -9571,6 +9578,29 @@ mod tests {
         assert!(!rev(5) && rev(6) && rev(10) && !rev(11));
         app.key(KeyCode::Char('x').into(), &mut serve);
         assert_eq!(app.input_sel, None);
+    }
+
+    #[test]
+    fn clicking_in_the_input_box_moves_the_cursor_there() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.input = "第一行\nabc 中文".chars().collect();
+        app.cursor = app.input.len();
+        input_screen(&mut app, 40, 12);
+        let y = app.input_area.y + 1;
+        let click = |app: &mut App, serve: &mut Serve, x: u16, y: u16| {
+            app.input_last_click = None; // separate clicks, never a double-click
+            mouse(app, serve, MouseEventKind::Down(MouseButton::Left), x, y);
+            mouse(app, serve, MouseEventKind::Up(MouseButton::Left), x, y);
+        };
+        click(&mut app, &mut serve, 3, y); // right half of 一 (columns 2-3)
+        assert_eq!(app.cursor, 1);
+        click(&mut app, &mut serve, 5, y + 1); // the 中 after "abc "
+        assert_eq!(app.cursor, 8);
+        click(&mut app, &mut serve, 30, y); // past the end of row 1
+        assert_eq!(app.cursor, 3, "before the newline");
+        assert_eq!(app.input_sel, None);
+        assert!(!app.lines.iter().any(|l| l.text.contains("已复制")), "a click copies nothing");
     }
 
     #[test]
