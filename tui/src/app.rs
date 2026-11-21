@@ -784,9 +784,10 @@ fn layout_user_bubbles(rows: &mut Vec<ChatRow>, is_user: &[bool], width: usize, 
                     .map(|r| display_width(&r.text))
                     .max()
                     .unwrap_or(0);
-                // rounded frame: │+space each side; -1 right margin
-                let block = maxw + 4;
-                let x = (width.saturating_sub(block + 1)) as u16;
+                // rounded frame: │+space each side, hugging the right edge. The renderer's
+                // interior is width - x - 4, so x leaves exactly maxw columns of text plus
+                // the frame's own 4 — otherwise a full row's │ lands one column off the ╮.
+                let x = width.saturating_sub(maxw + 5) as u16;
                 for r in &mut rows[i..end] {
                     r.x = x;
                 }
@@ -6599,7 +6600,8 @@ impl App {
             };
             // rounded bubble frame rows: ╭─╮ / ╰─╯ in the bubble's own style
             if row.border {
-                let block = (inner_w as usize).saturating_sub(row.x as usize + 1);
+                // same width as the text rows: x + interior + │ + space each side
+                let block = (inner_w as usize).saturating_sub(row.x as usize);
                 let edge = if g == 0 || !self.chat_rows.get(g - 1).is_some_and(|p| p.user) {
                     ("╭", "╮")
                 } else {
@@ -6646,13 +6648,17 @@ impl App {
                 let line = format!("{}{}", text, " ".repeat(fill));
                 shown.push(Line::from(Span::styled(line, base)));
             } else if row.user {
-                // │ text │ — the interior padded so the right bar closes the block
-                let maxw = (inner_w as usize).saturating_sub(row.x as usize + 5).max(1);
-                let text_w = display_width(&row.text).min(maxw);
-                let fill = maxw.saturating_sub(text_w);
+                // │ text │ — the interior padded so the right bar closes the block.
+                // The frame is x + max_row_width + 4 wide (layout_user_bubbles), so the
+                // interior holds exactly that width: -4, not -5, or a row that fills the
+                // bubble pushes its │ one column past the ╮ above it.
+                let maxw = (inner_w as usize).saturating_sub(row.x as usize + 4);
+                // on a terminal too narrow for the frame, clip rather than push the │ past it
+                let text = clip_to_width(&row.text, maxw);
+                let fill = maxw.saturating_sub(display_width(&text));
                 let mut spans = pad;
                 spans.push(Span::styled("│ ".to_string(), base));
-                spans.push(Span::styled(row.text.clone(), base));
+                spans.push(Span::styled(text, base));
                 spans.push(Span::styled(format!("{} │", " ".repeat(fill)), base));
                 shown.push(Line::from(spans));
             } else {
@@ -11759,6 +11765,29 @@ mod tests {
         assert_eq!(text, "[图片 #1]");
         assert_eq!(images, vec![img.clone()]);
         let _ = std::fs::remove_file(&img);
+    }
+
+    #[test]
+    fn bubble_right_bar_lines_up_with_the_frame_corners() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut app = App::new();
+        // a collapsed paste: the first row fills the bubble exactly, the rest are shorter
+        let text = format!("给香港政府一些建议，你要说人话，口语化 {}", "补充说明 ".repeat(60));
+        app.push_user(&text);
+        for w in [120u16, 80, 40, 24] {
+            let mut t = Terminal::new(TestBackend::new(w, 24)).unwrap();
+            t.draw(|f| app.draw(f)).unwrap();
+            let b = t.backend().buffer();
+            let mut cols = Vec::new();
+            for y in 0..24 {
+                if let Some(x) = (0..w).rev().find(|&x| "│╮╯".contains(b[(x, y)].symbol())) {
+                    cols.push(x);
+                }
+            }
+            assert!(cols.len() >= 3, "a framed bubble at width {w}: {cols:?}");
+            assert!(cols.iter().all(|c| *c == cols[0]), "right edge misaligned at width {w}: {cols:?}");
+            assert_eq!(cols[0], w - 1, "the bubble hugs the right edge at width {w}");
+        }
     }
 
     #[test]
