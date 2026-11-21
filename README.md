@@ -313,7 +313,7 @@ alternate screen, mouse wheel scrolling, streaming answers, thinking lines, tool
 durations, a centered permission modal (y/n/a), a bottom status bar below the input (model · mode ·
 cost · session, fitted to the terminal width — on a narrow screen ctx and sess go first, then the
 pinned ▶, and the model name shortens, while cost and the ❓ badge stay). The rule above the input
-carries the work state on its left end — a breathing block wave (`▁▃▅▃▁`), or the elapsed time and
+carries the work state on its left end — `idle`, or the elapsed time and
 received characters with a braille stick figure dancing the tango (8 poses, ~8fps, `⠹⠛⠿ …`) — and
 a rotating tip on its right end during long turns; on a narrow terminal the tip goes first, then the
 counter, then the timer. While a turn runs the status bar's left end carries a three-cell bouncing

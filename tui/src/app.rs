@@ -8455,11 +8455,10 @@ impl App {
             } else if text
                 .chars()
                 .next()
-                .is_some_and(|c| {
-                    matches!(c, '\u{2800}'..='\u{28FF}' | '▁'..='▉' | '■')
-                })
+                .is_some_and(|c| matches!(c, '\u{2800}'..='\u{28FF}' | '■'))
+                || text == "idle"
             {
-                // the work segment (braille dancer/spinner or the idle wave):
+                // the work segment (braille dancer/spinner, or idle):
                 // counter first, then the timer — the figure stays to the last
                 if display_width(&text) > 9 { 9 } else { 3 }
             } else if i == 0 {
@@ -8494,12 +8493,12 @@ impl App {
         }
     }
 
-    /// "⣋ 12s · ↓14.0k" (braille dancer) while a turn runs, a breathing block
-    /// wave while idle. Lives on the input rule's
+    /// "⣋ 12s · ↓14.0k" (braille dancer) while a turn runs, "idle" otherwise.
+    /// Lives on the input rule's
     /// left end (and in a custom statusline's {work}); the default status bar no longer carries it.
     fn work_text(&self) -> String {
         if !self.busy {
-            return Self::idle_wave(Self::now_secs()).to_string();
+            return "idle".to_string();
         }
         match self.turn_started {
             Some(t0) => {
@@ -8592,14 +8591,6 @@ impl App {
             .iter()
             .map(|&m| char::from_u32(0x2800 + m as u32).unwrap())
             .collect()
-    }
-
-    /// The idle "breathing" wave on the rule line: block shades rising and
-    /// falling over a 4s cycle (grok's logo twinkle, re-toned for tango —
-    /// the same idea of a slow shimmer while nothing runs).
-    fn idle_wave(secs: u64) -> &'static str {
-        const WAVES: [&str; 4] = ["▁▃▅▃▁", "▃▅▇▅▃", "▄▆█▆▄", "▃▅▇▅▃"];
-        WAVES[(secs % 4) as usize]
     }
 
     fn now_secs() -> u64 {
@@ -13132,11 +13123,7 @@ mod tests {
         // idle stays clean
         app.busy = false;
         app.turn_started = None;
-        let idle = app.work_text();
-        assert!(
-            (0..4).any(|i| App::idle_wave(i) == idle),
-            "idle wave: {idle}"
-        );
+        assert_eq!(app.work_text(), "idle");
     }
 
     #[test]
@@ -13788,12 +13775,7 @@ mod tests {
             "the braille dancer leads the work text: {s}"
         );
         app.busy = false;
-        let idle = app.work_text();
-        assert!(
-            (0..4).any(|i| App::idle_wave(i) == idle),
-            "idle shows the breathing wave: {idle}"
-        );
-        assert!(display_width(&idle) == 5);
+        assert_eq!(app.work_text(), "idle");
     }
 
     #[test]
