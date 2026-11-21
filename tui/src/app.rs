@@ -386,10 +386,14 @@ struct RenderedInput {
     cursor: usize,
     /// (display_start, display_end, image_id) for each image chip — mouse hit testing
     image_ranges: Vec<(usize, usize, usize)>,
+    /// raw input range behind each display char: itself, or a whole paste for a label
+    display_raw: Vec<(usize, usize)>,
 }
 
 struct InputLayout {
     lines: Vec<String>,
+    /// display char index of each line's first char (selection highlight / hit mapping)
+    starts: Vec<usize>,
     cursor_row: usize,
     cursor_col: usize,
 }
@@ -1057,6 +1061,12 @@ pub struct App {
     /// selection anchor/end as (terminal row, column) pairs — char-exact
     sel_anchor_pos: Option<(u16, u16)>,
     sel_end_pos: Option<(u16, u16)>,
+    /// input-box mouse selection as (anchor, end) display char indices; kept
+    /// highlighted after release until the next key or click
+    input_sel: Option<(usize, usize)>,
+    input_dragging: bool,
+    /// previous left press in the input box (time, row, column) — double-click detection
+    input_last_click: Option<(std::time::Instant, u16, u16)>,
     /// the user prompt currently being worked on — pinned in the status bar so
     /// switching between many agents never loses track of "which ask is this"
     current_prompt: Option<String>,
@@ -1186,6 +1196,9 @@ impl App {
             chat_inner_w: 0,
             sel_anchor_pos: None,
             sel_end_pos: None,
+            input_sel: None,
+            input_dragging: false,
+            input_last_click: None,
             current_prompt: None,
             local_queue: Vec::new(),
             queue_dialog: false,
@@ -1514,6 +1527,104 @@ impl App {
                 }
                 Err(e) => self.push(format!("复制失败：{e}"), Tone::Error),
             }
+        }
+    }
+
+    /// The display char index under a screen position in the input box, using the
+    /// draw pass's wrap and scroll. Rows above/below clamp to the first/last line;
+    /// columns past a line's end land after its last char.
+    fn input_index_at(&self, row: u16, column: u16) -> usize {
+        let layout = self.input_layout(self.input_area.width);
+        let total = self.rendered_input().text.chars().count();
+        let visible = self.input_area.height.saturating_sub(1).max(1) as usize;
+        let scroll = layout.cursor_row.saturating_sub(visible - 1);
+        let text_top = self.input_area.y + 1;
+        if row < text_top {
+            return 0;
+        }
+        let r = (row - text_top) as usize + scroll;
+        let (Some(line), Some(&start)) = (layout.lines.get(r), layout.starts.get(r)) else {
+            return total;
+        };
+        if start > total {
+            return total; // the vim ":command" line
+        }
+        let mut col = 0usize;
+        for (i, ch) in line.chars().enumerate() {
+            let w = display_width(&ch.to_string());
+            if (column as usize) < col + w {
+                return start + i;
+            }
+            col += w;
+        }
+        (start + line.chars().count()).min(total)
+    }
+
+    /// The raw input behind display chars [a, b): paste labels expand to the
+    /// full pasted text, so what lands on the clipboard is what would be sent.
+    fn input_raw_text(&self, a: usize, b: usize) -> String {
+        let map = self.rendered_input().display_raw;
+        let (a, b) = (a.min(map.len()), b.min(map.len()));
+        if a >= b {
+            return String::new();
+        }
+        let (from, to) = (map[a].0, map[b - 1].1);
+        self.input[from..to].iter().collect()
+    }
+
+    fn input_copy(&mut self, text: &str) {
+        match self.copy_to_clipboard(text) {
+            Ok(()) => {
+                let n = text.chars().filter(|c| *c != '\n').count();
+                self.push(format!("已复制 {n} 个字符到剪贴板"), Tone::Success);
+            }
+            Err(e) => self.push(format!("复制失败：{e}"), Tone::Error),
+        }
+    }
+
+    /// Left press in the input box: a second press within 400 ms selects the whole
+    /// input and copies it; otherwise it anchors a drag selection.
+    fn input_press(&mut self, row: u16, column: u16) {
+        let now = std::time::Instant::now();
+        let double = self
+            .input_last_click
+            .is_some_and(|(t, _, _)| now.duration_since(t).as_millis() < 400);
+        if double && !self.input.is_empty() {
+            self.input_last_click = None;
+            self.input_dragging = false;
+            let total = self.rendered_input().text.chars().count();
+            self.input_sel = Some((0, total));
+            let text: String = self.input.iter().collect();
+            self.input_copy(&text);
+            return;
+        }
+        self.input_last_click = Some((now, row, column));
+        let idx = self.input_index_at(row, column);
+        self.input_sel = Some((idx, idx));
+        self.input_dragging = true;
+    }
+
+    fn input_drag(&mut self, row: u16, column: u16) {
+        let idx = self.input_index_at(row, column);
+        if let Some((_, end)) = self.input_sel.as_mut() {
+            *end = idx;
+        }
+    }
+
+    /// Release after a drag copies the covered text; a plain click clears the selection.
+    fn input_release(&mut self) {
+        self.input_dragging = false;
+        let Some((a, b)) = self.input_sel else {
+            return;
+        };
+        let (a, b) = (a.min(b), a.max(b));
+        if a == b {
+            self.input_sel = None;
+            return;
+        }
+        let text = self.input_raw_text(a, b);
+        if !text.trim().is_empty() {
+            self.input_copy(&text);
         }
     }
 
@@ -3752,11 +3863,13 @@ impl App {
         let mut text = String::new();
         let mut positions = vec![0; self.input.len() + 1];
         let mut image_ranges = Vec::new();
+        let mut display_raw = Vec::new();
         let mut raw = 0;
         let mut display = 0;
         for paste in pastes {
             while raw < paste.start {
                 positions[raw] = display;
+                display_raw.push((raw, raw + 1));
                 text.push(self.input[raw]);
                 raw += 1;
                 display += 1;
@@ -3771,6 +3884,9 @@ impl App {
             };
             let label_start = display;
             display += label.chars().count();
+            for _ in label.chars() {
+                display_raw.push((paste.start, paste.end));
+            }
             text.push_str(&label);
             if let Some(id) = paste.image {
                 image_ranges.push((label_start, display, id));
@@ -3783,6 +3899,7 @@ impl App {
         }
         while raw < self.input.len() {
             positions[raw] = display;
+            display_raw.push((raw, raw + 1));
             text.push(self.input[raw]);
             raw += 1;
             display += 1;
@@ -3792,6 +3909,7 @@ impl App {
             text,
             cursor: positions[self.cursor],
             image_ranges,
+            display_raw,
         }
     }
 
@@ -3799,11 +3917,13 @@ impl App {
         let rendered = self.rendered_input();
         let width = width.max(1) as usize;
         let mut lines = vec![String::new()];
+        let mut starts = vec![0usize];
         let mut row = 0;
         let mut col = 0;
         let mut cursor = None;
         for (index, c) in rendered.text.chars().enumerate() {
             if c == '\n' {
+                starts.push(index + 1);
                 if index == rendered.cursor {
                     cursor = Some(if col >= width {
                         (row + 1, 0)
@@ -3819,6 +3939,7 @@ impl App {
             let char_width = display_width(&c.to_string());
             if col >= width || (col > 0 && col + char_width > width) {
                 lines.push(String::new());
+                starts.push(index);
                 row += 1;
                 col = 0;
             }
@@ -3828,9 +3949,11 @@ impl App {
             lines[row].push(c);
             col += char_width;
         }
-        if rendered.cursor == rendered.text.chars().count() {
+        let total = rendered.text.chars().count();
+        if rendered.cursor == total {
             if col >= width {
                 lines.push(String::new());
+                starts.push(total);
                 row += 1;
                 col = 0;
             }
@@ -3841,10 +3964,12 @@ impl App {
             let command_line = format!(":{command}");
             cursor_col = display_width(&command_line);
             lines.push(command_line);
+            starts.push(usize::MAX); // never part of the input text
             cursor_row = lines.len() - 1;
         }
         InputLayout {
             lines,
+            starts,
             cursor_row,
             cursor_col,
         }
@@ -4065,9 +4190,15 @@ impl App {
                                 return false;
                             }
                             // a click on an input-box image chip opens the image
+                            self.input_sel = None;
                             if self.input_area.contains(pos) {
                                 if let Some(path) = self.input_image_at(m.row, m.column) {
                                     self.open_image(&path);
+                                    return false;
+                                }
+                                // the rule row is decoration; text rows start a selection
+                                if m.row > self.input_area.y {
+                                    self.input_press(m.row, m.column);
                                     return false;
                                 }
                             }
@@ -4081,7 +4212,13 @@ impl App {
                                 self.chat_press(m.row, m.column);
                             }
                         }
+                        MouseEventKind::Drag(MouseButton::Left) if self.input_dragging => {
+                            self.input_drag(m.row, m.column)
+                        }
                         MouseEventKind::Drag(MouseButton::Left) => self.chat_drag(m.row, m.column),
+                        MouseEventKind::Up(MouseButton::Left) if self.input_dragging => {
+                            self.input_release()
+                        }
                         MouseEventKind::Up(MouseButton::Left) => {
                             self.chat_release(self.chat_area.y, m.row, m.column)
                         }
@@ -4381,6 +4518,8 @@ impl App {
     }
 
     fn key(&mut self, k: crossterm::event::KeyEvent, serve: &mut Serve) {
+        // any key may edit the input, which would make the display indices stale
+        self.input_sel = None;
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         if self.viewer.is_some() {
             // Ctrl+C always remains a safe interrupt even when the action is remapped —
@@ -7141,9 +7280,33 @@ impl App {
         let layout = self.input_layout(area.width);
         let visible = input_a.height.saturating_sub(1).max(1) as usize;
         let input_scroll = layout.cursor_row.saturating_sub(visible - 1);
+        let input_lines: Vec<Line> = match self.input_sel {
+            Some((a, b)) if a != b => {
+                let (a, b) = (a.min(b), a.max(b));
+                let hl = Style::default().reversed();
+                layout
+                    .lines
+                    .iter()
+                    .zip(&layout.starts)
+                    .map(|(line, &start)| {
+                        let chars: Vec<char> = line.chars().collect();
+                        let from = a.saturating_sub(start).min(chars.len());
+                        let to = b.saturating_sub(start).min(chars.len());
+                        if start == usize::MAX || from >= to {
+                            return Line::from(line.clone());
+                        }
+                        Line::from(vec![
+                            Span::raw(chars[..from].iter().collect::<String>()),
+                            Span::styled(chars[from..to].iter().collect::<String>(), hl),
+                            Span::raw(chars[to..].iter().collect::<String>()),
+                        ])
+                    })
+                    .collect()
+            }
+            _ => layout.lines.into_iter().map(Line::from).collect(),
+        };
         f.render_widget(
-            Paragraph::new(layout.lines.into_iter().map(Line::from).collect::<Vec<_>>())
-                .scroll((input_scroll as u16, 0)),
+            Paragraph::new(input_lines).scroll((input_scroll as u16, 0)),
             Rect {
                 x: 0,
                 y: input_a.y + 1,
@@ -9358,6 +9521,81 @@ mod tests {
         assert!(!app.user_bubble);
         app.run_slash("/bubble", &mut serve);
         assert!(app.user_bubble, "bare /bubble toggles back on");
+    }
+
+    fn mouse(app: &mut App, serve: &mut Serve, kind: MouseEventKind, column: u16, row: u16) {
+        app.handle(
+            Event::Mouse(crossterm::event::MouseEvent {
+                kind,
+                column,
+                row,
+                modifiers: KeyModifiers::NONE,
+            }),
+            serve,
+        );
+    }
+
+    fn input_screen(app: &mut App, w: u16, h: u16) -> Vec<String> {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
+        t.draw(|f| app.draw(f)).unwrap();
+        let b = t.backend().buffer();
+        (0..h)
+            .map(|y| (0..w).map(|x| b[(x, y)].symbol().to_string()).collect())
+            .collect()
+    }
+
+    #[test]
+    fn dragging_in_the_input_box_selects_and_copies_that_text() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.input = "hello brave world".chars().collect();
+        app.cursor = app.input.len();
+        input_screen(&mut app, 40, 12);
+        let y = app.input_area.y + 1; // first text row under the input rule
+        mouse(&mut app, &mut serve, MouseEventKind::Down(MouseButton::Left), 6, y);
+        mouse(&mut app, &mut serve, MouseEventKind::Drag(MouseButton::Left), 11, y);
+        mouse(&mut app, &mut serve, MouseEventKind::Up(MouseButton::Left), 11, y);
+        assert_eq!(app.input_sel, Some((6, 11)));
+        assert_eq!(app.input_raw_text(6, 11), "brave");
+        assert!(app.lines.iter().any(|l| l.text == "已复制 5 个字符到剪贴板"));
+        // the selection stays highlighted until the next key
+        let b = {
+            use ratatui::{Terminal, backend::TestBackend};
+            let mut t = Terminal::new(TestBackend::new(40, 12)).unwrap();
+            t.draw(|f| app.draw(f)).unwrap();
+            t.backend().buffer().clone()
+        };
+        use ratatui::style::Modifier;
+        let rev = |x: u16| b[(x, y)].modifier.contains(Modifier::REVERSED);
+        assert!(!rev(5) && rev(6) && rev(10) && !rev(11));
+        app.key(KeyCode::Char('x').into(), &mut serve);
+        assert_eq!(app.input_sel, None);
+    }
+
+    #[test]
+    fn double_click_in_the_input_box_selects_all_and_copies_the_raw_text() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.input = "see ".chars().collect();
+        app.cursor = app.input.len();
+        app.insert_paste("line one\nline two\nline three");
+        let screen = input_screen(&mut app, 60, 12);
+        let y = app.input_area.y + 1;
+        assert!(screen[y as usize].contains("[Pasted text #"), "{screen:#?}");
+        for _ in 0..2 {
+            mouse(&mut app, &mut serve, MouseEventKind::Down(MouseButton::Left), 2, y);
+            mouse(&mut app, &mut serve, MouseEventKind::Up(MouseButton::Left), 2, y);
+        }
+        let total = app.rendered_input().text.chars().count();
+        assert_eq!(app.input_sel, Some((0, total)), "everything is selected");
+        let raw: String = app.input.iter().collect();
+        assert!(raw.contains("line three"));
+        let n = raw.chars().filter(|c| *c != '\n').count();
+        assert!(
+            app.lines.iter().any(|l| l.text == format!("已复制 {n} 个字符到剪贴板")),
+            "the paste label expands to the full text on the clipboard"
+        );
     }
 
     #[test]
