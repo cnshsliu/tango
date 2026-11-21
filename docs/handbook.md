@@ -47,6 +47,7 @@ git diff | tango "review this patch"
 | See a full tool output | Ctrl+O, or click the tool line |
 | Check whether it's still working | The rule above the input: `idle`, or a dancing figure with the elapsed time and received characters |
 | Get back to the prompt you're reading about | Scrolled up, the dim top row shows that prompt; click it to jump there |
+| Hop between your prompts | `alt+↑` / `alt+↓` walk to the previous / next prompt, landing it at the top of the view; the last `alt+↓` returns to the bottom |
 | Search the whole transcript | Ctrl+T, then `/` |
 | Ask a side question | `/btw <question>`. The answer doesn't enter the session |
 | Answer the model's ❓ panel | ↑↓ + Enter, click, or type the option number + Enter. Esc hides it; `/todo` brings it back |

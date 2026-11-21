@@ -698,6 +698,7 @@ const TIPS: &[&str] = &[
     "选项面板按 tab 改写自答 · esc 只收起面板",
     "ctrl+o 展开最近工具输出 · /focus 安静模式",
     "ctrl+r 历史提示 · ctrl+p 命令面板 · ctrl+e 编辑草稿",
+    "alt+↑/alt+↓ 在历史提示之间逐条跳转",
     "/rewind 时间轴回滚代码+对话 · /export 导出会话",
 ];
 
@@ -5377,6 +5378,16 @@ impl App {
             self.clear_input();
             return;
         }
+        // alt+↑/alt+↓ hop between user prompts — checked before history nav,
+        // which matches plain ↑/↓ without looking at modifiers
+        if self.keys.matches(Action::PromptPrev, k) {
+            self.jump_prompt(false);
+            return;
+        }
+        if self.keys.matches(Action::PromptNext, k) {
+            self.jump_prompt(true);
+            return;
+        }
         // up/down in the input box walk the sent-prompt history (the unsent draft
         // stashed aside); inside a multi-line entry they move the cursor by lines
         // first. Falls through to chat scroll when there is nothing to recall.
@@ -7175,6 +7186,49 @@ impl App {
             .saturating_sub(chat_h + first.saturating_sub(1))
             .max(1);
         Some((text, back))
+    }
+
+    /// alt+↑/alt+↓ hop between user prompts. Backward reuses prompt_above —
+    /// the prompt's first row lands right under the header row; forward lands
+    /// the next prompt starting below the view the same way, and past the
+    /// newest one it returns to the bottom (and clears the unread counter).
+    fn jump_prompt(&mut self, next: bool) {
+        let chat_h = self.chat_area.height as usize;
+        if chat_h == 0 || self.chat_rows.is_empty() {
+            return;
+        }
+        let total = self.chat_rows.len();
+        let offset = total.saturating_sub(chat_h + self.scroll_back);
+        if !next {
+            if let Some((_, back)) = self.prompt_above(offset, &self.tone_rows(), chat_h) {
+                self.scroll_back = back;
+            }
+            return;
+        }
+        let tones = self.tone_rows();
+        let mut prev_line = usize::MAX;
+        let target = self.chat_rows.iter().enumerate().find_map(|(g, row)| {
+            if row.line != prev_line {
+                prev_line = row.line;
+                if tones.get(row.line) == Some(&Tone::User) && g >= offset + chat_h {
+                    return Some(g);
+                }
+            }
+            None
+        });
+        match target {
+            Some(first) => {
+                self.scroll_back = total
+                    .saturating_sub(chat_h + first.saturating_sub(1))
+                    .max(1);
+            }
+            None => self.jump_to_bottom(),
+        }
+    }
+
+    /// per chat-line tones for row-walking helpers
+    fn tone_rows(&self) -> Vec<Tone> {
+        self.chat_lines().iter().map(|l| l.tone).collect()
     }
 
     fn visual_lines(lines: &[ChatLine], width: usize) -> usize {
@@ -12378,6 +12432,45 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn alt_arrows_hop_between_user_prompts() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        for (q, a) in [("第一问", "答一"), ("第二问", "答二"), ("第三问", "答三")] {
+            app.push_user(q);
+            for c in ["a", "b", "c"] {
+                app.push(format!("{a}{c}"), Tone::Text);
+            }
+        }
+        app.chat_inner_w = 40;
+        let texts: Vec<String> = app.chat_lines().iter().map(|l| l.text.clone()).collect();
+        let user_flags: Vec<bool> = app.tone_rows().iter().map(|t| *t == Tone::User).collect();
+        let think_flags: Vec<bool> = app.tone_rows().iter().map(|t| *t == Tone::Thinking).collect();
+        app.chat_rows = wrap_chat_rows_mixed(&texts, 40, &user_flags, &think_flags, app.user_bubble);
+        // 12 rows: p1 g0, ans g1-3, p2 g4, ans g5-7, p3 g8, ans g9-11
+        app.chat_area = Rect::new(0, 0, 40, 4);
+        let alt_up =
+            crossterm::event::KeyEvent::new(KeyCode::Up, KeyModifiers::ALT);
+        let alt_down =
+            crossterm::event::KeyEvent::new(KeyCode::Down, KeyModifiers::ALT);
+        // from the bottom (showing prompt 3's block): hop back lands prompt 2
+        // with its first row just under the header
+        app.key(alt_up, &mut serve);
+        assert_eq!(app.scroll_back, 5, "prompt 2 at the top of the view");
+        // then prompt 1; a third press stays (oldest)
+        app.key(alt_up, &mut serve);
+        assert_eq!(app.scroll_back, 8);
+        app.key(alt_up, &mut serve);
+        assert_eq!(app.scroll_back, 8, "already the oldest prompt");
+        // forward hops: prompt 2, prompt 3, then back to the bottom
+        app.key(alt_down, &mut serve);
+        assert_eq!(app.scroll_back, 5);
+        app.key(alt_down, &mut serve);
+        assert_eq!(app.scroll_back, 1);
+        app.key(alt_down, &mut serve);
+        assert_eq!(app.scroll_back, 0, "no prompt below → back to the bottom");
+    }
+
     #[test]
     fn resumed_session_backfills_the_prompt_history_for_recall() {
         let mut app = App::new();

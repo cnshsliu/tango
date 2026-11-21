@@ -12,6 +12,8 @@ pub enum Action {
     ScrollDown,
     PageUp,
     PageDown,
+    PromptPrev,
+    PromptNext,
 }
 
 impl Action {
@@ -26,6 +28,8 @@ impl Action {
             Action::ScrollDown => "scrollDown",
             Action::PageUp => "pageUp",
             Action::PageDown => "pageDown",
+            Action::PromptPrev => "promptPrev",
+            Action::PromptNext => "promptNext",
         }
     }
 }
@@ -100,7 +104,7 @@ impl Binding {
 }
 
 pub struct Keymap {
-    bindings: [(Action, Binding); 9],
+    bindings: [(Action, Binding); 11],
 }
 
 impl Keymap {
@@ -142,6 +146,20 @@ impl Keymap {
                 (Action::ScrollDown, plain(KeyCode::Down)),
                 (Action::PageUp, plain(KeyCode::PageUp)),
                 (Action::PageDown, plain(KeyCode::PageDown)),
+                (
+                    Action::PromptPrev,
+                    Binding {
+                        code: KeyCode::Up,
+                        modifiers: KeyModifiers::ALT,
+                    },
+                ),
+                (
+                    Action::PromptNext,
+                    Binding {
+                        code: KeyCode::Down,
+                        modifiers: KeyModifiers::ALT,
+                    },
+                ),
             ],
         };
         let names = [
@@ -154,6 +172,8 @@ impl Keymap {
             "scrollDown",
             "pageUp",
             "pageDown",
+            "promptPrev",
+            "promptNext",
         ];
         if let Some(object) = config.and_then(Value::as_object) {
             for (slot, name) in keys.bindings.iter_mut().zip(names) {

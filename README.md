@@ -387,7 +387,7 @@ nothing. Ctrl+S submits the complete draft in either mode (and in non-Vim mode);
 `:wqa` also submit. Entering `:` expands the input by one row: the draft stays visible above and
 the command has its own bottom line. Esc cancels that line without clearing the draft. The optional `keys`
 object remaps `expandTools`, `newline`, `interrupt`, `clearInput`,
-`scrollUp`, `scrollDown`, `pageUp`, and `pageDown`, using values such as `ctrl+u` or `alt+enter`.
+`scrollUp`, `scrollDown`, `pageUp`, `pageDown`, `promptPrev`, and `promptNext`, using values such as `ctrl+u` or `alt+enter`.
 Unknown actions, keys, and editor values fall back to defaults. Ctrl+C always remains a safe
 interrupt/clear binding even when `interrupt` is remapped. Example:
 
