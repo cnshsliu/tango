@@ -1251,6 +1251,9 @@ pub struct App {
     pub img_picker: Option<ratatui_image::picker::Picker>,
     /// decoded thumbnails by path (None = failed decode, don't retry per frame)
     thumbs: std::collections::HashMap<String, Option<StatefulProtocol>>,
+    /// /queue auto append: busy-Enter supplements the running turn instead of
+    /// queueing a new prompt
+    queue_auto_append: bool,
     /// plan mode badge (/plan)
     plan_mode: bool,
     /// active /goal text (badge)
@@ -1364,6 +1367,7 @@ impl App {
             edit_target_head: None,
             img_picker: None,
             thumbs: std::collections::HashMap::new(),
+            queue_auto_append: false,
             ime_restore: None,
             queue_buttons: Vec::new(),
             plan_mode: false,
@@ -3233,6 +3237,37 @@ impl App {
                         }
                         _ => self.push("usage: /queue rm <编号>（/queue 里看编号）", Tone::Muted),
                     }
+                } else if arg.starts_with("auto") {
+                    match rest.trim().strip_prefix("auto").unwrap_or("").trim() {
+                        "append" => {
+                            self.queue_auto_append = true;
+                            self.push(
+                                "queue auto append 已开启：忙碌时回车直接并入当前回合",
+                                Tone::Success,
+                            );
+                        }
+                        "off" | "queue" => {
+                            self.queue_auto_append = false;
+                            self.push("queue auto append 已关闭：忙碌时回车恢复排队", Tone::Muted);
+                        }
+                        "" => {
+                            let state = if self.queue_auto_append {
+                                "append（并入当前回合）"
+                            } else {
+                                "queue（排队）"
+                            };
+                            self.push(
+                                format!(
+                                    "忙碌时回车当前行为：{state} · /queue auto append 开启 · /queue auto off 关闭"
+                                ),
+                                Tone::Muted,
+                            );
+                        }
+                        other => self.push(
+                            format!("usage: /queue auto append|off（收到 {other}）"),
+                            Tone::Muted,
+                        ),
+                    }
                 } else if arg == "all" {
                     self.queue_supplement_all(serve);
                 } else if arg.is_empty() {
@@ -3242,7 +3277,7 @@ impl App {
                     }
                 } else {
                     self.push(
-                        "usage: /queue · /queue rm <n> · /queue all（全部并入当前） · /queue clear",
+                        "usage: /queue · /queue rm <n> · /queue all（全部并入当前） · /queue clear · /queue auto append|off",
                         Tone::Muted,
                     );
                 }
@@ -5530,6 +5565,17 @@ impl App {
                 self.refresh_popup();
             }
             KeyCode::Enter if !self.busy => self.send_prompt(serve),
+            KeyCode::Enter if !self.input.is_empty() && self.queue_auto_append => {
+                // /queue auto append: ride the running turn instead of queueing
+                let text: String = self.input.iter().collect();
+                self.clear_input();
+                serve.command("supplement", vec![("text", Value::String(text.clone()))]);
+                let head: String = text.lines().next().unwrap_or("").chars().take(40).collect();
+                self.push(
+                    format!("➕ auto append 已并入当前回合：{head}"),
+                    Tone::Success,
+                );
+            }
             KeyCode::Enter if !self.input.is_empty() => {
                 // actually queue it: sent in order when the running turn finishes;
                 // ctrl+c interrupts the turn AND drops the queue
@@ -11884,6 +11930,59 @@ mod tests {
             screen(&mut terminal).contains("第39行"),
             "scrolling reveals the tail"
         );
+    }
+
+    #[test]
+    fn queue_auto_append_diverts_busy_enter_to_supplement() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        // default: busy enter queues
+        app.busy = true;
+        app.input = "排队的话".chars().collect();
+        app.key(
+            crossterm::event::KeyEvent::new_with_kind(
+                KeyCode::Enter,
+                KeyModifiers::NONE,
+                crossterm::event::KeyEventKind::Press,
+            ),
+            &mut serve,
+        );
+        assert_eq!(app.local_queue.len(), 1, "default queues");
+        // enable append mode
+        app.run_slash("/queue auto append", &mut serve);
+        assert!(
+            app.lines
+                .iter()
+                .any(|l| l.text.contains("auto append") && l.text.contains("已开启"))
+        );
+        app.busy = true;
+        app.input = "并入当前回合".chars().collect();
+        app.key(
+            crossterm::event::KeyEvent::new_with_kind(
+                KeyCode::Enter,
+                KeyModifiers::NONE,
+                crossterm::event::KeyEventKind::Press,
+            ),
+            &mut serve,
+        );
+        let sent: Value = serde_json::from_str(&serve.sent.last().unwrap()).unwrap();
+        assert_eq!(sent["cmd"], "supplement");
+        assert_eq!(sent["text"], "并入当前回合");
+        assert!(app.local_queue.len() == 1, "nothing new queued");
+        assert!(app.input.is_empty());
+        // off restores queueing
+        app.run_slash("/queue auto off", &mut serve);
+        app.busy = true;
+        app.input = "又一句".chars().collect();
+        app.key(
+            crossterm::event::KeyEvent::new_with_kind(
+                KeyCode::Enter,
+                KeyModifiers::NONE,
+                crossterm::event::KeyEventKind::Press,
+            ),
+            &mut serve,
+        );
+        assert_eq!(app.local_queue.len(), 2, "off queues again");
     }
 
     #[test]
