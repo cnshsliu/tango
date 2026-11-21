@@ -7014,6 +7014,11 @@ impl App {
                     self.choices = None;
                     self.todos.truncate(todos_before);
                     self.push_user(text);
+                    // backfill the ↑/↓ input-box history so recall works right
+                    // after resume too (same dedup rule as a live send)
+                    if self.prompt_history.last().map(String::as_str) != Some(text) {
+                        self.prompt_history.push(text.to_string());
+                    }
                     if let Some(line) = self.lines.last_mut() {
                         line.prompt_state = Some(PromptState::Completed);
                     }
@@ -12370,6 +12375,30 @@ mod tests {
             let sent: Value = serde_json::from_str(serve.sent.last().unwrap()).unwrap();
             assert_eq!(sent["text"], text);
         }
+    }
+
+    #[test]
+    #[test]
+    fn resumed_session_backfills_the_prompt_history_for_recall() {
+        let mut app = App::new();
+        app.load_history(&json!({"total": 3, "items": [
+            {"kind": "user", "text": "第一问"},
+            {"kind": "assistant", "text": "答"},
+            {"kind": "user", "text": "再问"}
+        ]}));
+        assert_eq!(app.prompt_history, vec!["第一问", "再问"]);
+        // ↑ recalls the newest, then the oldest — same as after a live session
+        assert!(app.history_up());
+        assert_eq!(app.input.iter().collect::<String>(), "再问");
+        assert!(app.history_up());
+        assert_eq!(app.input.iter().collect::<String>(), "第一问");
+        // consecutive identical prompts dedupe like a live send
+        let mut app = App::new();
+        app.load_history(&json!({"total": 2, "items": [
+            {"kind": "user", "text": "继续"},
+            {"kind": "user", "text": "继续"}
+        ]}));
+        assert_eq!(app.prompt_history, vec!["继续"]);
     }
 
     #[test]
