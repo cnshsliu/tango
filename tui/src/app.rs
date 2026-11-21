@@ -8650,14 +8650,12 @@ impl App {
         let mut block_h = 5;
         let mut lines: Vec<Line> = Vec::new();
         for r in 0..5 {
-            let mut spans: Vec<Span> = Vec::new();
-            let mut pad = (chat_w.saturating_sub(W)) / 2;
+            // centering margin first, then a single space between letters
+            let mut spans: Vec<Span> = vec![Span::raw(" ".repeat(chat_w.saturating_sub(W) / 2))];
             let mut col = 0usize; // global wordmark column, drives the twinkle
             for (li, letter) in FONT.iter().enumerate() {
                 if li > 0 {
-                    pad = pad.saturating_sub(1);
-                    spans.push(Span::raw(" ".repeat(pad.max(1))));
-                    pad = 0;
+                    spans.push(Span::raw(" "));
                 }
                 for c in letter[r].chars() {
                     if c == '█' {
@@ -13821,6 +13819,13 @@ mod tests {
         terminal.draw(|f| app.draw(f)).unwrap();
         let s = text(&mut terminal);
         assert!(s.contains('█'), "the wordmark's block letters: {s}");
+        // centered and tight: the top row spans the 26-column wordmark only
+        let top = s.lines().find(|l| l.contains('█')).unwrap();
+        let first = top.find('█').unwrap();
+        let last = top.rfind('█').unwrap() + '█'.len_utf8();
+        let span = top[first..last].chars().count();
+        assert!(span <= 26, "letters sit one space apart: {top:?}");
+        assert_eq!(top[..first].chars().count(), (80 - 26) / 2, "centered: {top:?}");
         let flat: String = s.chars().filter(|c| !c.is_whitespace()).collect();
         assert!(flat.contains("输入问题开始"), "the hint line: {s}");
         // a user message replaces the splash with the normal chat
