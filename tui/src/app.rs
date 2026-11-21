@@ -765,6 +765,9 @@ struct ChatRow {
 /// Right-position the rows of user lines into one bg bubble per line: all rows of
 /// a line share a block indent computed from the widest row (+ interior padding),
 /// so wrapped lines align inside a rectangle hugging the right margin.
+/// Blank columns kept between a user bubble's right │ and the terminal edge.
+const BUBBLE_MARGIN: usize = 1;
+
 fn layout_user_bubbles(rows: &mut Vec<ChatRow>, is_user: &[bool], width: usize, bubble: bool) {
     let mut i = 0;
     while i < rows.len() {
@@ -788,7 +791,7 @@ fn layout_user_bubbles(rows: &mut Vec<ChatRow>, is_user: &[bool], width: usize, 
                 // rounded frame: │+space each side, hugging the right edge. The renderer's
                 // interior is width - x - 4, so x leaves exactly maxw columns of text plus
                 // the frame's own 4 — otherwise a full row's │ lands one column off the ╮.
-                let x = width.saturating_sub(maxw + 5) as u16;
+                let x = width.saturating_sub(maxw + 5 + BUBBLE_MARGIN) as u16;
                 for r in &mut rows[i..end] {
                     r.x = x;
                 }
@@ -844,7 +847,7 @@ fn wrap_chat_rows_mixed(texts: &[String], width: usize, is_user: &[bool]) -> Vec
     let w = width.max(1);
     for (line, text) in texts.iter().enumerate() {
         let user = is_user.get(line).copied().unwrap_or(false);
-        let lw = if user { w.saturating_sub(4).max(1) } else { w };
+        let lw = if user { w.saturating_sub(4 + BUBBLE_MARGIN).max(1) } else { w };
         let mut part = wrap_chat_rows(&[text.clone()], lw);
         for r in &mut part {
             // wrap_chat_rows indexes within the single-line slice — restore the
@@ -6661,7 +6664,7 @@ impl App {
             // rounded bubble frame rows: ╭─╮ / ╰─╯ in the bubble's own style
             if row.border {
                 // same width as the text rows: x + interior + │ + space each side
-                let block = (inner_w as usize).saturating_sub(row.x as usize);
+                let block = (inner_w as usize).saturating_sub(row.x as usize + BUBBLE_MARGIN);
                 // a top border is always followed by this frame's text row; a
                 // bottom one is not (the previous bubble's bottom border is also
                 // user-flagged, so looking backwards misclassifies adjacent bubbles)
@@ -6719,7 +6722,7 @@ impl App {
                 // The frame is x + max_row_width + 4 wide (layout_user_bubbles), so the
                 // interior holds exactly that width: -4, not -5, or a row that fills the
                 // bubble pushes its │ one column past the ╮ above it.
-                let maxw = (inner_w as usize).saturating_sub(row.x as usize + 4);
+                let maxw = (inner_w as usize).saturating_sub(row.x as usize + 4 + BUBBLE_MARGIN);
                 // on a terminal too narrow for the frame, clip rather than push the │ past it
                 let text = clip_to_width(&row.text, maxw);
                 let fill = maxw.saturating_sub(display_width(&text));
@@ -9271,7 +9274,7 @@ mod tests {
         let texts = vec![
             "第一句".to_string(),
             "第二句".to_string(),
-            "一二三四五六七八九十一二三四五六七八九十".to_string(),
+            "一二三四五六七八九十一二三四五六七八".to_string(),
         ];
         let flags = vec![true, true, true];
         let mut rows = wrap_chat_rows_mixed(&texts, 24, &flags);
@@ -9284,7 +9287,7 @@ mod tests {
         );
         assert_eq!(
             text_rows, 4,
-            "wrapped third line takes 2 rows at width 24-4"
+            "wrapped third line takes 2 rows at width 24-4-margin"
         );
         // every user line's group starts with a top border and ends with a bottom
         for (li, _) in texts.iter().enumerate() {
@@ -12091,8 +12094,8 @@ mod tests {
             );
             assert_eq!(
                 cols[0],
-                w - 1,
-                "the bubble hugs the right edge at width {w}"
+                w - 1 - BUBBLE_MARGIN as u16,
+                "the bubble keeps a {BUBBLE_MARGIN}-column right margin at width {w}"
             );
         }
     }
