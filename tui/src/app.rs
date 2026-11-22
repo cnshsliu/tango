@@ -779,7 +779,7 @@ struct ChatRow {
     x: u16,
     /// user rows render as a right-positioned bg bubble (interior left-aligned)
     user: bool,
-    /// thinking rows carry a left "┃ " gutter whose color scrolls while busy
+    /// thinking rows carry a left "▍ " gutter whose color scrolls while busy
     think: bool,
     /// rounded top/bottom frame row of a user bubble — styled, never selectable
     border: bool,
@@ -966,7 +966,7 @@ fn layout_user_bubbles(rows: &mut Vec<ChatRow>, is_user: &[bool], width: usize, 
 fn row_char_at(row: &ChatRow, column: u16) -> usize {
     let start = row.x as usize
         + 2 * usize::from(row.user)   // │ + interior pad
-        + 2 * usize::from(row.think); // ┃ + gutter pad
+        + 2 * usize::from(row.think); // ▍ + gutter pad
     let mut col = (column as usize).saturating_sub(start);
     let mut idx = 0usize;
     for ch in row.text.chars() {
@@ -993,7 +993,7 @@ fn wrap_chat_rows_mixed(
     let w = width.max(1);
     for (line, text) in texts.iter().enumerate() {
         let user = is_user.get(line).copied().unwrap_or(false);
-        // thinking lines wrap 2 columns narrower via the flagged wrapper (the "┃ "
+        // thinking lines wrap 2 columns narrower via the flagged wrapper (the "▍ "
         // gutter); bubble-bound user lines reserve the frame columns
         let lw = if user && bubble {
             w.saturating_sub(4 + BUBBLE_MARGIN).max(1)
@@ -1018,7 +1018,7 @@ fn wrap_chat_rows(texts: &[String], width: usize) -> Vec<ChatRow> {
     wrap_chat_rows_flagged(texts, width, &[])
 }
 
-/// Wrap with per-line flags: a thinking line reserves its 2-column "┃ " gutter,
+/// Wrap with per-line flags: a thinking line reserves its 2-column "▍ " gutter,
 /// so it wraps 2 columns narrower to keep the text inside the chat area.
 fn wrap_chat_rows_flagged(texts: &[String], width: usize, think: &[bool]) -> Vec<ChatRow> {
     let mut rows = Vec::new();
@@ -7682,13 +7682,15 @@ impl App {
                 Vec::new()
             };
             if row.think {
-                // "┃ " gutter; the color scrolls down the live block while a turn runs
+                // "▍ " gutter (left quarter block: fills the cell's full height, so
+                // consecutive rows join without the per-row seam a box glyph like ┃
+                // shows); the color scrolls down the live block while a turn runs
                 let local = live_think_block.map_or(g, |b| g.saturating_sub(b));
                 let live = self.busy
                     && self.animations
                     && live_think_block.is_some_and(|b| g >= b);
                 let color = thinking_bar_color(self.think_frame, local, live);
-                pad.push(Span::styled("┃".to_string(), Style::default().fg(color)));
+                pad.push(Span::styled("▍".to_string(), Style::default().fg(color)));
                 pad.push(Span::raw(" "));
             }
             let base = if row.user {
@@ -10907,7 +10909,7 @@ mod tests {
             "wraps at 12-2 for the gutter: {:?}",
             rows.iter().map(|r| r.text.as_str()).collect::<Vec<_>>()
         );
-        // click mapping skips the "┃ " gutter
+        // click mapping skips the "▍ " gutter
         let mut app = App::new();
         app.chat_rows = vec![ChatRow {
             line: 0,
@@ -11028,7 +11030,7 @@ mod tests {
         let row: String = (0..30).map(|x| b[(x, 0)].symbol().to_string()).collect();
         // wide chars leave blank continuation cells — compare with spaces removed
         let tight = row.replace(' ', "");
-        assert!(tight.starts_with("┃✻这是思考"), "{row:?}");
+        assert!(tight.starts_with("▍✻这是思考"), "{row:?}");
         assert_eq!(b[(1, 0)].symbol(), " ", "one space gutter pad");
         assert!(app.chat_rows.iter().all(|r| r.think));
     }
@@ -11864,6 +11866,25 @@ mod tests {
         );
         assert_eq!(app.restart.as_ref().map(|r| r.0.as_str()), Some("sess-1"));
         assert!(app.quit);
+    }
+
+    #[test]
+    fn trust_picker_enter_after_hello_sends_set_trust() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.frame(json!({"type": "hello", "sessionId": "sess-9", "model": "m", "mode": "ask",
+            "cwd": "/repo", "protocol": 1, "tools": []}), &mut serve);
+        app.frame(json!({"type": "trust_request", "root": "/repo", "keys": ["hooks"], "files": []}), &mut serve);
+        assert!(app.picker.as_ref().map(|p| p.kind) == Some(PickerKind::Trust), "picker open");
+        let before = serve.sent.len();
+        app.key(
+            crossterm::event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut serve,
+        );
+        let cmds: Vec<String> = serve.sent[before..].iter()
+            .map(|x| serde_json::from_str::<Value>(x).unwrap()["cmd"].as_str().unwrap_or("").to_string())
+            .collect();
+        assert!(cmds.contains(&"set_trust".to_string()), "sent: {cmds:?}");
     }
 
     #[test]
