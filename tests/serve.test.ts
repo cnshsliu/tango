@@ -380,6 +380,15 @@ test('serve: theme and mouse settings persist without dropping other config', as
     s.send({ id: 4, cmd: 'set_mouse', mouse: 'no' });
     const badMouse = await s.until((f) => f.type === 'result' && f.id === 4, 'bad mouse result');
     assert.equal(badMouse.ok, false);
+    assert.equal(hello.animations, true);
+    s.send({ id: 5, cmd: 'set_animations', animations: false });
+    const anim = await s.until((f) => f.type === 'result' && f.id === 5, 'set_animations result');
+    assert.equal(anim.data.animations, false);
+    const saved = JSON.parse(await readFile(join(home, 'config.json'), 'utf8'));
+    assert.equal(saved.animations, false);
+    s.send({ id: 6, cmd: 'set_animations', animations: 'no' });
+    const badAnim = await s.until((f) => f.type === 'result' && f.id === 6, 'bad animations result');
+    assert.equal(badAnim.ok, false);
   } finally {
     s.child.kill();
     mock.server.close();

@@ -78,7 +78,7 @@ tango repl             line-mode REPL — dev fallback, not the product
 TUI commands: `/model`, `/agents`, `/resume`, `/new`, `/restart`, `/rename`, `/mode`, `/plan`, `/goal`,
 `/loop`, `/effort`, `/review`, `/security-review`, `/bg`, `/tasks`, `/stop`, `/subtask`,
 `/worktree`, `/mcp`, `/plugins`, `/vim`, `/nvim`, `/editor`, `/multiline`, `/btw`, `/diff`,
-`/focus`, `/density`, `/mouse`, `/theme`, `/compact`, `/autocompact`, `/skill`, `/skills`,
+`/focus`, `/density`, `/mouse`, `/animations`, `/theme`, `/compact`, `/autocompact`, `/skill`, `/skills`,
 `/memory`, `/remember`, `/cost`, `/usage`, `/stats`, `/insights`, `/context`, `/queue`,
 `/timestamps`, `/statusline`, `/preset`, `/permissions`, `/import`, `/cd`, `/pwd`, `/add_dir`,
 `/config`, `/keymap`, `/init`, `/doctor`, `/debug-zip`, `/status`, `/clear`, `/rewind`, `/undo`,
@@ -318,6 +318,9 @@ received characters behind a `●` that pulses in the tango 3-3-2 rhythm (about 
 a rotating tip on its right end during long turns; on a narrow terminal the tip goes first, then the
 counter, then the timer. While a turn runs, a cyan band of light flows along the rule's dashes: fast
 while text streams, a slow drift while waiting on tools; after 10s with no output it stops and dims.
+Terminals without 24-bit color get the same band in xterm 256 colors. `/animations off` (saved as
+`"animations": false` in config) keeps the text and drops the motion: steady dot, no band, static
+thinking bar and splash.
 A custom `/statusline` template can still place `{work}` in the status bar. The input is multi-line with Tab-completed `/` commands and `@file` inlining (contents ride along in the
 prompt, 6KB cap), fences render as indented gray blocks, and long pasted prompts collapse to a
 short summary (over 600 chars or 8 lines). Ctrl+O opens the latest full prompt/tool output in an

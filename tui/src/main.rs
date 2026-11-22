@@ -163,7 +163,7 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<Exit, Box<dy
     });
 
     let mut app = App::new();
-    animating.store(app.busy, Ordering::Relaxed);
+    animating.store(app.busy && app.animations, Ordering::Relaxed);
     loop {
         terminal.draw(|f| app.draw(f))?;
         match rx.recv()? {
@@ -181,7 +181,7 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<Exit, Box<dy
                 }
             }
         }
-        animating.store(app.busy, Ordering::Relaxed);
+        animating.store(app.busy && app.animations, Ordering::Relaxed);
         if let Some(enabled) = app.mouse_capture.take() {
             if enabled {
                 execute!(terminal.backend_mut(), crossterm::event::EnableMouseCapture)?;

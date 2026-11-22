@@ -512,6 +512,7 @@ const SLASH: &[(&str, &str)] = &[
     ("/memory", "查看长期记忆（全局 AGENTS.md，ctrl+e 编辑）"),
     ("/remember <text>", "记住一条偏好 → 全局记忆，所有会话生效"),
     ("/mouse", "切换鼠标捕获 · /mouse on|off"),
+    ("/animations", "动画开关 · /animations on|off（off：静态颜色，文字不变）"),
     (
         "/bubble",
         "用户消息样式：on 靠右气泡（默认）· off 全宽靠左（Claude Code 式）",
@@ -831,7 +832,7 @@ fn sweep_speed(since_output: std::time::Duration) -> u64 {
 /// `width` cells): a 7-cell cyan band with a bright core over the dim rule.
 /// None = the cell keeps the plain rule style.
 fn sweep_color(x: usize, head: u64, width: usize, stalled: bool) -> Option<Color> {
-    if width == 0 || stalled || !supports_truecolor() {
+    if width == 0 || stalled {
         return None;
     }
     let head = (head % width as u64) as usize;
@@ -846,7 +847,13 @@ fn sweep_color(x: usize, head: u64, width: usize, stalled: bool) -> Option<Color
         Color::Rgb(28, 92, 116),
         Color::Rgb(22, 70, 88),
     ];
-    BAND.get(behind).copied()
+    // xterm 256-color cube stand-ins, bright cyan down to dark teal
+    const BAND_256: [u8; 7] = [123, 87, 45, 38, 31, 24, 23];
+    if supports_truecolor() {
+        BAND.get(behind).copied()
+    } else {
+        BAND_256.get(behind).map(|&i| Color::Indexed(i))
+    }
 }
 
 fn gear_color(frame: u128, animate: bool) -> Color {
@@ -1261,6 +1268,9 @@ pub struct App {
     /// user-message style: true = right-positioned bubble (default),
     /// false = Claude Code style (same theme, left, full-width bg) — /bubble
     user_bubble: bool,
+    /// motion on (default): pulse, rule sweep, thinking wave, gear, splash
+    /// twinkle. Off keeps the same text with static colors — /animations
+    pub animations: bool,
     /// scroll offset of the permission dialog's command preview (↑↓/wheel)
     perm_scroll: usize,
     /// the preview's wrap width, captured each draw so key/wheel scrolling
@@ -1386,6 +1396,7 @@ impl App {
             session_name: String::new(),
             session_id_area: Rect::default(),
             user_bubble: true,
+            animations: true,
             perm_scroll: 0,
             perm_wrap_w: 76,
             editlast_armed: false,
@@ -3773,6 +3784,24 @@ impl App {
                     Tone::Muted,
                 );
             }
+            "/animations" => {
+                let enabled = match rest {
+                    "" => !self.animations,
+                    "on" => true,
+                    "off" => false,
+                    _ => {
+                        self.push("usage: /animations [on|off]", Tone::Muted);
+                        return;
+                    }
+                };
+                self.animations = enabled;
+                // serve persists it, like /bubble
+                let _ = serve.command("set_animations", vec![("animations", Value::Bool(enabled))]);
+                self.push(
+                    if enabled { "动画：开" } else { "动画：关（静态颜色）" }.to_string(),
+                    Tone::Muted,
+                );
+            }
             "/vim" => {
                 let enabled = match rest {
                     "" => !self.vim,
@@ -5643,6 +5672,7 @@ impl App {
                 self.serve_branch = v["branch"].as_str().unwrap_or("").to_string();
                 self.session_name = v["sessionName"].as_str().unwrap_or("").to_string();
                 self.user_bubble = v["bubble"].as_bool().unwrap_or(true);
+                self.animations = v["animations"].as_bool().unwrap_or(true);
                 self.cost = v["totalCostUsd"].as_f64().unwrap_or(0.0);
                 self.context_tokens = v["contextTokens"].as_u64().unwrap_or(0);
                 self.context_window = v["contextWindow"].as_u64().unwrap_or(0);
@@ -7488,6 +7518,7 @@ impl App {
                 // "┃ " gutter; the color scrolls down the live block while a turn runs
                 let local = live_think_block.map_or(g, |b| g.saturating_sub(b));
                 let live = self.busy
+                    && self.animations
                     && supports_truecolor()
                     && live_think_block.is_some_and(|b| g >= b);
                 let color = thinking_bar_color(self.think_frame, local, live);
@@ -7543,7 +7574,10 @@ impl App {
                 let mut spans = pad;
                 spans.push(Span::styled(
                     "⚙ ".to_string(),
-                    Style::default().fg(gear_color(self.think_frame, true)),
+                    Style::default().fg(gear_color(
+                        if self.animations { self.think_frame } else { 0 },
+                        true,
+                    )),
                 ));
                 spans.push(Span::styled(rest, style));
                 shown.push(Line::from(spans));
@@ -7966,7 +8000,7 @@ impl App {
         } else {
             None
         };
-        let anim = if self.busy {
+        let anim = if self.busy && self.animations {
             let since = self.last_output.map_or(std::time::Duration::ZERO, |t| t.elapsed());
             let speed = sweep_speed(since);
             let frames = self.think_frame.saturating_sub(self.sweep_frame).min(8) as u64;
@@ -8702,7 +8736,8 @@ impl App {
             (35, 125, 180),
         ];
         const TWINKLE: [f32; 5] = [0.68, 0.82, 0.95, 1.08, 1.18];
-        let t = Self::now_secs();
+        // animations off: a fixed twinkle phase and a still dancer
+        let t = if self.animations { Self::now_secs() } else { 0 };
         let tick = (t % 60) as u128;
         let truecolor = supports_truecolor();
         let theme_k = if self.theme.light { 0.8 } else { 1.0 };
@@ -13865,13 +13900,12 @@ mod tests {
         assert_eq!(sweep_speed(Duration::from_secs(3)), 1, "waiting drifts");
         assert_eq!(sweep_speed(Duration::from_secs(11)), 0, "silence stops");
         // the band: head brightest, a fading trail to its left, wrapping
-        if supports_truecolor() {
-            let head = sweep_color(10, 10, 40, false).unwrap();
-            let trail = sweep_color(7, 10, 40, false).unwrap();
-            assert_ne!(head, trail);
-            assert!(sweep_color(11, 10, 40, false).is_none(), "nothing ahead of the head");
-            assert!(sweep_color(38, 1, 40, false).is_some(), "the trail wraps");
-        }
+        // (truecolor or the 256-color fallback, the band shape is the same)
+        let head = sweep_color(10, 10, 40, false).unwrap();
+        let trail = sweep_color(7, 10, 40, false).unwrap();
+        assert_ne!(head, trail);
+        assert!(sweep_color(11, 10, 40, false).is_none(), "nothing ahead of the head");
+        assert!(sweep_color(38, 1, 40, false).is_some(), "the trail wraps");
         assert!(sweep_color(10, 10, 40, true).is_none(), "stalled: no band");
         // a stalled rule greys the dot; it still reads the same text
         let plain = Style::default();
@@ -13888,6 +13922,35 @@ mod tests {
         assert_eq!(dot.style.fg, Some(Color::Green));
         let t: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(display_width(&t), 30, "the band never changes the width: {t}");
+    }
+
+    #[test]
+    fn animations_off_keeps_the_rule_text_but_drops_the_motion() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut serve = Serve::mock();
+        let mut app = App::new();
+        assert!(app.animations, "on by default");
+        app.run_slash("/animations off", &mut serve);
+        assert!(!app.animations);
+        let sent: Value = serde_json::from_str(serve.sent.last().unwrap()).unwrap();
+        assert_eq!(sent["cmd"], "set_animations");
+        assert_eq!(sent["animations"], false);
+        app.busy = true;
+        app.turn_started = None;
+        let mut term = Terminal::new(TestBackend::new(60, 12)).unwrap();
+        term.draw(|f| app.draw(f)).unwrap();
+        let buf = term.backend().buffer().clone();
+        let row: Vec<_> = (0..12)
+            .map(|y| (0..60).map(|x| buf[(x, y)].clone()).collect::<Vec<_>>())
+            .find(|r| r.iter().map(|c| c.symbol()).collect::<String>().starts_with("─ ● working"))
+            .expect("busy rule row");
+        // no band: every dash after the text shares one style
+        let dashes: Vec<_> = row.iter().skip(12).filter(|c| c.symbol() == "─").collect();
+        assert!(dashes.windows(2).all(|w| w[0].fg == w[1].fg), "no sweep when off");
+        app.run_slash("/animations", &mut serve);
+        assert!(app.animations, "bare command toggles back on");
+        app.run_slash("/animations maybe", &mut serve);
+        assert!(app.animations, "bad arg changes nothing");
     }
 
     #[test]

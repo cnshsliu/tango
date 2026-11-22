@@ -316,5 +316,6 @@ while a turn is running unless noted. `/help` prints a short list inside the TUI
 | `/statusline [tpl\|off]` | Custom status bar, e.g. `/statusline '{model} {pct} {cost}'` |
 | `/theme [dark\|light\|auto]` | Switch theme (saved). Bare: picker |
 | `/mouse [on\|off]` | Mouse capture. Off gives native terminal selection |
+| `/animations [on\|off]` | Motion on the busy rule, thinking bar and splash (saved). Off keeps the text, static colors |
 | `/clear` | Clear the screen. The model's context is kept |
 | `/help` | Short command list |

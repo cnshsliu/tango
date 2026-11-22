@@ -6,7 +6,7 @@
  * stdout: one JSON frame per line, protocol only — human logs never touch stdout.
  *
  * commands:  prompt | btw | interrupt | permission | models | set_model | set_mode | set_nvim_viewer
- *            set_theme | set_mouse | diff | compact | sessions | history | save_skill | status
+ *            set_theme | set_mouse | set_animations | diff | compact | sessions | history | save_skill | status
  * frames:    hello | stream | btw_stream | message | notice (chat line) | tool_result | permission_request | turn_end | error | result
  */
 import { spawnSync } from 'node:child_process';
@@ -258,6 +258,7 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
     theme: config.theme,
     mouse: config.mouse ?? true,
     bubble: config.bubble ?? true,
+    animations: config.animations ?? true,
     editor: config.editor,
     keys: config.keys,
     nvimViewer: config.nvimViewer,
@@ -1390,6 +1391,13 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
           return reply(cmd, false, undefined, `bad bubble value "${cmd.bubble}" (true|false)`);
         await saveConfig({ ...(await loadConfig()), bubble: cmd.bubble });
         reply(cmd, true, { bubble: cmd.bubble });
+        return;
+      }
+      case 'set_animations': {
+        if (typeof cmd.animations !== 'boolean')
+          return reply(cmd, false, undefined, `bad animations value "${cmd.animations}" (true|false)`);
+        await saveConfig({ ...(await loadConfig()), animations: cmd.animations });
+        reply(cmd, true, { animations: cmd.animations });
         return;
       }
       case 'set_mouse': {
