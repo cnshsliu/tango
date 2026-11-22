@@ -44,6 +44,71 @@ fn image_path_from_paste(text: &str) -> Option<String> {
     Path::new(&expanded).is_file().then_some(expanded)
 }
 
+/// A submission that starts with an existing file or directory path (pasted or dragged in,
+/// so it begins with `/`, `~/` or a quote) is a prompt about that file, not a slash
+/// command. Known commands always win. Returns the resolved path, whether it is a
+/// directory, and the text after it. Paths with spaces work quoted, backslash-escaped
+/// (drag and drop) or bare: the longest existing prefix of the first line wins.
+fn leading_path(text: &str) -> Option<(String, bool, String)> {
+    let t = text.trim_start();
+    let word = t.split_whitespace().next().unwrap_or("").to_lowercase();
+    if word == ":q" || SLASH.iter().any(|(c, _)| c.split(' ').next() == Some(word.as_str())) {
+        return None;
+    }
+    let unquoted = t.trim_start_matches(['\'', '"']);
+    if !(unquoted.starts_with('/') || unquoted.starts_with("~/")) {
+        return None;
+    }
+    let line = &t[..t.find('\n').unwrap_or(t.len())];
+    let resolve = |raw: &str| -> Option<String> {
+        let raw = raw.trim_end();
+        let raw = match (raw.chars().next(), raw.chars().last()) {
+            (Some(q @ ('\'' | '"')), Some(e)) if q == e && raw.len() > 1 => &raw[1..raw.len() - 1],
+            _ => raw,
+        };
+        let mut path = String::new();
+        let mut chars = raw.chars();
+        while let Some(c) = chars.next() {
+            // drag and drop escapes spaces and shell characters: `My\ File.md`
+            path.push(if c == '\\' { chars.next().unwrap_or('\\') } else { c });
+        }
+        if let Some(rest) = path.strip_prefix("~/") {
+            path = format!("{}/{rest}", std::env::var("HOME").ok()?);
+        }
+        let p = Path::new(&path);
+        (path.len() > 1 && p.exists()).then_some(path)
+    };
+    let mut cuts: Vec<usize> = line
+        .char_indices()
+        .filter(|(i, c)| c.is_whitespace() && !line[..*i].ends_with('\\'))
+        .map(|(i, _)| i)
+        .collect();
+    cuts.push(line.len());
+    for &cut in cuts.iter().rev() {
+        if let Some(path) = resolve(&line[..cut]) {
+            let is_dir = Path::new(&path).is_dir();
+            return Some((path, is_dir, t[cut..].trim().to_string()));
+        }
+    }
+    None
+}
+
+/// The prompt for a submission that leads with a path: name it as a file (or directory),
+/// and when nothing else was written, ask for what a bare path almost always means.
+fn file_prompt(text: &str) -> Option<String> {
+    let (path, is_dir, rest) = leading_path(text)?;
+    let label = if is_dir { "目录" } else { "文件" };
+    Some(if rest.is_empty() {
+        if is_dir {
+            format!("{label}：{path}\n请查看这个目录，了解里面有什么。")
+        } else {
+            format!("{label}：{path}\n请阅读这个文件，理解它的内容。")
+        }
+    } else {
+        format!("{label}：{path}\n{rest}")
+    })
+}
+
 /// Command extras for a prompt/supplement: text plus optional image paths to upload.
 fn prompt_extras(text: String, images: Vec<String>) -> Vec<(&'static str, Value)> {
     let mut extras = vec![("text", Value::String(text))];
@@ -3936,6 +4001,13 @@ impl App {
                 let id = serve.command("status", vec![]);
                 self.pending.push((id, Pending::Status));
             }
+            other if other.starts_with('/') && other.chars().skip(1).any(|c| c == '/') => {
+                // looks like a path, but nothing exists there
+                self.push(
+                    format!("找不到文件或目录：{} · 命令见 /help", trimmed),
+                    Tone::Error,
+                );
+            }
             other => {
                 self.push(format!("unknown command {other} · /help"), Tone::Error);
             }
@@ -4298,6 +4370,10 @@ impl App {
             } else {
                 swept.push_str(token);
             }
+        }
+        // a leading file path is a prompt about that file, never a slash command
+        if let Some(prompt) = file_prompt(&swept) {
+            swept = prompt;
         }
         (swept, images)
     }
@@ -5610,7 +5686,10 @@ impl App {
             return;
         }
         match k.code {
-            KeyCode::Enter if self.rendered_input().text.trim_start().starts_with('/') => {
+            KeyCode::Enter
+                if self.rendered_input().text.trim_start().starts_with('/')
+                    && file_prompt(&self.input.iter().collect::<String>()).is_none() =>
+            {
                 // judge by the displayed text: an image chip's raw path also starts
                 // with '/', but it is an attachment, not a slash command
                 let text: String = self.input.iter().collect();
@@ -11910,6 +11989,45 @@ mod tests {
         );
         assert_eq!(serve.sent.len(), 1, "toggled: Enter does not send");
         assert_eq!(app2.input.iter().collect::<String>(), "hi\n");
+    }
+
+    #[test]
+    fn a_leading_file_path_is_a_prompt_not_a_slash_command() {
+        let dir = std::env::temp_dir().join("tango-path-prompt");
+        let _ = std::fs::create_dir_all(dir.join("sub dir"));
+        let file = dir.join("发文 手册.md");
+        std::fs::write(&file, "x").unwrap();
+        let f = file.to_string_lossy().to_string();
+        let d = dir.to_string_lossy().to_string();
+
+        // bare path → read it; path + text → "文件：" line then the text
+        assert_eq!(file_prompt(&f).unwrap(), format!("文件：{f}\n请阅读这个文件，理解它的内容。"));
+        assert_eq!(file_prompt(&format!("{f}  总结一下")).unwrap(), format!("文件：{f}\n总结一下"));
+        // quoted and backslash-escaped (drag and drop) forms, and a directory
+        assert_eq!(leading_path(&format!("'{f}' 看看")).unwrap().0, f);
+        assert_eq!(leading_path(&f.replace(' ', "\\ ")).unwrap().0, f);
+        assert!(file_prompt(&d).unwrap().starts_with(&format!("目录：{d}\n")));
+        // real commands, missing paths and plain text are left alone
+        assert!(file_prompt("/help").is_none());
+        assert!(file_prompt("/model qwen").is_none());
+        assert!(file_prompt("/no/such/file.md 看看").is_none());
+        assert!(file_prompt("看看 /tmp").is_none(), "a path later in the text is not touched");
+
+        // end to end: Enter sends a prompt, no "unknown command"
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.input = format!("{f} 总结一下").chars().collect();
+        app.cursor = app.input.len();
+        app.key(crossterm::event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &mut serve);
+        let sent: Value = serde_json::from_str(serve.sent.last().unwrap()).unwrap();
+        assert_eq!(sent["cmd"], "prompt");
+        assert_eq!(sent["text"], format!("文件：{f}\n总结一下"));
+        assert!(!app.lines.iter().any(|l| l.text.contains("unknown command")));
+
+        // a path-looking command that does not exist gets a file-not-found message
+        app.run_slash("/users/nobody/x.md", &mut serve);
+        assert!(app.lines.iter().any(|l| l.text.contains("找不到文件或目录")));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
