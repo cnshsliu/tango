@@ -1349,6 +1349,8 @@ pub struct App {
     local_queue: Vec<QueuedPrompt>,
     /// /queue dialog open (clickable per-item actions)
     queue_dialog: bool,
+    /// keyboard-selected row in the /queue dialog
+    queue_sel: usize,
     /// the IME we switched away from for a single-key dialog (macOS macism)
     ime_restore: Option<String>,
     /// clickable button rects, rebuilt every draw
@@ -1502,6 +1504,7 @@ impl App {
             current_prompt: None,
             local_queue: Vec::new(),
             queue_dialog: false,
+            queue_sel: 0,
             choices: None,
             choices_collapsed: false,
             choice_rows: Vec::new(),
@@ -2173,6 +2176,59 @@ impl App {
     }
 
     /// merge the WHOLE queue into the running turn (clickable [全部并入当前])
+    fn queue_action(&mut self, serve: &mut Serve, action: QueueAction) {
+        match action {
+            QueueAction::Supplement(i) => self.queue_supplement_one(serve, i),
+            QueueAction::Remove(i) => {
+                if let Some(q) = self.local_queue.get(i).cloned() {
+                    self.local_queue.remove(i);
+                    let head: String =
+                        q.text.lines().next().unwrap_or("").chars().take(40).collect();
+                    self.push(format!("已移除排队 #{}：{head}", i + 1), Tone::Muted);
+                }
+            }
+            QueueAction::SupplementAll => self.queue_supplement_all(serve),
+            QueueAction::ClearAll => {
+                let n = self.local_queue.len();
+                self.local_queue.clear();
+                self.push(format!("已清空 {n} 条排队提示"), Tone::Muted);
+            }
+        }
+        self.queue_sel = self.queue_sel.min(self.local_queue.len().saturating_sub(1));
+    }
+
+    /// /queue dialog keys: ↑↓/j k pick a row, enter/m merges it, d/delete drops
+    /// it, a merges all, c clears, 1-9 jump to a row, esc/q close.
+    fn queue_key(&mut self, serve: &mut Serve, k: crossterm::event::KeyEvent) {
+        let n = self.local_queue.len();
+        let sel = self.queue_sel.min(n.saturating_sub(1));
+        match k.code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.queue_dialog = false;
+                self.queue_buttons.clear();
+            }
+            KeyCode::Up | KeyCode::Char('k') => self.queue_sel = sel.saturating_sub(1),
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.queue_sel = (sel + 1).min(n.saturating_sub(1))
+            }
+            KeyCode::Char(c @ '1'..='9') => {
+                let i = c as usize - '1' as usize;
+                if i < n {
+                    self.queue_sel = i;
+                }
+            }
+            KeyCode::Enter | KeyCode::Char('m') if n > 0 => {
+                self.queue_action(serve, QueueAction::Supplement(sel))
+            }
+            KeyCode::Char('d') | KeyCode::Delete | KeyCode::Backspace if n > 0 => {
+                self.queue_action(serve, QueueAction::Remove(sel))
+            }
+            KeyCode::Char('a') if n > 0 => self.queue_action(serve, QueueAction::SupplementAll),
+            KeyCode::Char('c') if n > 0 => self.queue_action(serve, QueueAction::ClearAll),
+            _ => {}
+        }
+    }
+
     fn queue_supplement_all(&mut self, serve: &mut Serve) {
         if !self.busy {
             self.push(
@@ -3395,6 +3451,7 @@ impl App {
                     self.queue_supplement_all(serve);
                 } else if arg.is_empty() {
                     self.queue_dialog = !self.queue_dialog;
+                    self.queue_sel = 0;
                     if !self.queue_dialog {
                         self.queue_buttons.clear();
                     }
@@ -4637,32 +4694,7 @@ impl App {
                         .find(|(rect, _)| rect.contains(pos))
                         .cloned()
                     {
-                        match action {
-                            QueueAction::Supplement(i) => self.queue_supplement_one(serve, i),
-                            QueueAction::Remove(i) => {
-                                if let Some(q) = self.local_queue.get(i).cloned() {
-                                    self.local_queue.remove(i);
-                                    let head: String = q
-                                        .text
-                                        .lines()
-                                        .next()
-                                        .unwrap_or("")
-                                        .chars()
-                                        .take(40)
-                                        .collect();
-                                    self.push(
-                                        format!("已移除排队 #{}：{head}", i + 1),
-                                        Tone::Muted,
-                                    );
-                                }
-                            }
-                            QueueAction::SupplementAll => self.queue_supplement_all(serve),
-                            QueueAction::ClearAll => {
-                                let n = self.local_queue.len();
-                                self.local_queue.clear();
-                                self.push(format!("已清空 {n} 条排队提示"), Tone::Muted);
-                            }
-                        }
+                        self.queue_action(serve, action);
                         return false;
                     }
                     // click outside the dialog closes it
@@ -5294,9 +5326,9 @@ impl App {
             }
             return;
         }
-        if self.queue_dialog && (k.code == KeyCode::Esc || k.code == KeyCode::Char('q')) {
-            self.queue_dialog = false;
-            self.queue_buttons.clear();
+        if self.queue_dialog && !ctrl {
+            // the dialog is modal: its keys never reach the input box
+            self.queue_key(serve, k);
             return;
         }
         if self.todo_dialog && k.code == KeyCode::Esc {
@@ -7984,7 +8016,14 @@ impl App {
                 width: w,
                 height: h,
             };
-            let inner = render_dialog(f, pop, "提示队列", "点击按钮操作 · esc 关闭", self.theme);
+            let inner = render_dialog(
+                f,
+                pop,
+                "提示队列",
+                "↑↓ 选择 · enter 并入 · d 删 · a 全部并入 · c 清空 · 点击按钮 · esc 关闭",
+                self.theme,
+            );
+            let sel = self.queue_sel.min(n.saturating_sub(1));
             self.queue_buttons.clear();
             let iw = inner.width as usize;
             let btn_style = self.theme.style(Tone::Badge);
@@ -8008,7 +8047,15 @@ impl App {
                     width: inner.width.saturating_sub(24),
                     height: 1,
                 };
-                f.render_widget(Paragraph::new(format!("{}. {head}", i + 1)), text_area);
+                let (marker, row_style) = if i == sel {
+                    ("❯", self.theme.style(Tone::Badge))
+                } else {
+                    (" ", Style::default())
+                };
+                f.render_widget(
+                    Paragraph::new(format!("{marker}{}. {head}", i + 1)).style(row_style),
+                    text_area,
+                );
                 // [并入] [删] buttons at the right edge
                 let by = y;
                 let bx1 = inner.x + inner.width.saturating_sub(16);
@@ -11626,6 +11673,38 @@ mod tests {
         );
         assert!(!app.queue_dialog);
     }
+    #[test]
+    fn queue_dialog_is_fully_keyboard_driven() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.busy = true;
+        app.local_queue = ["一", "二", "三", "四"].map(QueuedPrompt::text_only).to_vec();
+        app.run_slash("/queue", &mut serve);
+        let key = |app: &mut App, serve: &mut Serve, code| {
+            app.key(crossterm::event::KeyEvent::new(code, KeyModifiers::NONE), serve)
+        };
+        key(&mut app, &mut serve, KeyCode::Down);
+        key(&mut app, &mut serve, KeyCode::Char('d'));
+        assert_eq!(app.local_queue, ["一", "三", "四"].map(QueuedPrompt::text_only).to_vec());
+        assert!(app.input.is_empty(), "dialog keys never type into the input");
+        key(&mut app, &mut serve, KeyCode::Char('3'));
+        key(&mut app, &mut serve, KeyCode::Enter);
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        assert_eq!((sent["cmd"].as_str(), sent["text"].as_str()), (Some("supplement"), Some("四")));
+        assert_eq!(app.queue_sel, 1, "selection clamps after the last row leaves");
+        key(&mut app, &mut serve, KeyCode::Up);
+        key(&mut app, &mut serve, KeyCode::Up);
+        assert_eq!(app.queue_sel, 0);
+        key(&mut app, &mut serve, KeyCode::Char('a'));
+        assert!(app.local_queue.is_empty());
+        app.local_queue = vec![QueuedPrompt::text_only("x")];
+        key(&mut app, &mut serve, KeyCode::Char('c'));
+        assert!(app.local_queue.is_empty());
+        assert!(app.queue_dialog);
+        key(&mut app, &mut serve, KeyCode::Char('q'));
+        assert!(!app.queue_dialog);
+    }
+
     #[test]
     fn usage_opens_a_report_viewer_and_insights_reports_path() {
         let mut app = App::new();

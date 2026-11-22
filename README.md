@@ -248,8 +248,9 @@ tools and checkpoints follow live); `/add_dir <dir>` registers an extra writable
   missing macism are left untouched.
 
 - **Prompt queue** (while a turn runs): Enter enqueues locally (sent in order when the turn
-  ends); `/queue` opens a clickable dialog (per-item [并入当前]/[删], footer [全部并入]/[清空])
-  and also accepts `rm <n>`/`all`/`clear`; **Ctrl+C interrupts only the current reply and keeps the queue**; **Alt+Enter appends the typed
+  ends); `/queue` opens a clickable dialog (per-item [并入当前]/[删], footer [全部并入]/[清空]);
+  it also works from the keyboard: ↑↓/`j` `k` or `1`–`9` select a row, Enter/`m` merges it, `d`/Delete
+  removes it, `a` merges all, `c` clears, Esc/`q` closes. `/queue` also accepts `rm <n>`/`all`/`clear`; **Ctrl+C interrupts only the current reply and keeps the queue**; **Alt+Enter appends the typed
   text to the RUNNING turn** ("forgot to mention…") — it rides the same turn's next model
   request as a `（补充）…` user message. The status bar pins the active ask (▶) and each
   finished turn leaves a `✓ 本轮：…` recap line.
