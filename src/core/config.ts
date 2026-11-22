@@ -18,7 +18,7 @@ export interface Config {
   model?: string;
   /** Feishu/Lark custom-bot webhook; used by the notify tool and scheduled tasks */
   feishuWebhook?: string;
-  /** TUI palette: fixed dark/light or terminal COLORFGBG detection */
+  /** TUI palette: fixed dark/light or auto (OSC 11 background query, then COLORFGBG) */
   theme?: 'dark' | 'light' | 'auto';
   /** Mouse capture; false keeps native terminal selection. Missing means true. */
   mouse?: boolean;

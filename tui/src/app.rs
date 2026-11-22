@@ -4034,7 +4034,7 @@ impl App {
                             note: match theme {
                                 "dark" => "深色背景",
                                 "light" => "浅色背景",
-                                _ => "跟随终端 COLORFGBG",
+                                _ => "跟随终端背景色（OSC 11，退回 COLORFGBG）",
                             }
                             .into(),
                             warn: false,
@@ -6066,6 +6066,7 @@ impl App {
                 self.theme = Theme::resolve(
                     v["theme"].as_str(),
                     std::env::var("COLORFGBG").ok().as_deref(),
+                    crate::termbg::detected(),
                 );
                 self.mouse = v["mouse"].as_bool().unwrap_or(true);
                 self.statusline = v["statusline"].as_str().map(|t| t.to_string());
@@ -7534,6 +7535,7 @@ impl App {
                             self.theme = Theme::resolve(
                                 d["theme"].as_str(),
                                 std::env::var("COLORFGBG").ok().as_deref(),
+                                crate::termbg::detected(),
                             );
                             self.push(
                                 format!("theme → {}", d["theme"].as_str().unwrap_or("auto")),

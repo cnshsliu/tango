@@ -365,7 +365,7 @@ while a turn is running unless noted. `/help` prints a short list inside the TUI
 | `/timestamps` | Toggle `[HH:MM]` timestamps |
 | `/bubble [on\|off]` | User messages as right-aligned bubbles (on) or full-width (off) |
 | `/statusline [tpl\|off]` | Custom status bar, e.g. `/statusline '{model} {pct} {cost}'` |
-| `/theme [dark\|light\|auto]` | Switch theme (saved). Bare: picker |
+| `/theme [dark\|light\|auto]` | Switch theme (saved). Bare: picker. `auto` follows the terminal background (OSC 11 at startup, then `COLORFGBG`) |
 | `/mouse [on\|off]` | Mouse capture. Off gives native terminal selection |
 | `/clipboard [auto\|osc52\|native]` | How copies reach a clipboard (saved). `auto`: OSC 52 over SSH so text lands on your local machine, the system command locally; `osc52` forces the terminal escape (SSH, tmux), `native` the system command. Bare `/clipboard` shows the current mode |
 | `/ascii [on\|off]` | ASCII mode (saved): emoji (including the 🤖 thinking icon) drawn as `?` `+` `#` `*`, for terminals without an emoji font |

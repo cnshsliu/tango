@@ -5,6 +5,7 @@ mod dialog;
 mod keys;
 mod launch;
 mod nvim;
+mod termbg;
 mod theme;
 mod viewer;
 
@@ -46,6 +47,8 @@ fn draw_synced<W: std::io::Write>(
 fn main() -> Result<(), Box<dyn Error>> {
     entry();
     enable_raw_mode()?;
+    // before the input thread exists: the reply is read straight off stdin
+    termbg::detect_once(Duration::from_millis(300));
     let mut stdout = std::io::stdout();
     execute!(
         stdout,

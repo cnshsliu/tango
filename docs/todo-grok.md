@@ -76,7 +76,7 @@
 - [x] **18. 同步输出（DEC 2026）防闪烁**（已完成：`tui/src/main.rs` 的 `draw_synced`）
   - OpenTUI：每帧包在 `CSI ?2026h … ?2026l` 里，终端整帧一次显示。见 `packages/core/src/renderer.ts:157`。
   - tango：没用。crossterm 自带 `BeginSynchronizedUpdate`，改动很小。
-- [ ] **19. 主题自动检测：用 OSC 11 查询背景色，监听 997 主题变化通知**
+- [x] **19. 主题自动检测：用 OSC 11 查询背景色，监听 997 主题变化通知**（已完成启动时 OSC 11 查询：`tui/src/termbg.rs`。997 实时通知没做：crossterm 0.29 会把 `CSI ?997;1n` 当成未完成序列卡住输入）
   - OpenTUI：向终端查询背景色，系统切换深浅色时能收到通知并跟着变。见 `packages/core/src/renderer-theme-mode.ts`。
   - tango：`auto` 只看 `COLORFGBG` 环境变量，很多终端不设这个变量，运行中也不会跟着变。
 - [x] **20. OSC 52 剪贴板**（已完成：`tui/src/clipboard.rs`，`/clipboard`，配置 `clipboard`）

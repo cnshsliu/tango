@@ -489,8 +489,11 @@ and `c` to copy. Tool failures show key output inline; `/focus` hides successful
 but never errors. The status bar includes context tokens/window/percentage with 60%/80% warning
 thresholds. `/diff` opens a read-only working-tree patch (`--staged` and optional paths supported).
 `/btw <question>` opens a separate streamed answer without tools or session-history writes.
-Set `theme` in `~/.tango/config.json` to `dark`, `light`, or `auto`; `auto` recognizes light
-terminal backgrounds 7, 15 and 255 in `COLORFGBG`. Missing, malformed or unknown values use dark.
+Set `theme` in `~/.tango/config.json` to `dark`, `light`, or `auto`; `auto` asks the terminal for
+its background color at startup (OSC 11, with a DA1 query so terminals that don't answer cost no
+wait; 300 ms cap) and picks light when the color's brightness is above the midpoint. Terminals that
+don't answer fall back to `COLORFGBG` (backgrounds 7, 15 and 255 are light); otherwise dark. The
+answer is read once per launch: after switching the terminal's colors, `/restart` re-detects.
 `/theme` applies and saves changes immediately. `/mouse [on|off]` controls mouse capture; off keeps
 keyboard scrolling and native terminal selection. Both settings persist in config.
 Set `editor` to `vim` for modal editing (the default is `default`), or toggle it for the current
@@ -571,7 +574,7 @@ All user state lives in `~/.tango/` (override with `TANGO_HOME`):
 
 | file                     | purpose                                                                                                                                                  |
 | ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `config.json`            | default model (`/model <id>` writes it); `feishuWebhook` for notify/tasks; `theme`: `dark` (default), `light`, or `auto` from the terminal's `COLORFGBG` |
+| `config.json`            | default model (`/model <id>` writes it); `feishuWebhook` for notify/tasks; `theme`: `dark` (default), `light`, or `auto` from the terminal's background (OSC 11, then `COLORFGBG`) |
 | `models.json`            | extra/overriding model specs, same shape as built-in presets                                                                                             |
 | `tasks.json`             | scheduled tasks (`tango task add`)                                                                                                                       |
 | `AGENTS.md`              | global instructions appended to the system prompt                                                                                                        |
@@ -589,7 +592,7 @@ used as the literal key. Nothing is inferred. `tango --models` shows which varia
 | --- | --- | --- |
 | `model` | default model id | `/model <id>` |
 | `feishuWebhook` | Feishu/Lark bot webhook for `notify` and scheduled tasks (global file only) | edit |
-| `theme` | `dark`, `light` or `auto` (from `COLORFGBG`) | `/theme` |
+| `theme` | `dark`, `light` or `auto` (terminal background via OSC 11, then `COLORFGBG`) | `/theme` |
 | `mouse` | mouse capture; `false` keeps native selection (default `true`) | `/mouse` |
 | `animations` | busy-rule, thinking and splash motion (default `true`) | `/animations` |
 | `clipboard` | copy path: `auto` (OSC 52 over SSH, else native command, then OSC 52), `osc52` or `native` (default `auto`) | `/clipboard` |

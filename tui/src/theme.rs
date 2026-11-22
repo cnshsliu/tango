@@ -27,9 +27,12 @@ impl Theme {
         Self { light: true }
     }
 
-    pub fn resolve(setting: Option<&str>, colorfgbg: Option<&str>) -> Self {
+    /// `auto` trusts the terminal's OSC 11 answer (`osc11`), then `COLORFGBG`.
+    pub fn resolve(setting: Option<&str>, colorfgbg: Option<&str>, osc11: Option<bool>) -> Self {
         match setting {
             Some("light") => Self::light(),
+            Some("auto") if osc11 == Some(true) => Self::light(),
+            Some("auto") if osc11 == Some(false) => Self::dark(),
             Some("auto")
                 if colorfgbg
                     .and_then(|v| v.rsplit(';').next())
@@ -82,19 +85,19 @@ mod tests {
 
     #[test]
     fn resolves_explicit_and_fallback_themes() {
-        assert!(!Theme::resolve(Some("dark"), Some("0;15")).light);
-        assert!(Theme::resolve(Some("light"), Some("15;0")).light);
-        assert!(!Theme::resolve(Some("bogus"), Some("0;15")).light);
-        assert!(!Theme::resolve(None, Some("0;15")).light);
+        assert!(!Theme::resolve(Some("dark"), Some("0;15"), None).light);
+        assert!(Theme::resolve(Some("light"), Some("15;0"), None).light);
+        assert!(!Theme::resolve(Some("bogus"), Some("0;15"), None).light);
+        assert!(!Theme::resolve(None, Some("0;15"), None).light);
     }
 
     #[test]
     fn auto_uses_light_terminal_backgrounds() {
         for value in [Some("0;7"), Some("0;15"), Some("0;255")] {
-            assert!(Theme::resolve(Some("auto"), value).light);
+            assert!(Theme::resolve(Some("auto"), value, None).light);
         }
         for value in [Some("15;0"), Some("0;8"), Some("junk"), None] {
-            assert!(!Theme::resolve(Some("auto"), value).light);
+            assert!(!Theme::resolve(Some("auto"), value, None).light);
         }
     }
 }
