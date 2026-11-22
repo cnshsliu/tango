@@ -122,6 +122,15 @@ task left uncommitted edits, commit them in the worktree first. Set role models 
 `/agents subagent <model>` and `/agents longContext <model>`. Without them, the current
 model is used.
 
+### Long-running commands (dev servers, watchers)
+
+A normal `bash` call waits for the command and is killed after 120 seconds. For `npm run dev`,
+`cargo watch` or anything else that keeps running, ask the model to start it in the background
+("start the dev server in the background"). It calls `bash` with `background: true` and gets an
+id like `p1` straight away, so the turn goes on. Later it reads the output with `process_logs`,
+stops it with `process_stop` and lists everything with `process_list`. Up to 8 can run at once,
+and all of them are killed when tango exits, so nothing keeps running after you quit.
+
 ### Worktrees
 
 A managed worktree is a separate checkout of your repo at `~/.tango/worktrees/<name>` on

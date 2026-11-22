@@ -11,7 +11,7 @@ export type PermissionMode = 'ask' | 'auto' | 'readonly';
 
 export type Decision = { action: 'allow' } | { action: 'ask'; reason: string } | { action: 'deny'; reason: string };
 
-const READ_TOOLS = new Set(['read', 'grep', 'find', 'ls', 'web_search', 'web_fetch', 'office_read', 'diff', 'session_search']);
+const READ_TOOLS = new Set(['read', 'grep', 'find', 'ls', 'web_search', 'web_fetch', 'office_read', 'diff', 'session_search', 'process_logs', 'process_list']);
 const WRITE_TOOLS = new Set(['write', 'edit', 'office_write']);
 
 /** Commands that delete, rewrite history, publish, escalate, or run fetched code. */
@@ -177,6 +177,9 @@ function decideBase(mode: PermissionMode, call: ToolCallBlock, cwd: string, extr
     for (const [re, why] of RISKY_BASH) if (re.test(scanned)) return { action: 'ask', reason: why };
     return { action: 'allow' };
   }
+
+  // process_stop only ever signals processes this tango started (bash background: true)
+  if (call.name === 'process_stop') return { action: 'allow' };
 
   // tools added later default to asking until they declare otherwise
   return mode === 'readonly' ? { action: 'deny', reason: 'read-only mode' } : { action: 'ask', reason: `runs ${call.name}` };
