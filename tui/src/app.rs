@@ -809,36 +809,44 @@ fn thinking_bar_color(frame: u128, local_row: usize, animate: bool) -> Color {
 /// The running gear's color cycle: same cyan family as the thinking wave, one
 /// step every 2 frames (~240ms). Without truecolor it alternates dark-gray and
 /// cyan, which is the most any 256-color terminal can express.
-/// grok-cli's PromptLoadingBoxes, ported: three cells with the bright one
-/// bouncing left→right→left, a fading trail where it just left (truecolor
-/// steps within the cyan family; plain cyan/gray two-tone without it).
-/// One step per ~120ms animation frame.
-fn loader_spans(frame: u128) -> Vec<Span<'static>> {
-    const POS: [usize; 4] = [0, 1, 2, 1];
-    let pos = POS[(frame % 4) as usize];
-    let trail = POS[((frame + 3) % 4) as usize];
-    let truecolor = supports_truecolor();
-    (0..3)
-        .map(|i| {
-            let (ch, color) = if i == pos {
-                (
-                    "■",
-                    if truecolor { Color::Rgb(120, 225, 240) } else { Color::Cyan },
-                )
-            } else if i == trail {
-                (
-                    "⬝",
-                    if truecolor { Color::Rgb(46, 150, 180) } else { Color::DarkGray },
-                )
-            } else {
-                (
-                    "⬝",
-                    if truecolor { Color::Rgb(26, 80, 100) } else { Color::DarkGray },
-                )
-            };
-            Span::styled(ch, Style::default().fg(color))
-        })
-        .collect()
+/// The busy pulse: one dot on the tango's 3-3-2 rhythm (tresillo) — beats
+/// 1, 4 and 7 of eight flash, the rest rest. One beat per 120ms frame, so a
+/// bar is ~1s, about the dance's own tempo.
+fn pulse_on(frame: u128) -> bool {
+    matches!(frame % 8, 0 | 3 | 6)
+}
+
+/// How quickly output is arriving, as the rule sweep's speed in cells per
+/// animation frame: streaming (output in the last 0.5s) runs, waiting on a
+/// tool or the network (under 10s) drifts, past 10s of silence it stops.
+fn sweep_speed(since_output: std::time::Duration) -> u64 {
+    match since_output.as_millis() {
+        0..500 => 2,
+        500..10_000 => 1,
+        _ => 0,
+    }
+}
+
+/// Color of rule cell `x` when the sweep head is at `head` (wrapping over
+/// `width` cells): a 7-cell cyan band with a bright core over the dim rule.
+/// None = the cell keeps the plain rule style.
+fn sweep_color(x: usize, head: u64, width: usize, stalled: bool) -> Option<Color> {
+    if width == 0 || stalled || !supports_truecolor() {
+        return None;
+    }
+    let head = (head % width as u64) as usize;
+    // the band moves right: cells to the head's left are its fading trail
+    let behind = (head + width - x % width) % width;
+    const BAND: [Color; 7] = [
+        Color::Rgb(120, 225, 240),
+        Color::Rgb(90, 205, 230),
+        Color::Rgb(60, 180, 215),
+        Color::Rgb(45, 150, 185),
+        Color::Rgb(35, 120, 150),
+        Color::Rgb(28, 92, 116),
+        Color::Rgb(22, 70, 88),
+    ];
+    BAND.get(behind).copied()
 }
 
 fn gear_color(frame: u128, animate: bool) -> Color {
@@ -1234,6 +1242,13 @@ pub struct App {
     turn_started: Option<std::time::Instant>,
     /// chars received this turn (text + thinking deltas) — the ↓ readout
     turn_chars: u64,
+    /// when the running turn last produced anything (a delta or a tool
+    /// result) — sets the rule sweep's speed and the stall dim
+    last_output: Option<std::time::Instant>,
+    /// the rule sweep's head position in cells, advanced per animation frame
+    sweep_pos: u64,
+    /// the animation frame the sweep was last advanced on
+    sweep_frame: u128,
     /// full serve session id (the status bar shows the 8-char prefix; the exit
     /// note needs the whole thing for `tango --resume`)
     session_full: String,
@@ -1363,6 +1378,9 @@ impl App {
             todo_buttons: Vec::new(),
             turn_started: None,
             turn_chars: 0,
+            last_output: None,
+            sweep_pos: 0,
+            sweep_frame: 0,
             session_full: String::new(),
             serve_branch: String::new(),
             session_name: String::new(),
@@ -4769,6 +4787,7 @@ impl App {
     fn submit_text(&mut self, serve: &mut Serve, text: String, images: Vec<String>) {
         self.turn_started = Some(std::time::Instant::now());
         self.turn_chars = 0;
+        self.last_output = self.turn_started;
         // a new prompt answers whatever was on screen; an unanswered choice stays
         // parked in todo for explicit handling, but heuristic trailing questions
         // count any prompt as their answer
@@ -5640,10 +5659,12 @@ impl App {
                     Some("text") => {
                         self.stream.push_str(d);
                         self.turn_chars += d.chars().count() as u64;
+                        self.last_output = Some(std::time::Instant::now());
                     }
                     Some("thinking") => {
                         self.thinking.push_str(d);
                         self.turn_chars += d.chars().count() as u64;
+                        self.last_output = Some(std::time::Instant::now());
                     }
                     Some("tool_call_start") => {
                         let id = ev["id"].as_str().unwrap_or_default().to_string();
@@ -5665,6 +5686,7 @@ impl App {
                 }
             }
             "tool_result" => {
+                self.last_output = Some(std::time::Instant::now());
                 let id = v["call"]["id"].as_str().unwrap_or_default().to_string();
                 if !id.is_empty() {
                     self.running_tools.remove(&id);
@@ -7944,6 +7966,16 @@ impl App {
         } else {
             None
         };
+        let anim = if self.busy {
+            let since = self.last_output.map_or(std::time::Duration::ZERO, |t| t.elapsed());
+            let speed = sweep_speed(since);
+            let frames = self.think_frame.saturating_sub(self.sweep_frame).min(8) as u64;
+            self.sweep_pos = self.sweep_pos.wrapping_add(frames * speed);
+            self.sweep_frame = self.think_frame;
+            Some((pulse_on(self.think_frame), self.sweep_pos, speed == 0))
+        } else {
+            None
+        };
         let rule_row = Self::rule_line(
             &self.work_text(),
             tip,
@@ -7954,6 +7986,7 @@ impl App {
             } else {
                 Tone::Muted
             }),
+            anim,
         );
         f.render_widget(
             Paragraph::new(rule_row),
@@ -8368,15 +8401,6 @@ impl App {
                 1,
             ),
         ];
-        if self.busy {
-            // grok's three-cell bouncing loader rides the left end while a turn runs
-            let lead: Vec<(Span<'static>, u8)> = loader_spans(self.think_frame)
-                .into_iter()
-                .chain(std::iter::once(Span::raw(" ")))
-                .map(|s| (s, 0))
-                .collect();
-            segs.splice(0..0, lead);
-        }
         if self.context_window > 0 {
             let percent = self.context_tokens.saturating_mul(100) / self.context_window;
             segs.push((
@@ -8455,11 +8479,11 @@ impl App {
             } else if text
                 .chars()
                 .next()
-                .is_some_and(|c| matches!(c, '⬒' | '⬔' | '⬓' | '⬕' | '■'))
+                .is_some_and(|c| c == '●')
                 || text == "idle"
             {
-                // the work segment (spinner, or idle):
-                // counter first, then the timer — the spinner stays to the last
+                // the work segment (pulse dot, or idle):
+                // counter first, then the timer — the dot stays to the last
                 if text == "idle" {
                     4 // never clipped to a stub; dropped whole when out of room
                 } else if display_width(&text) > 9 {
@@ -8499,7 +8523,7 @@ impl App {
         }
     }
 
-    /// "⬒ 12s · ↓14.0k" (grok's quad spinner) while a turn runs, "idle" otherwise.
+    /// "● 12s · ↓14.0k" (the 3-3-2 pulse dot) while a turn runs, "idle" otherwise.
     /// Lives on the input rule's
     /// left end (and in a custom statusline's {work}); the default status bar no longer carries it.
     fn work_text(&self) -> String {
@@ -8511,31 +8535,27 @@ impl App {
                 let ms = t0.elapsed().as_millis();
                 format!(
                     "{} {} · ↓{}",
-                    Self::spinner_frame(ms / 120),
+                    "●",
                     Self::fmt_elapsed(ms as u64 / 1000),
                     Self::fmt_tokens(self.turn_chars)
                 )
             }
-            None => format!("{} working", Self::spinner_frame(self.think_frame)),
+            None => "● working".to_string(),
         }
-    }
-
-    /// grok-cli's busy spinner: a square whose filled half turns ⬒ ⬔ ⬓ ⬕,
-    /// one step per ~120ms animation frame, always 1 column wide.
-    fn spinner_frame(frame: u128) -> &'static str {
-        const FRAMES: [&str; 4] = ["⬒", "⬔", "⬓", "⬕"];
-        FRAMES[(frame % 4) as usize]
     }
 
     /// The input rule: work state on the left, a rotating tip on the right, dashes between.
     /// Too narrow for both → the tip goes; narrower still → the work text sheds the counter,
-    /// then the timer, keeping the dancer.
+    /// then the timer, keeping the dot. `anim` (busy only) is the pulse's lit state and the
+    /// sweep's (head, stalled): the leading ● dims off-beat, the dashes carry the cyan band,
+    /// and a stalled turn greys the dot and freezes the band out.
     fn rule_line(
         work: &str,
         tip: Option<&str>,
         width: usize,
         dash: Style,
         live: Style,
+        anim: Option<(bool, u64, bool)>,
     ) -> Line<'static> {
         let mut work = work.to_string();
         let mut tip = tip.map(str::to_string);
@@ -8555,14 +8575,53 @@ impl App {
                 break;
             }
         }
-        let left = format!("─ {work} ");
         let right = tip.map(|t| format!(" {t} ─")).unwrap_or_default();
-        let fill = width.saturating_sub(display_width(&left) + display_width(&right));
-        Line::from(vec![
-            Span::styled(left, live),
-            Span::styled("─".repeat(fill), dash),
-            Span::styled(right, dash),
-        ])
+        let Some((lit, head, stalled)) = anim else {
+            let left = format!("─ {work} ");
+            let fill = width.saturating_sub(display_width(&left) + display_width(&right));
+            return Line::from(vec![
+                Span::styled(left, live),
+                Span::styled("─".repeat(fill), dash),
+                Span::styled(right, dash),
+            ]);
+        };
+        let mut spans = vec![Span::styled("─ ", dash)];
+        let rest = match work.strip_prefix('●') {
+            Some(rest) => {
+                let dot = if stalled {
+                    dash
+                } else if lit {
+                    live.add_modifier(ratatui::style::Modifier::BOLD)
+                } else {
+                    live.add_modifier(ratatui::style::Modifier::DIM)
+                };
+                spans.push(Span::styled("●", dot));
+                rest.to_string()
+            }
+            None => work.clone(),
+        };
+        spans.push(Span::styled(format!("{rest} "), if stalled { dash } else { live }));
+        let used = 2 + display_width(&work) + 1;
+        let fill = width.saturating_sub(used + display_width(&right));
+        // the dashes, cell by cell where the band lights them, merged runs elsewhere
+        let mut run = 0usize;
+        for x in 0..fill {
+            match sweep_color(x, head, fill, stalled) {
+                Some(c) => {
+                    if run > 0 {
+                        spans.push(Span::styled("─".repeat(run), dash));
+                        run = 0;
+                    }
+                    spans.push(Span::styled("─", dash.fg(c)));
+                }
+                None => run += 1,
+            }
+        }
+        if run > 0 {
+            spans.push(Span::styled("─".repeat(run), dash));
+        }
+        spans.push(Span::styled(right, dash));
+        Line::from(spans)
     }
 
     /// The working dot, dancing: a couple swaying and dipping the tango, one frame
@@ -13601,11 +13660,11 @@ mod tests {
                 .collect::<String>()
         };
 
-        let l = App::rule_line("idle", None, 40, plain, plain);
+        let l = App::rule_line("idle", None, 40, plain, plain, None);
         assert_eq!(display_width(&text(&l)), 40);
         assert!(text(&l).starts_with("─ idle ─"), "{}", text(&l));
 
-        let l = App::rule_line("\\o/ 12s · ↓14.0k", Some("ctrl+o 看工具"), 60, plain, plain);
+        let l = App::rule_line("\\o/ 12s · ↓14.0k", Some("ctrl+o 看工具"), 60, plain, plain, None);
         let t = text(&l);
         assert_eq!(display_width(&t), 60);
         assert!(t.starts_with("─ \\o/ 12s · ↓14.0k ─"), "{t}");
@@ -13618,11 +13677,12 @@ mod tests {
             24,
             plain,
             plain,
+            None,
         ));
         assert!(t.contains("12s") && !t.contains("看工具"), "{t}");
-        let t = text(&App::rule_line("\\o/ 12s · ↓14.0k", None, 12, plain, plain));
+        let t = text(&App::rule_line("\\o/ 12s · ↓14.0k", None, 12, plain, plain, None));
         assert!(t.contains("\\o/") && !t.contains("↓"), "{t}");
-        let t = text(&App::rule_line("\\o/ 12s · ↓14.0k", None, 8, plain, plain));
+        let t = text(&App::rule_line("\\o/ 12s · ↓14.0k", None, 8, plain, plain, None));
         assert_eq!(display_width(&t), 8, "{t}");
 
         // on screen it is the input box's first row
@@ -13780,24 +13840,54 @@ mod tests {
         app.turn_chars = 14_000;
         let s = app.work_text();
         assert!(
-            s.contains("↓14.0k") && s.starts_with(App::spinner_frame(0)),
-            "the quad spinner leads the work text: {s}"
+            s.contains("↓14.0k") && s.starts_with('●'),
+            "the pulse dot leads the work text: {s}"
         );
         app.busy = false;
         assert_eq!(app.work_text(), "idle");
     }
 
     #[test]
-    fn busy_spinner_turns_grok_quads_one_column_wide() {
-        let frames: Vec<&str> = (0..4).map(App::spinner_frame).collect();
-        assert_eq!(frames, vec!["⬒", "⬔", "⬓", "⬕"]);
-        assert!(frames.iter().all(|f| display_width(f) == 1));
-        assert_eq!(App::spinner_frame(4), "⬒", "loops");
+    fn busy_pulse_beats_the_tango_tresillo() {
+        let bar: Vec<bool> = (0..8).map(pulse_on).collect();
+        assert_eq!(bar, vec![true, false, false, true, false, false, true, false], "3-3-2");
+        assert_eq!(pulse_on(8), pulse_on(0), "one bar loops");
         let mut app = App::new();
         app.busy = true;
         app.turn_started = None;
-        app.think_frame = 2;
-        assert_eq!(app.work_text(), "⬓ working");
+        assert_eq!(app.work_text(), "● working");
+    }
+
+    #[test]
+    fn rule_sweep_runs_with_output_and_stops_on_a_stall() {
+        use std::time::Duration;
+        assert_eq!(sweep_speed(Duration::from_millis(100)), 2, "streaming runs");
+        assert_eq!(sweep_speed(Duration::from_secs(3)), 1, "waiting drifts");
+        assert_eq!(sweep_speed(Duration::from_secs(11)), 0, "silence stops");
+        // the band: head brightest, a fading trail to its left, wrapping
+        if supports_truecolor() {
+            let head = sweep_color(10, 10, 40, false).unwrap();
+            let trail = sweep_color(7, 10, 40, false).unwrap();
+            assert_ne!(head, trail);
+            assert!(sweep_color(11, 10, 40, false).is_none(), "nothing ahead of the head");
+            assert!(sweep_color(38, 1, 40, false).is_some(), "the trail wraps");
+        }
+        assert!(sweep_color(10, 10, 40, true).is_none(), "stalled: no band");
+        // a stalled rule greys the dot; it still reads the same text
+        let plain = Style::default();
+        let live = Style::default().fg(Color::Green);
+        let l = App::rule_line("● 12s · ↓1.0k", None, 40, plain, live, Some((true, 5, true)));
+        let dot = l.spans.iter().find(|s| s.content == "●").unwrap();
+        assert_eq!(dot.style, plain, "stalled dot drops the live color");
+        let t: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(t.starts_with("─ ● 12s · ↓1.0k ─"), "{t}");
+        assert_eq!(display_width(&t), 40);
+        // live and on-beat: the dot is bold live color
+        let l = App::rule_line("● 12s", None, 30, plain, live, Some((true, 5, false)));
+        let dot = l.spans.iter().find(|s| s.content == "●").unwrap();
+        assert_eq!(dot.style.fg, Some(Color::Green));
+        let t: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(display_width(&t), 30, "the band never changes the width: {t}");
     }
 
     #[test]
@@ -13839,33 +13929,6 @@ mod tests {
         let flat2: String = s2.chars().filter(|c| !c.is_whitespace()).collect();
         assert!(!flat2.contains("输入问题开始"), "splash gone: {s2}");
         assert!(flat2.contains("开始干活"), "chat instead: {s2}");
-    }
-
-    #[test]
-    fn grok_loader_bounces_three_cells_in_the_status_bar() {
-        let mut app = App::new();
-        app.busy = true;
-        app.model = "tknet/qwen".into();
-        let spans = app.status_spans(80);
-        let head: String = spans
-            .iter()
-            .take(3)
-            .map(|s| s.content.as_ref())
-            .collect::<String>();
-        assert_eq!(display_width(&head), 3, "three loader cells");
-        assert!(head.contains('■'), "the bright cell: {head}");
-        assert_eq!(head.matches('⬝').count(), 2, "two dim cells: {head}");
-        // the bounce: position cycles 0,1,2,1 (frame 1 → cell 1)
-        let f1: String = loader_spans(1)
-            .iter()
-            .map(|s| s.content.as_ref())
-            .collect();
-        assert!(f1.starts_with('⬝') && f1.contains('■'), "{f1}");
-        // idle: no loader, the model still leads
-        app.busy = false;
-        let spans = app.status_spans(80);
-        let first = spans[0].content.as_ref();
-        assert!(first.contains("tknet"), "no loader while idle: {first}");
     }
 
     #[test]

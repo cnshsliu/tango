@@ -314,10 +314,10 @@ durations, a centered permission modal (y/n/a), a bottom status bar below the in
 cost · session, fitted to the terminal width — on a narrow screen ctx and sess go first, then the
 pinned ▶, and the model name shortens, while cost and the ❓ badge stay). The rule above the input
 carries the work state on its left end — `idle`, or the elapsed time and
-received characters behind grok's quad spinner (`⬒ ⬔ ⬓ ⬕`, one step per 120ms) — and
+received characters behind a `●` that pulses in the tango 3-3-2 rhythm (about one bar per second) — and
 a rotating tip on its right end during long turns; on a narrow terminal the tip goes first, then the
-counter, then the timer. While a turn runs the status bar's left end carries a three-cell bouncing
-loader (`■ ⬝ ⬝`, grok-style).
+counter, then the timer. While a turn runs, a cyan band of light flows along the rule's dashes: fast
+while text streams, a slow drift while waiting on tools; after 10s with no output it stops and dims.
 A custom `/statusline` template can still place `{work}` in the status bar. The input is multi-line with Tab-completed `/` commands and `@file` inlining (contents ride along in the
 prompt, 6KB cap), fences render as indented gray blocks, and long pasted prompts collapse to a
 short summary (over 600 chars or 8 lines). Ctrl+O opens the latest full prompt/tool output in an
