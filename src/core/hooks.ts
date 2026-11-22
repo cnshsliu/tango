@@ -65,21 +65,35 @@ export function hookMatches(matcher: string | undefined, tool: string | undefine
   }
 }
 
-/** Run one hook command; resolves with its exit code (null = killed) and stderr. */
+/** Run one hook command; resolves with its exit code (null = killed or failed to start) and stderr. */
 function runOne(cmd: HookCommand, payload: unknown, cwd: string): Promise<{ code: number | null; stderr: string }> {
   return new Promise((resolve) => {
-    const child = spawn('sh', ['-c', cmd.command], { cwd, stdio: ['pipe', 'ignore', 'pipe'] });
-    const kill = setTimeout(() => child.kill('SIGKILL'), (cmd.timeout ?? 10) * 1000);
+    // own process group: on timeout the whole tree dies, not just sh (a leftover child
+    // would hold the stderr pipe open and stall the turn until it exits on its own)
+    const child = spawn('sh', ['-c', cmd.command], { cwd, stdio: ['pipe', 'ignore', 'pipe'], detached: true });
     let stderr = '';
-    child.stderr?.on('data', (d) => (stderr += d));
-    child.on('error', (e) => {
-      clearTimeout(kill);
-      resolve({ code: null, stderr: e.message });
-    });
-    child.on('close', (code) => {
+    let settled = false;
+    const finish = (code: number | null) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(kill);
       resolve({ code, stderr });
+    };
+    const kill = setTimeout(() => {
+      try {
+        if (child.pid) process.kill(-child.pid, 'SIGKILL');
+      } catch {
+        child.kill('SIGKILL');
+      }
+      stderr += `timed out after ${cmd.timeout ?? 10}s`;
+      finish(null);
+    }, (cmd.timeout ?? 10) * 1000);
+    child.stderr?.on('data', (d) => (stderr += d));
+    child.on('error', (e) => {
+      stderr += e.message;
+      finish(null);
     });
+    child.on('close', (code) => finish(code));
     child.stdin.on('error', () => {}); // a hook that never reads stdin must not crash us
     child.stdin.end(JSON.stringify(payload));
   });
