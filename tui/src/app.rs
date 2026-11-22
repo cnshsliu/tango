@@ -128,6 +128,34 @@ pub fn display_width(s: &str) -> usize {
     s.width()
 }
 
+/// Collapsed thinking shows this many lines / chars before the expand hint.
+const THINK_PREVIEW_LINES: usize = 3;
+const THINK_PREVIEW_CHARS: usize = 240;
+
+/// What a 🧠 thinking line shows: short blocks in full; long ones as a preview
+/// plus a hint while collapsed, or in full plus a collapse hint when expanded.
+fn thinking_view(text: &str, expanded: bool, keys: &Keymap) -> String {
+    let key = keys.label(Action::ToggleThinking);
+    let chars = text.chars().count();
+    let lines = text.lines().count();
+    if lines <= THINK_PREVIEW_LINES && chars <= THINK_PREVIEW_CHARS {
+        return text.to_string();
+    }
+    if expanded {
+        return format!("{text}\n{key} 收起思考");
+    }
+    let mut preview = String::new();
+    for (i, line) in text.lines().take(THINK_PREVIEW_LINES).enumerate() {
+        if i > 0 {
+            preview.push('\n');
+        }
+        preview.push_str(line);
+    }
+    let preview: String = preview.chars().take(THINK_PREVIEW_CHARS).collect();
+    let hidden = chars.saturating_sub(preview.chars().count());
+    format!("{preview} …\n{key} 展开思考（还有 {hidden} 字 · 共 {lines} 行）")
+}
+
 /// Cut `s` to at most `width` columns, ending in … when anything was dropped.
 fn clip_to_width(s: &str, width: usize) -> String {
     use unicode_width::UnicodeWidthChar;
@@ -167,6 +195,8 @@ struct ChatLine {
     /// pushed from a serve `notice` frame (system status, not conversation): the
     /// empty-session splash keeps showing and lists these under the wordmark
     notice: bool,
+    /// a 🧠 thinking block shown in full instead of its collapsed preview
+    expanded: bool,
 }
 
 struct Permission {
@@ -1707,6 +1737,14 @@ impl App {
             // a plain user bubble opens the prompt menu; collapsed pastes (lines
             // with output) keep their expand-to-viewer click below
             let source = self.chat_lines().get(li).map(|l| l.source_index);
+            // clicking a thinking block expands / collapses it in place
+            if let Some(line) = source
+                .and_then(|i| self.lines.get_mut(i))
+                .filter(|l| l.tone == Tone::Thinking)
+            {
+                line.expanded = !line.expanded;
+                return;
+            }
             if source
                 .and_then(|i| self.lines.get(i))
                 .is_some_and(|l| l.tone == Tone::User && l.output.is_none())
@@ -2295,6 +2333,7 @@ impl App {
                 tool_id: None,
                 source_index: usize::MAX,
                 notice: false,
+                expanded: false,
             });
         }
     }
@@ -2309,6 +2348,7 @@ impl App {
             tool_id: None,
             source_index: usize::MAX,
             notice: false,
+            expanded: false,
         });
     }
 
@@ -2521,12 +2561,24 @@ impl App {
         }
     }
 
+    /// Expand or collapse the newest 🧠 thinking block (alt+t by default).
+    fn toggle_latest_thinking(&mut self) {
+        if let Some(line) = self.lines.iter_mut().rev().find(|l| l.tone == Tone::Thinking) {
+            line.expanded = !line.expanded;
+        }
+    }
+
     fn open_transcript(&mut self) {
         let mut text = String::new();
         let mut prompt_rows = Vec::new();
         let mut row = 0;
         for line in self.chat_lines() {
-            for (index, part) in line.text.split('\n').enumerate() {
+            // the transcript is for reading/searching: thinking always in full
+            let full = (line.tone == Tone::Thinking)
+                .then(|| self.lines.get(line.source_index).map(|l| l.text.clone()))
+                .flatten()
+                .unwrap_or_else(|| line.text.clone());
+            for (index, part) in full.split('\n').enumerate() {
                 if index == 0 && line.prompt_state.is_some() {
                     prompt_rows.push(row);
                 }
@@ -2590,9 +2642,10 @@ impl App {
     /// columns. No inline spans — one style per line.
     fn commit_stream(&mut self) {
         if !self.thinking.is_empty() {
-            let t: String = self.thinking.chars().take(400).collect();
-            self.push(format!("✻ {t}"), Tone::Thinking);
-            self.thinking.clear();
+            // the whole block is kept; chat_lines shows a collapsed preview until
+            // alt+t (or a click) expands it
+            let t = std::mem::take(&mut self.thinking);
+            self.push_tool(format!("🧠 {}", t.trim_end()), Tone::Thinking, None);
         }
         if self.stream.is_empty() {
             return;
@@ -5384,6 +5437,10 @@ impl App {
             self.open_latest_viewer();
             return;
         }
+        if self.keys.matches(Action::ToggleThinking, k) {
+            self.toggle_latest_thinking();
+            return;
+        }
         // Ctrl+C always remains a safe interrupt even when the action is remapped.
         // the prompt menu grabs number keys; anything else closes it first
         if self.prompt_menu.is_some() {
@@ -7463,7 +7520,11 @@ impl App {
                         && !(line.tone == Tone::Muted && line.text.starts_with("⚙ ")))
             })
             .map(|(source_index, line)| {
-                let mut text = line.text.clone();
+                let mut text = if line.tone == Tone::Thinking {
+                    thinking_view(&line.text, line.expanded, &self.keys)
+                } else {
+                    line.text.clone()
+                };
                 // density: 0 = names only; 1 = errors show output (default); 2 = everything does
                 let show_output = match self.density {
                     0 => false,
@@ -7503,6 +7564,7 @@ impl App {
                     tool_id: line.tool_id.clone(),
                     source_index,
                     notice: line.notice,
+                    expanded: line.expanded,
                 }
             })
             .collect()
@@ -11051,7 +11113,7 @@ mod tests {
     fn thinking_lines_get_a_two_column_gutter_and_wrap_narrower() {
         let texts = vec![
             "普通一行".to_string(),
-            "✻ 思考内容比较长需要折行思考内容比较长需要折行".to_string(),
+            "🧠 思考内容比较长需要折行思考内容比较长需要折行".to_string(),
         ];
         let flags = vec![false, true];
         let rows = wrap_chat_rows_flagged(&texts, 12, &flags);
@@ -11171,11 +11233,43 @@ mod tests {
     }
 
     #[test]
+    fn long_thinking_is_kept_whole_and_collapses_with_an_expand_hint() {
+        let mut app = App::new();
+        let body: String = (0..10).map(|i| format!("第{i}步推理")).collect::<Vec<_>>().join("\n");
+        app.thinking = body.clone();
+        app.commit_stream();
+        let line = app.lines.last().unwrap();
+        assert_eq!(line.text, format!("🧠 {body}"), "no 400-char truncation");
+        let shown = app.chat_lines().last().unwrap().text.clone();
+        assert_eq!(shown.lines().count(), 4, "3 preview lines + hint: {shown}");
+        assert!(shown.contains("alt+t 展开思考"), "{shown}");
+        assert!(!shown.contains("第9步推理"));
+        let mut serve = Serve::mock();
+        app.key(
+            crossterm::event::KeyEvent::new(KeyCode::Char('t'), KeyModifiers::ALT),
+            &mut serve,
+        );
+        let shown = app.chat_lines().last().unwrap().text.clone();
+        assert!(shown.contains("第9步推理") && shown.contains("alt+t 收起思考"), "{shown}");
+        app.toggle_latest_thinking();
+        assert!(!app.chat_lines().last().unwrap().text.contains("第9步推理"));
+    }
+
+    #[test]
+    fn short_thinking_shows_in_full_without_a_hint() {
+        let mut app = App::new();
+        app.thinking = "想一下".into();
+        app.commit_stream();
+        assert_eq!(app.chat_lines().last().unwrap().text, "🧠 想一下");
+        assert_eq!(display_width("🧠"), 2, "brain emoji takes two cells");
+    }
+
+    #[test]
     fn thinking_rows_render_with_the_bar_and_the_text_indented() {
         use ratatui::{Terminal, backend::TestBackend};
         let mut app = App::new();
         let mut serve = Serve::mock();
-        app.push("✻ 这是思考".to_string(), Tone::Thinking);
+        app.push("🧠 这是思考".to_string(), Tone::Thinking);
         app.busy = true;
         let mut t = Terminal::new(TestBackend::new(30, 10)).unwrap();
         t.draw(|f| app.draw(f)).unwrap();
@@ -11183,7 +11277,7 @@ mod tests {
         let row: String = (0..30).map(|x| b[(x, 0)].symbol().to_string()).collect();
         // wide chars leave blank continuation cells — compare with spaces removed
         let tight = row.replace(' ', "");
-        assert!(tight.starts_with("▍✻这是思考"), "{row:?}");
+        assert!(tight.starts_with("▍🧠这是思考"), "{row:?}");
         assert_eq!(b[(1, 0)].symbol(), " ", "one space gutter pad");
         assert!(app.chat_rows.iter().all(|r| r.think));
     }

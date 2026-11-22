@@ -217,7 +217,12 @@ tools and checkpoints follow live); `/add_dir <dir>` registers an extra writable
   `/insights` writes the same data as an offline single-file HTML report.
 - `/timestamps` toggles `[HH:MM]` prefixes; `/density 0|1|2` sets tool-detail level (compact /
   default-errors-only / full) and applies to restored history too.
-- **Thinking bar**: committed reasoning (`✻ …` lines) carries a `┃` gutter on its left;
+- **Thinking blocks**: committed reasoning is kept whole (no truncation) as a `🧠 …` block. Up to
+  3 lines / 240 chars show in full; longer blocks show a 3-line preview plus
+  `alt+t 展开思考（还有 N 字 · 共 M 行）`. Alt+T (keymap action `toggleThinking`) or a click on the
+  block expands / collapses it in place; Ctrl+T's transcript always has the full text.
+  🧠 is an emoji (2 cells); terminals without an emoji font may show a box or misalign it.
+- **Thinking bar**: committed reasoning (`🧠 …` blocks) carries a `┃` gutter on its left;
   while the turn runs, the newest thinking block's bar color scrolls down (a dim→bright
   cyan wave, ~8fps, in 24-bit color with `$COLORTERM=truecolor` and xterm 256 colors otherwise,
   and only the block that belongs to the running turn; older blocks and idle chats show a flat dim bar).
@@ -473,7 +478,7 @@ cursor between logical lines (arrow keys still scroll chat). `/` and `@` return 
 nothing. Ctrl+S submits the complete draft in either mode (and in non-Vim mode); NORMAL `:wq` and
 `:wqa` also submit. Entering `:` expands the input by one row: the draft stays visible above and
 the command has its own bottom line. Esc cancels that line without clearing the draft. The optional `keys`
-object remaps `expandTools`, `editLast` (Alt+E: interrupt and edit the last prompt), `newline`, `interrupt`, `clearInput`,
+object remaps `expandTools`, `editLast` (Alt+E: interrupt and edit the last prompt), `toggleThinking` (Alt+T: expand/collapse the newest thinking block), `newline`, `interrupt`, `clearInput`,
 `scrollUp`, `scrollDown`, `pageUp`, `pageDown`, `promptPrev`, and `promptNext`, using values such as `ctrl+u` or `alt+enter`.
 Unknown actions, keys, and editor values fall back to defaults. Ctrl+C always remains a safe
 interrupt/clear binding even when `interrupt` is remapped. Example:

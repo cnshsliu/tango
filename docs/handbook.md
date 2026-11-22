@@ -46,6 +46,7 @@ git diff | tango "review this patch"
 | Park a half-written draft | Alt+S (press again to restore) |
 | Edit a draft in Neovim | Ctrl+E, or `/nvim` |
 | See a full tool output | Ctrl+O, or click the tool line |
+| Read the model's full reasoning | Alt+T expands / collapses the newest 🧠 block, or click a block |
 | Check whether it's still working | The rule above the input: `idle`, or a `●` with the elapsed time and received characters; a band of light flows along the rule while output arrives, and stops and dims after 10s of silence |
 | Find the logo | An empty session shows the centered TANGO wordmark (block letters, cyan gradient + twinkle) with the dancer and a hint; the first message replaces it |
 | Get back to the prompt you're reading about | Scrolled up, the dim top row shows that prompt; click it to jump there |
@@ -57,7 +58,10 @@ git diff | tango "review this patch"
 A tool call in flight shows as `⚙ bash …` with the gear color cycling; when it finishes
 the same line becomes `⚙ bash <command> · <ms>` (click it or press ctrl+o for the output).
 
-Reasoning the model streamed shows as `✻ …` lines with a `┃` bar on their left. While the
+Reasoning the model streamed shows as a `🧠 …` block with a `┃` bar on its left. The whole
+text is kept: short reasoning shows in full, a long block collapses to its first 3 lines plus
+`alt+t 展开思考（还有 N 字 · 共 M 行）`. Press Alt+T to expand or collapse the newest block, or
+click any block to toggle it; Ctrl+T's transcript always shows thinking in full. While the
 turn runs, that bar's color scrolls down the newest thinking block (in 256 colors on
 terminals without 24-bit color; once idle, or with `/animations off`, it is a flat dim bar).
 
