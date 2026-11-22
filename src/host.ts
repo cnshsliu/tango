@@ -13,6 +13,7 @@ import { installDiagnostics } from './core/diagnostics.js';
 import { EventBus } from './core/events.js';
 import { mergeHookConfigs, runHooks, type HookConfig } from './core/hooks.js';
 import { resolveConfig, type Resolved } from './core/project-config.js';
+import { worktreeRoot } from './core/worktrees.js';
 import { installPermissionGate, parseRule, type AllowRule, type AskFn, type PermissionMode } from './core/permissions.js';
 import { SessionStore } from './core/session.js';
 import { ToolRegistry } from './core/tools/registry.js';
@@ -167,7 +168,9 @@ export function makeAgent(model: ModelSpec, store: SessionStore, cwd: string, pe
     cwd: () => agent.cwd,
     ask: (c, r) => (perm.ask ? perm.ask(c, r) : Promise.resolve(false)),
     rules: parsedRules,
-    extraDirs: () => extraDirs.dirs,
+    // managed worktrees (~/.tango/worktrees) are tango's own isolation checkouts:
+    // writing there is the point of creating one, so it never asks
+    extraDirs: () => [...extraDirs.dirs, worktreeRoot()],
     plan: () => plan.on
   });
   installDiagnostics(events, () => agent.cwd); // /cd moves the checker root too

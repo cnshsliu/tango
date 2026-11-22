@@ -17,7 +17,8 @@ export interface WorktreeEntry {
 }
 
 const registryFile = () => join(tangoDir(), 'worktrees.json');
-const worktreeRoot = () => join(tangoDir(), 'worktrees');
+/** Where managed worktrees live; writes under it never ask (tango's own isolation checkouts). */
+export const worktreeRoot = () => join(tangoDir(), 'worktrees');
 
 function git(cwd: string, args: string[]): { ok: boolean; out: string; err: string } {
   const r = spawnSync('git', args, { cwd, encoding: 'utf8', timeout: 15_000 });

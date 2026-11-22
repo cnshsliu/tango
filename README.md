@@ -111,7 +111,8 @@ TUI commands: `/model`, `/agents`, `/resume`, `/new`, `/restart`, `/rename`, `/m
 ## Worktrees, background, subagents, MCP, plugins
 
 - **/worktree** — managed git worktrees (`~/.tango/worktrees/<name>`, branch `tango/<name>`):
-  the isolation unit for anything that writes in parallel. Dirty worktrees refuse removal;
+  the isolation unit for anything that writes in parallel. Writes under `~/.tango/worktrees/` never
+  trigger the "writes outside cwd" prompt, whatever the session's cwd. Dirty worktrees refuse removal;
   `/worktree merge <name>` merges back into the main workspace (which must be clean). A bare
   subcommand (`/worktree new`) prints its usage; `/worktree` alone lists (or picks) worktrees.
 - **/bg <prompt>** — a background prompt: fresh worktree + independent serve child; the task
@@ -516,7 +517,7 @@ Three modes, set with flags or `/mode`:
 
 | mode       | flag           | behaviour                                                                                                                                   |
 | ---------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ask`      | (default)      | reads and writes inside cwd run; deletes, `git push`/`reset --hard`, `sudo`, `curl … \| sh`, writes outside cwd and unknown tools ask first |
+| `ask`      | (default)      | reads and writes inside cwd run; deletes, `git push`/`reset --hard`, `sudo`, `curl … \| sh`, writes outside cwd (except managed worktrees under `~/.tango/worktrees/`, `/add_dir` roots and allow rules) and unknown tools ask first |
 | `auto`     | `-y` / `--yes` | everything runs                                                                                                                             |
 | `readonly` | `--readonly`   | reads only; writes and shell are refused                                                                                                    |
 

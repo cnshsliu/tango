@@ -179,3 +179,34 @@ test('suggestRule derives the rule "always allow" remembers for a call', async (
   const tool = { type: 'tool_call' as const, id: 'x', name: 'notify', input: {} };
   assert.equal(suggestRule(tool as any), 'tool:notify');
 });
+
+test('writes under ~/.tango/worktrees never ask; other outside writes still do', async () => {
+  const { makeAgent } = await import('../src/host.js');
+  const { SessionStore } = await import('../src/core/session.js');
+  const { worktreeRoot } = await import('../src/core/worktrees.js');
+  const home = await mkdtemp(join(tmpdir(), 'tango-wt-home-'));
+  const work = await mkdtemp(join(tmpdir(), 'tango-wt-work-'));
+  const prev = process.env.TANGO_HOME;
+  process.env.TANGO_HOME = home;
+  try {
+    const asked: string[] = [];
+    const store = await SessionStore.create(join(home, 'sessions'), work);
+    const agent = makeAgent(
+      { id: 'fake/m', provider: 'fake', model: 'm', api: 'openai-completions', baseUrl: 'http://127.0.0.1:9/v1', apiKey: 't' },
+      store, work, { mode: 'ask', ask: async (c) => (asked.push(String((c.input as any).path)), false) }, { checkpoint: 'off' }
+    );
+    const tool = { name: 'write', writeEffect: true } as any;
+    const inWt = join(worktreeRoot(), 'feat', 'a.ts');
+    assert.ok(inWt.startsWith(home), 'root follows TANGO_HOME');
+    const v1 = await agent.events.emit('before_tool', { call: call('write', { path: inWt }), tool });
+    assert.ok(!v1?.block, 'managed worktree write passes without asking');
+    const v2 = await agent.events.emit('before_tool', { call: call('write', { path: join(home, 'other.txt') }), tool });
+    assert.ok(v2?.block, 'other outside writes still ask (and are declined here)');
+    assert.deepEqual(asked, [join(home, 'other.txt')]);
+  } finally {
+    if (prev === undefined) delete process.env.TANGO_HOME;
+    else process.env.TANGO_HOME = prev;
+    await rm(home, { recursive: true, force: true });
+    await rm(work, { recursive: true, force: true });
+  }
+});
