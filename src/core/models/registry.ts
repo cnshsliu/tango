@@ -897,6 +897,25 @@ export const presets: ModelSpec[] = [
     reasoning: true,
     cost: { input: 8, output: 40, cacheRead: 0.4, cacheWrite: 10, tiers: [{ above: 272000, input: 16, cacheRead: 0.8, cacheWrite: 20, output: 60 }] }
   },
+  // Local Phai on NovaMLX (127.0.0.1:6590, OpenAI-compatible). Checked 2026-11-22: tool calls,
+  // JSON output, reasoning_content on by default; text only (images get HTTP 400). ~41 tok/s,
+  // one request at a time. Last so it never becomes the default.
+  {
+    id: 'local/phai-a1-35b',
+    region: 'gateway',
+    provider: 'novamlx',
+    platform: 'novamlx',
+    model: 'PhaiModelLab/Phai-A1-35B-1M-MLX-4bit',
+    api: 'openai-completions',
+    baseUrl: 'http://127.0.0.1:6590/v1',
+    apiKey: 'NOVA_API_KEY',
+    contextWindow: 262144,
+    maxTokens: 4096,
+    reasoning: true,
+    reasoningField: 'reasoning_content',
+    vision: false,
+    cost: { input: 0, output: 0 }
+  },
 ];
 
 // Vision-capable families: the flagship multimodal lines (Claude, Gemini, GPT consumer

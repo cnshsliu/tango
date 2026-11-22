@@ -73,6 +73,19 @@ test('opencode presets: 35 paid models, key via OPENCODE_API_KEY env, no opencod
   assert.equal(haiku.cost!.tiers![0].above, 100000);
 });
 
+test('local Phai preset: NovaMLX endpoint, key from NOVA_API_KEY, text only, never the default', () => {
+  const phai = presets.find((m) => m.id === 'local/phai-a1-35b')!;
+  assert.ok(phai);
+  assert.equal(phai.model, 'PhaiModelLab/Phai-A1-35B-1M-MLX-4bit');
+  assert.equal(phai.api, 'openai-completions');
+  assert.equal(phai.baseUrl, 'http://127.0.0.1:6590/v1');
+  assert.equal(phai.apiKey, 'NOVA_API_KEY');
+  assert.equal(phai.contextWindow, 262144);
+  assert.equal(phai.maxTokens, 4096);
+  assert.equal(phai.vision, false);
+  assert.equal(presets.at(-1)!.id, phai.id, 'appended last so it never becomes the default');
+});
+
 test('presets: ids stay unique after the opencode batch; existing defaults unchanged', () => {
   assert.equal(new Set(presets.map((m) => m.id)).size, presets.length);
   assert.equal(presets[0].id, 'tknet/qwen3.8-flash-next', 'tknet stays the first default');

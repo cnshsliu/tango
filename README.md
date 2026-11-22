@@ -41,6 +41,7 @@ prices come from pricing groups, which tango doesn't see). If
 |                                      | `openai/gpt-6-astra`, `openai/gpt-6.1-terra`                                                                              | `OPENAI_API_KEY`            |
 |                                      | `google/gemini-4-carbon`, `google/gemini-3.8-flash`                                                                       | `GEMINI_API_KEY`            |
 |                                      | `xai/grok-4.7`, `xai/grok-build-0.1`                                                                                      | `XAI_API_KEY`               |
+| Local                                | `local/phai-a1-35b` (NovaMLX at 127.0.0.1:6590, text only, zero cost so it lists under "free")                            | `NOVA_API_KEY`              |
 
 China and international accounts of the same vendor use different keys. `kimi/kimi-k3.1-pro` and
 `kimi-intl/kimi-k3.1-pro` both read `KIMI_API_KEY`, so only the one matching your account works;
