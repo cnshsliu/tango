@@ -95,6 +95,9 @@ struct ChatLine {
     /// gear's animated color); the result line clears it by id
     tool_id: Option<String>,
     source_index: usize,
+    /// pushed from a serve `notice` frame (system status, not conversation): the
+    /// empty-session splash keeps showing and lists these under the wordmark
+    notice: bool,
 }
 
 struct Permission {
@@ -2211,6 +2214,7 @@ impl App {
                 prompt_state: None,
                 tool_id: None,
                 source_index: usize::MAX,
+                notice: false,
             });
         }
     }
@@ -2224,6 +2228,7 @@ impl App {
             prompt_state: None,
             tool_id: None,
             source_index: usize::MAX,
+            notice: false,
         });
     }
 
@@ -5721,7 +5726,11 @@ impl App {
             // chat-line notices from serve (warnings, goal/subtask status) — never part of a stream
             "notice" => {
                 if let Some(text) = v["text"].as_str() {
+                    let from = self.lines.len();
                     self.push(text, Tone::Muted);
+                    for line in &mut self.lines[from..] {
+                        line.notice = true;
+                    }
                     self.jump_to_bottom();
                 }
             }
@@ -7243,6 +7252,7 @@ impl App {
                     prompt_state: line.prompt_state,
                     tool_id: line.tool_id.clone(),
                     source_index,
+                    notice: line.notice,
                 }
             })
             .collect()
@@ -8720,7 +8730,7 @@ impl App {
         if chat_w < W + 4
             || chat_h < 9
             || !self.stream.is_empty()
-            || self.lines.iter().any(|l| !l.text.starts_with("tango serve"))
+            || self.lines.iter().any(|l| !l.notice && !l.text.starts_with("tango serve"))
         {
             return None;
         }
@@ -8797,6 +8807,26 @@ impl App {
             center(chat_w, "输入问题开始 · /help 查看命令"),
             self.theme.style(Tone::Muted),
         )));
+        // startup notices (e.g. the same-cwd concurrency warning) sit under the hint,
+        // wrapped narrower than the chat and centered row by row
+        let notices: Vec<&ChatLine> = self.lines.iter().filter(|l| l.notice).collect();
+        if !notices.is_empty() {
+            let texts: Vec<String> = notices.iter().map(|l| l.text.clone()).collect();
+            let rows = wrap_chat_rows(&texts, chat_w.saturating_sub(4).min(72));
+            // too tall to fit beside the wordmark: fall back to the plain chat so
+            // the notice is never hidden
+            if block_h + 1 + rows.len() > chat_h {
+                return None;
+            }
+            lines.push(Line::from(""));
+            block_h += 1 + rows.len();
+            for row in rows {
+                lines.push(Line::from(Span::styled(
+                    center(chat_w, row.text.trim_end()),
+                    self.theme.style(notices[row.line].tone),
+                )));
+            }
+        }
         let mut out: Vec<Line> = vec![Line::from(""); chat_h.saturating_sub(block_h) / 2];
         out.extend(lines);
         Some(out)
@@ -14003,6 +14033,57 @@ mod tests {
         let flat2: String = s2.chars().filter(|c| !c.is_whitespace()).collect();
         assert!(!flat2.contains("输入问题开始"), "splash gone: {s2}");
         assert!(flat2.contains("开始干活"), "chat instead: {s2}");
+    }
+
+    #[test]
+    fn splash_stays_with_startup_notices_listed_under_it() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.push(
+            "tango serve · session 1234abcd · 20 tools · /help",
+            Tone::Muted,
+        );
+        app.frame(
+            json!({"type": "notice", "text": "⚠ 另一个 tango 会话正在此目录运行（pid 1）— 建议在不同 worktree 里并行"}),
+            &mut serve,
+        );
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        fn rows(t: &ratatui::Terminal<ratatui::backend::TestBackend>) -> Vec<String> {
+            let b = t.backend().buffer();
+            (0..24u16)
+                .map(|y| {
+                    (0..80u16)
+                        .map(|x| b[(x, y)].symbol())
+                        .collect::<String>()
+                        .chars()
+                        .filter(|c| !c.is_whitespace())
+                        .collect()
+                })
+                .collect()
+        }
+        let flat = |r: &[String]| -> String {
+            r.concat().chars().filter(|c| !c.is_whitespace()).collect()
+        };
+        terminal.draw(|f| app.draw(f)).unwrap();
+        let r = rows(&terminal);
+        assert!(flat(&r).contains('█'), "wordmark still shown: {r:?}");
+        assert!(
+            flat(&r).contains("另一个tango会话正在此目录运行"),
+            "notice visible: {r:?}"
+        );
+        let hint = r.iter().position(|l| l.contains("输入问题开始")).unwrap();
+        let warn = r.iter().position(|l| l.contains('⚠')).unwrap();
+        assert!(warn > hint, "notice sits under the hint: {r:?}");
+        // the first message ends the splash; the notice stays in the chat
+        app.push_user("开始干活");
+        terminal.draw(|f| app.draw(f)).unwrap();
+        let r = rows(&terminal);
+        assert!(!flat(&r).contains("输入问题开始"), "splash gone: {r:?}");
+        assert!(
+            flat(&r).contains("另一个tango会话正在此目录运行"),
+            "notice kept: {r:?}"
+        );
     }
 
     #[test]
