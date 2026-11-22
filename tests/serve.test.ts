@@ -1955,16 +1955,13 @@ test('bg/tasks/stop: real child runs in a worktree, session resumable', async ()
     const bg = await s.until((f: any) => f.type === 'result' && f.id === 200, 'bg');
     assert.ok(bg.ok, JSON.stringify(bg));
     assert.ok(existsSync(bg.data.task.worktree), 'worktree created');
-    // the child takes a moment; poll tasks until done
-    let done: any = null;
-    for (let i = 0; i < 40 && !done; i++) {
-      await sleep(500);
-      s.send({ id: 201, cmd: 'tasks' });
-      const t = await s.until((f: any) => f.type === 'result' && f.id === 201, 'tasks');
-      const found = t.data.tasks.find((x: any) => x.id === bg.data.task.id);
-      if (found?.status === 'done') done = found;
-    }
-    assert.ok(done, 'background task finished');
+    // the serve's poll announces the end by itself, with the merge hint
+    const notice = await s.until((f: any) => f.type === 'notice' && /后台任务 bg-test-1 完成/.test(f.text), 'bg done notice');
+    assert.match(notice.text, /\/worktree merge bg-/);
+    s.send({ id: 201, cmd: 'tasks' });
+    const t = await s.until((f: any) => f.type === 'result' && f.id === 201, 'tasks');
+    const done = t.data.tasks.find((x: any) => x.id === bg.data.task.id);
+    assert.equal(done?.status, 'done', 'background task finished');
     assert.ok(done.sessionId, 'session id captured');
     const store = await SessionStore.open(join(home, 'sessions'), done.sessionId);
     assert.ok(store.allMessages().some((m: any) => JSON.stringify(m).includes('后台任务')), 'prompt landed in its session');
@@ -2007,6 +2004,7 @@ test('roles: /agents set routes bg tasks to the subagent model', async () => {
     s.send({ id: 202, cmd: 'agents_show' });
     const show = await s.until((f: any) => f.type === 'result' && f.id === 202, 'show');
     assert.equal(show.data.roles.subagent, 'mock/flash');
+    assert.deepEqual(show.data.subAgents.map((a: any) => a.name), ['explore', 'general'], 'built-in sub-agents listed');
 
     // a bg task runs on the subagent model
     s.send({ id: 203, cmd: 'bg', prompt: 'route me' });
@@ -2043,15 +2041,17 @@ test('subtask: runs in a worktree and writes its summary back to the main sessio
     const st = await s.until((f: any) => f.type === 'result' && f.id === 200, 'subtask');
     assert.ok(st.ok, JSON.stringify(st));
 
-    // poll history until the write-back lands (reconcile runs on commands)
-    let wroteBack = false;
-    for (let i = 0; i < 40 && !wroteBack; i++) {
-      await sleep(500);
-      s.send({ id: 201, cmd: 'history' });
-      const h = await s.until((f: any) => f.type === 'result' && f.id === 201, 'history');
-      if (JSON.stringify(h.data.items).includes('SUBTASKMARK')) wroteBack = true;
-    }
-    assert.ok(wroteBack, 'subtask summary written back to the main session');
+    // the serve's own poll notices the end: no command has to nudge it
+    const done = await s.until((f: any) => f.type === 'notice' && /subtask sub-x 完成/.test(f.text), 'subtask done notice');
+    assert.match(done.text, /报告已交给模型/);
+    s.send({ id: 201, cmd: 'history' });
+    const h = await s.until((f: any) => f.type === 'result' && f.id === 201, 'history');
+    const item = h.data.items.find((x: any) => String(x.text).includes('SUBTASKMARK'));
+    assert.ok(item, 'subtask summary written back to the main session');
+    // a user message: the model must not read the report as its own earlier words
+    assert.equal(item.kind, 'user');
+    // the child was told to commit, or /worktree merge would carry nothing over
+    assert.ok(mock.requests.some((r: any) => JSON.stringify(r.messages).includes('git 提交')), 'commit instruction sent');
   } finally {
     s.child.kill();
     spawnSync('git', ['worktree', 'prune'], { cwd: work });

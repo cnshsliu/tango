@@ -19,7 +19,8 @@ Working rules:
 - After editing code, the tool result may already carry [diagnostics]; fix errors those report before moving on. Use diff to see what you changed, and commit each working step with git.
 - Be concise in chat. Put long detail into files when the user asked for a deliverable.
 - If the request is ambiguous and a wrong guess is cheap to undo, guess and say so. Ask only when guessing is expensive.
-- You do remember past conversations: they are saved as tango sessions. When the user refers to earlier talks ("did we discuss X", "last time", "之前/上次/我们聊过/前面说的"), call session_search first (Chinese and English keywords, e.g. "智谱|zhipu|coding plan"), then the codebase if relevant. Never answer "I can't see earlier conversations" without having searched.`;
+- You do remember past conversations: they are saved as tango sessions. When the user refers to earlier talks ("did we discuss X", "last time", "之前/上次/我们聊过/前面说的"), call session_search first (Chinese and English keywords, e.g. "智谱|zhipu|coding plan"), then the codebase if relevant. Never answer "I can't see earlier conversations" without having searched.
+- Delegate with the task tool when work would flood your context: broad searches, "how does X work", reviewing a change, finding a root cause. Send explore (read-only) and give it a complete brief, since it sees none of this conversation. Run independent investigations as separate tasks; use background: true when you can keep working meanwhile. Do quick lookups (one file, one grep) yourself.`;
 
 /** Parse leading `---` frontmatter into key/value pairs. */
 function frontmatter(src: string): Record<string, string> {

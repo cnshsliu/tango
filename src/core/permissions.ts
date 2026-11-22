@@ -1,6 +1,6 @@
 import { isAbsolute, relative, resolve } from 'node:path';
 import type { EventBus } from './events.js';
-import type { ToolCallBlock } from './types.js';
+import { writesWorkspace, type ToolCallBlock } from './types.js';
 
 /**
  * - ask: reads always pass; writes inside cwd pass; risky bash and writes outside cwd ask first
@@ -11,7 +11,7 @@ export type PermissionMode = 'ask' | 'auto' | 'readonly';
 
 export type Decision = { action: 'allow' } | { action: 'ask'; reason: string } | { action: 'deny'; reason: string };
 
-const READ_TOOLS = new Set(['read', 'grep', 'find', 'ls', 'web_search', 'web_fetch', 'office_read', 'diff', 'session_search', 'process_logs', 'process_list']);
+export const READ_TOOLS = new Set(['read', 'grep', 'find', 'ls', 'web_search', 'web_fetch', 'office_read', 'diff', 'session_search', 'process_logs', 'process_list']);
 const WRITE_TOOLS = new Set(['write', 'edit', 'office_write']);
 
 /** Commands that delete, rewrite history, publish, escalate, or run fetched code. */
@@ -195,8 +195,15 @@ export function installPermissionGate(
   const cwdNow = () => (typeof opts.cwd === 'function' ? opts.cwd() : opts.cwd);
   return events.on('before_tool', async ({ call, tool }) => {
     // plan mode vetoes ALL write-effect tools before rules can widen anything
-    if (opts.plan?.() && tool.writeEffect) {
+    if (opts.plan?.() && writesWorkspace(tool, call.input)) {
       return { block: true, reason: 'plan mode — research only; /plan off to execute' };
+    }
+    // delegating is not itself an effect: each of the sub-agent's calls passes this gate.
+    // Readonly mode still refuses a sub-agent that could write.
+    if (call.name === 'task') {
+      if (!writesWorkspace(tool, call.input)) return;
+      if (opts.mode() === 'readonly') return { block: true, reason: 'read-only mode: only read-only sub-agents (explore)' };
+      return;
     }
     const d = decide(opts.mode(), call, cwdNow(), opts.rules?.(), opts.extraDirs?.());
     if (d.action === 'allow') return;

@@ -6,6 +6,7 @@ the [README](../README.md).
 - [Get started](#get-started)
 - [Everyday workflows](#everyday-workflows)
   - [Sessions](#sessions)
+  - [Sub-agents the model starts itself](#sub-agents-the-model-starts-itself)
   - [Background work: /bg vs /subtask](#background-work-bg-vs-subtask)
   - [Worktrees](#worktrees)
   - [Time travel](#time-travel)
@@ -104,6 +105,31 @@ To move work between sessions, use `/handoff <session>` to send a brief of this 
 another one, or `/takeover <session>` to pull another session's work into this one. Neither
 command rewrites the other session's history.
 
+### Sub-agents the model starts itself
+
+For investigation the model can delegate on its own with the `task` tool. You don't type a
+command; you see a tool line such as `⚙ task explore · find where tokens are refreshed`, and
+when it ends, the sub-agent's report goes back to the model, which carries on from there.
+
+- `explore` is read-only. The model sends it to search the codebase, explain how something
+  works, review a change or research the web, so that dozens of file reads never fill your
+  session's context. It can run in the background: the model keeps working, and the report
+  arrives later. A `⑂ 后台 explore … 完成` notice tells you when.
+- `general` can edit files and run commands in your current directory. It goes through the
+  same permission prompts as the main session. In plan mode and `readonly` mode the model
+  can only use read-only sub-agents.
+
+To get a sub-agent, just ask ("use explore to find every caller of X", "review this diff with a
+sub-agent"). Each run is saved as its own session. They are hidden from the `/resume` list; the
+report line shows the session id, so `/resume <id>` opens the full run. `/agents subagent
+<model>` puts sub-agents on a cheaper model.
+
+Define your own in `config.json` with `subAgents`, for example a read-only reviewer with
+fixed rules. `/agents` lists them all. See README "Sub-agents: the task tool" for the fields.
+
+Pick `task` sub-agents for questions and reviews in the current checkout. Pick `/bg` or
+`/subtask` when the work should happen in a separate worktree while you keep going.
+
 ### Background work: /bg vs /subtask
 
 Both commands start a separate tango process in its own new git worktree (`bg-<id>`), so the
@@ -115,15 +141,18 @@ can be thrown away.
 | --- | --- | --- |
 | Use it for | A larger job you will check on later | A small, self-contained job whose result you want here |
 | Model | `subagent` role (`/bg --long` uses `longContext`) | `subagent` role |
-| Result | Its own session. Open it with `/resume` | A `⑂ subtask … 完成：…` summary added to **this** session |
-| Main session | Not touched | Gets the summary once the task ends, at the next idle moment |
+| Result | Its own session. Open it with `/resume` | Its final reply (up to 2000 characters) goes to the model in **this** session as a report |
+| When it ends | A `● 后台任务 … 完成` notice with the merge command | A `⑂ subtask … 完成` notice. The model reads the report at its next step, or with your next message if it is idle |
 
-Both kinds show up in `/tasks` with their status (`running`, `done`, `failed`, `stopped`)
-and session id. `/stop <id or name>` kills a running task.
+tango checks running tasks every 5 seconds, so the notice appears even if you are not typing.
+Both kinds also show up in `/tasks` with their status (`running`, `done`, `failed`,
+`stopped`) and session id. `/stop <id or name>` kills a running task.
 
 The task's file changes stay in its worktree. To bring them into your checkout, run
-`/worktree merge bg-<id>` (see below). Merging only picks up committed changes, so if the
-task left uncommitted edits, commit them in the worktree first. Set role models with
+`/worktree merge bg-<id>` (see below). Merging only picks up committed changes. The task is
+told to commit before it finishes; if it still left uncommitted edits, commit them in the
+worktree first. The worktree gets a `node_modules` link to your checkout's, so the task can
+run your tests and build. Set role models with
 `/agents subagent <model>` and `/agents longContext <model>`. Without them, the current
 model is used.
 
@@ -299,7 +328,7 @@ while a turn is running unless noted. `/help` prints a short list inside the TUI
 | Command | What it does |
 | --- | --- |
 | `/model [id]` | Switch model and save it as the default. Bare: open the model picker |
-| `/agents [role model]` | Show or set role models: `driver`, `subagent` (`/bg`, `/subtask`), `longContext` (`/bg --long`) |
+| `/agents [role model]` | Show or set role models: `driver`, `subagent` (`/bg`, `/subtask`, `task` sub-agents), `longContext` (`/bg --long`); also lists the `task` sub-agents |
 | `/mode [ask\|auto\|readonly]` | Show or set the permission mode |
 | `/plan` | Toggle plan mode: writes refused, the model produces a plan |
 | `/effort [low\|medium\|high\|off]` | Show or set reasoning effort for this session |
@@ -314,7 +343,7 @@ while a turn is running unless noted. `/help` prints a short list inside the TUI
 | --- | --- |
 | `/bg <prompt>` | Run a prompt in a new worktree as a detached background session |
 | `/bg --long <prompt>` | Same, on the `longContext` role model |
-| `/subtask <task>` | Run a small task in a new worktree. Its summary is written back into this session |
+| `/subtask <task>` | Run a small task in a new worktree. When it ends, its report goes to the model in this session |
 | `/tasks` | List background tasks with status and session id |
 | `/stop <id or name>` | Kill a running background task |
 | `/worktree` | List managed worktrees |

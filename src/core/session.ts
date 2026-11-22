@@ -12,6 +12,8 @@ export interface SessionMeta {
   /** git branch of the cwd at creation — session lists group/filter by it */
   branch?: string;
   forkOf?: { sessionId: string; entryIndex: number };
+  /** session that delegated this one (task tool): lists hide these sub-sessions */
+  parent?: string;
 }
 
 export interface SessionSummary extends SessionMeta {
@@ -65,12 +67,13 @@ export class SessionStore {
     name?: string,
     id?: string,
     clock?: () => Date,
-    branch?: string
+    branch?: string,
+    parent?: string
   ): Promise<SessionStore> {
     await mkdir(dir, { recursive: true });
     const store = new SessionStore(dir, id ?? randomUUID());
     if (clock) store.clock = clock;
-    await store.append({ kind: 'meta', id: store.id, createdAt: store.now(), cwd, name, branch });
+    await store.append({ kind: 'meta', id: store.id, createdAt: store.now(), cwd, name, branch, ...(parent ? { parent } : {}) });
     return store;
   }
 
@@ -83,7 +86,8 @@ export class SessionStore {
       createdAt: meta?.createdAt ?? this.now(),
       cwd: meta?.cwd ?? '',
       name,
-      branch: meta?.branch
+      branch: meta?.branch,
+      ...(meta?.parent ? { parent: meta.parent } : {})
     });
   }
 

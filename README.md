@@ -11,7 +11,7 @@ How to use it day to day: [docs/handbook.md](docs/handbook.md).
 
 Core loop is working: agent loop, JSONL sessions with compaction, Anthropic + OpenAI-compatible
 adapters, built-in tools (read / write / edit / bash / grep / find / ls / web_search / web_fetch /
-office_read / office_write / notify / diff / session_search / process_logs / process_stop / process_list), a permission gate, AGENTS.md + skills context assembly,
+office_read / office_write / notify / diff / session_search / process_logs / process_stop / process_list / task), a permission gate, AGENTS.md + skills context assembly,
 typed event bus, cost tracking with long-prompt price tiers, `/save-as-skill`, scheduled tasks
 (`tango task`) with Feishu webhook delivery, auto type diagnostics after edits, a JSONL
 serve protocol (`tango serve`), and a Rust TUI client (`tui/`) on top of it.
@@ -118,10 +118,19 @@ TUI commands: `/model`, `/agents`, `/resume`, `/new`, `/restart`, `/rename`, `/m
 - **/bg <prompt>** — a background prompt: fresh worktree + independent serve child; the task
   runs to completion (detached), its session lands in the shared sessions dir (`/tasks` shows
   status + session, `/stop` kills the process group). `/bg --long` uses the longContext role.
-- **/subtask <task>** — a subagent: a background task on the subagent role model whose final
-  summary is written back into THIS session (`⑂ subtask …`); main turns are never disturbed.
-- **/agents [role model]** — role-based routing: `driver` (live), `subagent` (/subtask, /bg),
-  `longContext` (/bg --long). Defaults to the current model.
+  Serve checks its tasks every 5 s and posts a notice when one ends, with the
+  `/worktree merge` hint. The child is told to commit before it finishes, since a merge only
+  carries commits.
+- **/subtask <task>** — a subagent: a background task on the subagent role model. When it ends,
+  its final reply (up to 2000 characters) goes into THIS session as a user message
+  `（subtask <name> 完成 · worktree …）`, so the model reads it as a report, not as its own words;
+  mid-turn it joins the running turn at the next model call.
+- New task worktrees get a `node_modules` symlink to the main checkout's (only when git ignores
+  `node_modules` there), so tests and builds run in them. Removing the worktree removes the link,
+  never the target.
+- **/agents [role model]** — role-based routing: `driver` (live), `subagent` (/subtask, /bg and
+  the `task` tool), `longContext` (/bg --long). Defaults to the current model. `/agents` also
+  lists the `task` sub-agents.
 - **/mcp** — MCP servers from config `mcpServers: {name: {command, args}}` (stdio JSON-RPC);
   tools bridge as `mcp_<server>_<tool>` (collision-suffixed), treated as write-effect
   (permission rules apply). Dead servers lazily reconnect on the next call (capped at 3
@@ -385,7 +394,8 @@ snapshot flags), `rewind`/`undo`/`redo` (time travel; refused while a turn runs)
 `tree` (session forking and ancestry), `handoff` / `takeover` (`session`, `note?` → `brief`; handoff also → `queueId`), `handoff_list` (→ `handoffs`), `handoff_cancel` (`queueId`), `find` (search all sessions incl. abandoned futures),
 `export` (md/html transcript file), `transcript` (raw text incl. orphans), `rename`, `recap`
 (tool-free one-line summary via `btw_stream`), `sessions`, `history`
-(flattened transcript with paired tool calls/results, latest 300 items by default), `save_skill`,
+(flattened transcript with paired tool calls/results, latest 300 items by default; `sessions` leaves out
+`task` sub-agent sessions), `save_skill`,
 `compact`, `status`. Prompts run one at a time; `interrupt`, `permission`, `set_mode` and `status`
 skip that queue so they land mid-turn. A client switches sessions by respawning the child with
 `TANGO_RESUME=<id or prefix>` (and optionally `TANGO_MODE`, `TANGO_MODEL`) in the environment —
@@ -417,7 +427,7 @@ reply data. Most of these also skip the prompt queue.
 | during a turn | `supplement` (`text`, `images`: adds to the running turn; the model sees it at its next step), `editlast` (`entryIndex` optional: interrupt, rewind to before that prompt, → its original text for re-editing) |
 | sessions | `session_preview` (`session` → `preview`), `session_rename` (`session`, `name`), `queue` (→ `running`, `queued`) |
 | memory and skills | `memory` (→ `text`, `path`), `remember` (`text`), `skills` (→ `skills`), `preset_save` / `preset_get` (`name`, `text`), `preset_list` (→ `presets`), `init` (`force`; writes AGENTS.md) |
-| models and agents | `agents_show` (→ `roles`, `driver`), `agents_set` (`role`, `model`) |
+| models and agents | `agents_show` (→ `roles`, `driver`, `subAgents`: name, readonly, model, description), `agents_set` (`role`, `model`) |
 | usage and diagnostics | `usage` / `stats` (requests and cost by model and session), `insights` (→ `path` of an HTML report), `doctor` (→ `checks`), `debug_zip` (→ `path`), `mcp_list` (→ `servers`), `plugins_list` (→ `plugins`) |
 
 ## TUI
@@ -569,6 +579,49 @@ China but can break if Bing changes its markup. Force one with `TANGO_SEARCH=bin
 decoding GBK pages correctly. It refuses binary content, stops at 5 MB and times out after 30 s.
 Both tools count as reads for permissions.
 
+## Sub-agents: the task tool
+
+`task` lets the model hand a focused job to a sub-agent with a fresh context: `agent` (default
+`explore`), `description` (a short label), `prompt` (the complete brief, since the sub-agent sees
+none of the conversation) and optional `background`. The sub-agent runs in the same process and
+cwd, and only its final reply comes back, as the tool result
+`[explore · session 1a2b3c4d]\n<report>` (capped at 20 000 characters). The system prompt tells
+the model to send `explore` for broad searches, code explanations, reviews and root-cause hunts.
+
+| agent | tools | use |
+| --- | --- | --- |
+| `explore` | read-only: `read`, `grep`, `find`, `ls`, `web_search`, `web_fetch`, `office_read`, `diff`, `session_search`, `process_logs`, `process_list` | investigation, review, research |
+| `general` | every tool except `task` | multi-step work that edits files or runs commands |
+| config `subAgents` | read-only or all, per `readonly` | your own, e.g. a reviewer with fixed rules |
+
+- **Permissions.** Sub-agents share the parent's mode, allow rules, extra directories and plan
+  state, and every call they make passes the same gate, so `ask` mode prompts for them the same
+  way. The `task` call itself never asks. In plan mode and `readonly` mode only read-only
+  sub-agents run. Tool hooks (`PreToolUse`, `PostToolUse`) apply to their calls; prompt and
+  `Stop` hooks don't. Checkpoints come from the parent's turn.
+- **No nesting.** Sub-agents have no `task` tool.
+- **Model.** The sub-agent's `model`, else `roles.subagent`, else the parent's current model.
+  Their cost is added to the session's.
+- **Sessions.** Each run is its own session named `task:<agent> <description>`, with
+  `parent: <session id>` in its meta. Session lists (`/resume` picker, `--sessions`,
+  `--continue`) hide them; `/resume <id>` opens one.
+- **Background.** `background: true` is allowed for read-only sub-agents only, at most 4 at a
+  time per session. The call returns `started background task t1 …` at once. The report arrives
+  as a user message `（后台任务 t1 · explore：<description> 完成 · session …）`: during a turn the
+  model sees it at its next step, otherwise at the next prompt. Serve posts a notice when one
+  finishes. Interrupting the turn does not stop background sub-agents.
+- **Custom sub-agents.** `subAgents` in `config.json`: `name` (`[\w.-]{1,40}`), `description`
+  (shown to the model), `instruction` (added to its system prompt), `model`, `readonly`. A
+  custom entry named `explore` or `general` replaces the built-in.
+
+```json
+{ "subAgents": [{ "name": "reviewer", "description": "strict code review of the current diff",
+  "instruction": "Flag every TODO and missing test.", "readonly": true }] }
+```
+
+Unlike `/bg` and `/subtask`, `task` sub-agents work in the current directory without a worktree,
+and the model starts them itself.
+
 ## Background processes
 
 `bash` with `background: true` starts the command detached in its own process group and returns
@@ -658,6 +711,7 @@ used as the literal key. Nothing is inferred. `tango --models` shows which varia
 | `extraDirs` | extra writable directories (trust-gated in project files) | `/add_dir` |
 | `hooks` | lifecycle hooks (see "Hooks"; trust-gated in project files) | edit |
 | `roles` | models for `driver`, `subagent`, `longContext` | `/agents` |
+| `subAgents` | named sub-agents for the `task` tool: `[{ "name", "description", "instruction", "model", "readonly" }]` (see "Sub-agents: the task tool") | edit |
 | `mcpServers` | MCP servers `{ name: { command, args, env } }` (trust-gated in project files) | edit |
 
 ### Project config and trust
@@ -700,6 +754,7 @@ src/core/
   models/       anthropic-messages + openai-completions adapters, presets, cost
   tools/        registry + read/write/edit/bash + grep/find/ls + web_search/web_fetch + notify + diff
                 + process_logs/process_stop/process_list (state in core/processes.ts)
+                + task (sub-agent delegation; host.ts runs the sub-agents)
                 office/ = office_read (zip + xml readers) + office_write (zip writer, docx/xlsx)
 src/host.ts     shared agent assembly for every host (REPL, serve, tasks)
 src/serve.ts    tango serve: JSONL protocol for external UIs (the TUI seam)

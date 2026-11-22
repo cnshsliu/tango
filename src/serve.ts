@@ -33,6 +33,7 @@ import type { ToolResult } from './core/types.js';
 import { describeSources, localFile, projectFile, readLayerJson, resolveConfig, setTrust, updateLocalConfig } from './core/project-config.js';
 import { buildTools, loadPluginHooks, openAgent, resolveSessionId, VERSION, type HostArgs, type PermState } from './host.js';
 import { diffTool } from './core/tools/diff.js';
+import { allSubAgents } from './core/tools/task.js';
 
 const nodeRequire = nodeCreateRequire(import.meta.url);
 
@@ -169,32 +170,56 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
   // /goal state: auto-continue until the model confirms the goal is done (cap: maxRounds)
   const goal = { text: null as string | null, paused: false, rounds: 0, maxRounds: 5 };
 
-  // pending subtask write-backs: checked lazily on each command, skipped while a turn runs (RF#4)
-  const subtasks: { taskId: string; name: string }[] = [];
+  // background tasks this serve started (/bg, /subtask): a poll notices when they end.
+  // /subtask results go back to the model as a user message; /bg only gets a notice.
+  const watched: { taskId: string; name: string; kind: 'bg' | 'subtask' }[] = [];
+  let checking = false;
   const checkSubtasks = async (): Promise<void> => {
-    if (promptInFlight || !subtasks.length) return;
-    const tasks = await reconcileTasks();
-    for (const pending of [...subtasks]) {
-      const t = tasks.find((x) => x.id === pending.taskId);
-      if (!t || t.status === 'running') continue;
-      subtasks.splice(subtasks.indexOf(pending), 1);
-      if (t.status === 'done' && t.sessionId) {
+    if (checking || !watched.length) return;
+    checking = true;
+    try {
+      const tasks = await reconcileTasks();
+      for (const pending of [...watched]) {
+        const t = tasks.find((x) => x.id === pending.taskId);
+        if (t && t.status === 'running') continue;
+        watched.splice(watched.indexOf(pending), 1);
+        const label = pending.kind === 'subtask' ? '⑂ subtask' : '● 后台任务';
+        if (!t || t.status !== 'done') {
+          out({ type: 'notice', text: `${label} ${pending.name} ${t?.status === 'stopped' ? '已停止' : '失败'}${t ? ` · 日志 ${t.logFile}` : ''}` });
+          continue;
+        }
+        const where = `worktree ${t.worktreeName}${t.sessionId ? ` · /resume ${t.sessionId.slice(0, 8)} 看全程` : ''}`;
+        if (pending.kind === 'bg') {
+          out({ type: 'notice', text: `${label} ${pending.name} 完成（${where} · /worktree merge ${t.worktreeName} 合并）` });
+          continue;
+        }
         try {
-          const sub = await SessionStore.open(sessionsDir(), t.sessionId);
-          const last = [...sub.allMessages()].reverse().find((m) => m.role === 'assistant' && m.content.some((b) => b.type === 'text'));
-          const text = last?.content.filter((b) => b.type === 'text').map((b) => (b as { text: string }).text).join('') ?? '';
-          const summary = text.trim().split('\n').filter(Boolean).slice(-6).join(' ').slice(0, 500);
-          await store.appendMessage({
-            role: 'assistant',
-            content: [{ type: 'text', text: `⑂ subtask ${pending.name} 完成：${summary}` }]
-          });
-          out({ type: 'notice', text: `⑂ subtask ${pending.name} 完成（worktree ${t.worktreeName} · /resume ${t.sessionId} 看全程）` });
-        } catch {}
-      } else {
-        out({ type: 'notice', text: `⑂ subtask ${pending.name} ${t.status === 'failed' ? '失败' : '停止'}` });
+          const sub = t.sessionId ? await SessionStore.open(sessionsDir(), t.sessionId) : undefined;
+          const last = sub && [...sub.allMessages()].reverse().find((m) => m.role === 'assistant' && m.content.some((b) => b.type === 'text'));
+          const text = (last?.content ?? []).map((b) => (b.type === 'text' ? b.text : '')).join('').trim();
+          const report = text.length > 2000 ? text.slice(0, 2000) + '…' : text;
+          await agent.deliver(`（subtask ${pending.name} 完成 · ${where}）\n${report || '（没有留下总结）'}`);
+          out({ type: 'notice', text: `${label} ${pending.name} 完成（${where}）· 报告已交给模型` });
+        } catch (e: any) {
+          out({ type: 'notice', text: `${label} ${pending.name} 完成，但读取报告失败：${e?.message ?? e}` });
+        }
       }
+    } finally {
+      checking = false;
     }
   };
+  // poll while something is watched; unref'd so it never keeps an EOF'd serve alive
+  const watchTimer = setInterval(() => void checkSubtasks(), 5000);
+  watchTimer.unref();
+
+  // in-process `task` sub-agents (core/tools/task.ts): cost joins the session total;
+  // background ones announce themselves (their report is already in the session)
+  agent.events.on('task_done', (e) => {
+    sessionCostUsd += e.costUsd;
+    if (!e.background) return;
+    const tail = agent.busy ? '报告已交给模型' : '报告已写入会话，下一条消息时模型会读到';
+    out({ type: 'notice', text: `⑂ 后台 ${e.agent} ${e.id}「${e.description}」${e.ok ? '完成' : '失败'} · ${tail} · /resume ${e.sessionId.slice(0, 8)} 看全程` });
+  });
 
   // /loop state: interval-repeated prompt; off/interrupt/EOF must stop the timer chain
   const loop = { timer: null as NodeJS.Timeout | null, everySec: 0, prompt: '' };
@@ -808,13 +833,13 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
         try {
           const roles = (await effectiveConfig()).config.roles;
           const task = await startBgTask({
-            prompt: `${prompt}\n\n（你是子代理：在当前目录独立完成这个小任务，最后一句话总结你做了什么。）`,
+            prompt: `${prompt}\n\n（你是子代理：在当前目录独立完成这个小任务。结束前用 git 提交你的改动（主会话只能合并已提交的内容），最后写一段完整总结：做了什么、改了哪些文件、验证结果。）`,
             name: String(cmd.name ?? ''),
             roleModel: roles?.subagent,
             mainCwd: cwd,
             currentModel: agent.model.id
           });
-          subtasks.push({ taskId: task.id, name: task.name || task.worktreeName });
+          watched.push({ taskId: task.id, name: task.name || task.worktreeName, kind: 'subtask' });
           reply(cmd, true, { task });
         } catch (e: any) {
           reply(cmd, false, undefined, String(e?.message ?? e));
@@ -823,7 +848,12 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
       }
       case 'agents_show': {
         const cfg0 = (await effectiveConfig()).config;
-        reply(cmd, true, { roles: cfg0.roles ?? {}, driver: agent.model.id });
+        const custom = Array.isArray(cfg0.subAgents) ? cfg0.subAgents : [];
+        reply(cmd, true, {
+          roles: cfg0.roles ?? {},
+          driver: agent.model.id,
+          subAgents: allSubAgents(custom).map((d) => ({ name: d.name, readonly: !!d.readonly, model: d.model ?? '', description: d.description ?? '' }))
+        });
         return;
       }
       case 'agents_set': {
@@ -859,12 +889,13 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
           const roles = (await effectiveConfig()).config.roles;
           const roleModel = cmd.long === true ? roles?.longContext : roles?.subagent;
           const task = await startBgTask({
-            prompt,
+            prompt: `${prompt}\n\n（这是后台任务，运行在独立 worktree 里。结束前用 git 提交你的改动，否则合并时带不过去。）`,
             name: String(cmd.name ?? ''),
             roleModel,
             mainCwd: cwd,
             currentModel: agent.model.id
           });
+          watched.push({ taskId: task.id, name: task.name || task.worktreeName, kind: 'bg' });
           reply(cmd, true, { task });
         } catch (e: any) {
           reply(cmd, false, undefined, String(e?.message ?? e));
@@ -1350,7 +1381,8 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
         return;
       }
       case 'sessions': {
-        const list = await SessionStore.list(sessionsDir());
+        // task sub-agent sessions stay out of the picker (/resume <id> still opens them)
+        const list = (await SessionStore.list(sessionsDir())).filter((x) => !x.parent);
         reply(cmd, true, {
           sessions: list.slice(0, 40).map((s) => ({
             id: s.id,

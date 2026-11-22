@@ -346,7 +346,7 @@ async function interactive(agent: Agent, store: SessionStore, resolved: Resolved
         return true;
       }
       case 'sessions':
-        printSessions(await SessionStore.list(sessionsDir()));
+        printSessions((await SessionStore.list(sessionsDir())).filter((x) => !x.parent));
         return true;
       case 'compact': {
         const ok = await agent.compact();
@@ -526,7 +526,7 @@ async function launchTui(args: Args): Promise<void> {
   env.TANGO_BIN ??= `${process.execPath} ${join(root, 'bin', 'tango.js')}`;
   if (args.resume) env.TANGO_RESUME = args.resume;
   else if (args.continue) {
-    const [latest] = await SessionStore.list(sessionsDir());
+    const [latest] = (await SessionStore.list(sessionsDir())).filter((x) => !x.parent);
     if (!latest) throw new Error('no sessions to continue yet');
     env.TANGO_RESUME = latest.id;
   }
@@ -547,7 +547,7 @@ async function main(): Promise<void> {
   if (args.help) return console.log(HELP);
 
   if (args.listModels) return printModels(await loadModels(), (await loadConfig()).model);
-  if (args.listSessions) return printSessions(await SessionStore.list(sessionsDir()));
+  if (args.listSessions) return printSessions((await SessionStore.list(sessionsDir())).filter((x) => !x.parent));
 
   if (args.yes && args.readonly) throw new Error('--yes and --readonly cannot be combined');
   if (args.serve) return serveStdio(args);

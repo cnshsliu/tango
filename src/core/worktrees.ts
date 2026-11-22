@@ -4,7 +4,7 @@
  * Layout: ~/.tango/worktrees/<name>/ on branch tango/<name>, registered in worktrees.json.
  */
 import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, lstatSync, symlinkSync, unlinkSync } from 'node:fs';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tangoDir } from './config.js';
@@ -54,9 +54,33 @@ export async function worktreeCreate(cwd: string, name: string, base?: string): 
   const branch = `tango/${name}`;
   const r = git(cwd, ['worktree', 'add', '-b', branch, path, base ?? 'HEAD']);
   if (!r.ok) throw new Error(`git worktree add: ${r.err || r.out}`);
+  linkDependencies(cwd, path);
   const entry = { name, path, branch, createdAt: new Date().toISOString() };
   await writeRegistry([...entries, entry]);
   return entry;
+}
+
+/**
+ * A fresh checkout has no installed dependencies, so tests and builds can't run there.
+ * Symlink the main checkout's top-level node_modules in, but only when git ignores it there
+ * (otherwise a commit-everything step would commit the link). Best effort: never fails create.
+ */
+export function linkDependencies(cwd: string, worktree: string): boolean {
+  try {
+    const top = git(cwd, ['rev-parse', '--show-toplevel']);
+    if (!top.ok) return false;
+    const source = join(top.out, 'node_modules');
+    const link = join(worktree, 'node_modules');
+    if (!existsSync(source) || existsSync(link)) return false;
+    symlinkSync(source, link, 'dir');
+    if (!git(worktree, ['check-ignore', '-q', 'node_modules']).ok) {
+      unlinkSync(link); // not ignored: an untracked link would show up in status and commits
+      return false;
+    }
+    return lstatSync(link).isSymbolicLink();
+  } catch {
+    return false;
+  }
 }
 
 export async function worktreeList(): Promise<(WorktreeEntry & { dirty: number })[]> {

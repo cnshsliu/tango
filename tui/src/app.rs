@@ -2754,6 +2754,14 @@ impl App {
     /// One-dimension summary of a tool call for its status line.
     fn call_summary(input: &Value) -> String {
         let m = input.as_object();
+        // task sub-agents: `explore · find the auth middleware` (+ ` · 后台`)
+        if let Some(desc) = m.and_then(|o| o.get("description")).and_then(|v| v.as_str())
+            && m.is_some_and(|o| o.contains_key("prompt"))
+        {
+            let agent = input["agent"].as_str().unwrap_or("explore");
+            let bg = if input["background"].as_bool() == Some(true) { " · 后台" } else { "" };
+            return format!("{agent} · {}{bg}", desc.chars().take(200).collect::<String>());
+        }
         let detail = ["command", "path", "url", "query", "pattern"]
             .iter()
             .find_map(|k| m.and_then(|o| o.get(*k)).and_then(|v| v.as_str()))
@@ -7449,7 +7457,7 @@ impl App {
                             let t = &d["task"];
                             self.push(
                                 format!(
-                                    "● 后台任务 {} 已启动（worktree 隔离）· /tasks 查看",
+                                    "● 后台任务 {} 已启动（worktree 隔离）· 完成时会提示 · /tasks 查看",
                                     t["id"].as_str().unwrap_or("?")
                                 ),
                                 Tone::Success,
@@ -7498,12 +7506,23 @@ impl App {
                             let get = |k: &str| d["roles"][k].as_str().unwrap_or(driver);
                             for (role, note) in [
                                 ("driver", "主会话（立即生效）"),
-                                ("subagent", "/subtask 与 /bg 默认"),
+                                ("subagent", "/subtask、/bg 与 task 工具默认"),
                                 ("longContext", "/bg --long 长上下文"),
                             ] {
                                 text.push_str(&format!("  {role:<12} {} · {note}\n", get(role)));
                             }
-                            text.push_str("\n/agents <role> <model> 设置");
+                            text.push_str("\n/agents <role> <model> 设置\n\n子 agent（模型用 task 工具派活）：\n\n");
+                            for a in d["subAgents"].as_array().into_iter().flatten() {
+                                let model = a["model"].as_str().filter(|m| !m.is_empty());
+                                text.push_str(&format!(
+                                    "  {:<12} {}{} · {}\n",
+                                    a["name"].as_str().unwrap_or("?"),
+                                    if a["readonly"].as_bool() == Some(true) { "只读" } else { "可写" },
+                                    model.map(|m| format!(" · {m}")).unwrap_or_default(),
+                                    a["description"].as_str().unwrap_or("")
+                                ));
+                            }
+                            text.push_str("\nconfig.json 的 subAgents 可自定义");
                             self.viewer = Some(Viewer::read_only("agents", text));
                         }
                         (Pending::AgentsSet, true) => {
@@ -7513,7 +7532,7 @@ impl App {
                             let t = &d["task"];
                             self.push(
                                 format!(
-                                    "⑂ 子代理 {} 已派出（独立 worktree）· 摘要将写回本会话",
+                                    "⑂ 子代理 {} 已派出（独立 worktree）· 完成后报告交给模型",
                                     t["id"].as_str().unwrap_or("?")
                                 ),
                                 Tone::Success,
@@ -9651,6 +9670,22 @@ mod tests {
 
     use super::*;
     use std::collections::BTreeSet;
+
+    #[test]
+    fn task_calls_summarize_as_agent_and_description() {
+        let s = |v: serde_json::Value| App::call_summary(&v);
+        assert_eq!(
+            s(serde_json::json!({"agent": "explore", "description": "find auth", "prompt": "long brief"})),
+            "explore · find auth"
+        );
+        // agent defaults to explore; background is marked
+        assert_eq!(
+            s(serde_json::json!({"description": "scan", "prompt": "p", "background": true})),
+            "explore · scan · 后台"
+        );
+        // other tools keep their usual summary
+        assert_eq!(s(serde_json::json!({"path": "a.ts"})), "a.ts");
+    }
 
     #[test]
     fn retained_chat_lines_use_semantic_tones() {

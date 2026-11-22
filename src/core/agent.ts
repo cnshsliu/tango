@@ -72,7 +72,7 @@ export class Agent {
   /** transient system-prompt suffix (plan mode) — never persisted into history */
   systemSuffix?: string;
   /** mid-turn supplements (Alt+Enter): appended as user messages before the next model call */
-  private supplements: { text: string; images?: ImageBlock[] }[] = [];
+  private supplements: { text: string; images?: ImageBlock[]; raw?: boolean }[] = [];
   private readonly maxTurns: number;
   /** auto-compact threshold as a share of the context window; 0 disables (/autocompact) */
   compactAt: number;
@@ -99,13 +99,32 @@ export class Agent {
     }
   }
 
+  /** true while prompt() runs */
+  get busy(): boolean {
+    return this.controller !== undefined;
+  }
+
+  /**
+   * A report from outside the turn (background task, /subtask) for the model to read:
+   * mid-turn it rides the next request like a supplement; idle, it is stored now and the
+   * next prompt carries it. Always a user message: the model must not take it for its own words.
+   */
+  async deliver(text: string): Promise<'supplement' | 'stored'> {
+    if (this.busy) {
+      this.supplements.push({ text, raw: true });
+      return 'supplement';
+    }
+    await this.store.appendMessage({ role: 'user', content: [{ type: 'text', text }] });
+    return 'stored';
+  }
+
   /** flush pending supplements into the session as user messages */
   private async flushSupplements(): Promise<void> {
     while (this.supplements.length) {
       const s = this.supplements.shift()!;
       await this.store.appendMessage({
         role: 'user',
-        content: [{ type: 'text', text: `（补充）${s.text}` }, ...(s.images ?? [])]
+        content: [{ type: 'text', text: s.raw ? s.text : `（补充）${s.text}` }, ...(s.images ?? [])]
       });
     }
   }
@@ -194,8 +213,10 @@ export class Agent {
       await this.events.emit('error', { error: e instanceof Error ? e : new Error(String(e)) });
       throw e;
     } finally {
-      await this.events.emit('prompt_end', {});
       this.controller = undefined;
+      // anything that arrived during the final model call lands now, not after the next prompt
+      await this.flushSupplements().catch(() => {});
+      await this.events.emit('prompt_end', {});
     }
   }
 
