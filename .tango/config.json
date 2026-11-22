@@ -1,10 +1,14 @@
 {
   "hooks": {
+    "UserPromptSubmit": [
+      { "command": "node \"$TANGO_PROJECT_DIR/scripts/hooks/docs-guard.mjs\"", "timeout": 10 }
+    ],
     "PostToolUse": [
       { "matcher": "edit|write", "command": "node \"$TANGO_PROJECT_DIR/scripts/hooks/hook-guard.mjs\"", "timeout": 10 }
     ],
     "Stop": [
-      { "command": "node \"$TANGO_PROJECT_DIR/scripts/hooks/hook-guard.mjs\"", "timeout": 120 }
+      { "command": "node \"$TANGO_PROJECT_DIR/scripts/hooks/hook-guard.mjs\"", "timeout": 120 },
+      { "command": "node \"$TANGO_PROJECT_DIR/scripts/hooks/docs-guard.mjs\"", "timeout": 30 }
     ]
   }
 }

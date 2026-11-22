@@ -78,7 +78,24 @@ tango -m <model> -y    TUI options: model, auto mode (or --readonly)
 tango [prompt...]      run one prompt and exit (also when stdin is a pipe)
 tango --models         list models   tango --sessions   list sessions   --cwd <dir>
 tango repl             line-mode REPL — dev fallback, not the product
+tango tui              start the Rust TUI from node (dev; TANGO_TUI=<path> picks the binary)
+tango serve            JSONL protocol on stdin/stdout for UIs (see "Serve protocol")
+tango task list        scheduled tasks (also `tango task` alone)
+tango task add <name> <interval> <prompt...> [--mode auto|readonly]
+tango task rm <name>   delete a task
+tango task run [--loop]  run due tasks once, or keep running as a daemon
 ```
+
+| flag | short | meaning |
+| --- | --- | --- |
+| `--continue` | `-c` | continue the most recent session |
+| `--resume <id>` | `-r` | continue a given session (id or prefix) |
+| `--model <id>` | `-m` | model for this run |
+| `--yes` | `-y` | auto mode: tools run without asking |
+| `--readonly` | | no writes, no bash |
+| `--cwd <dir>` | | working directory for the session |
+| `--models` / `--sessions` | | list models with key status / list sessions |
+| `--help` / `--version` | `-h` / `-V` | usage / version |
 
 TUI commands: `/model`, `/agents`, `/resume`, `/new`, `/restart`, `/rename`, `/mode`, `/plan`, `/goal`,
 `/loop`, `/effort`, `/review`, `/security-review`, `/bg`, `/tasks`, `/stop`, `/subtask`,
@@ -343,6 +360,30 @@ window/tokens + running cost) → `result` (per command). Side questions use req
 work too. This is the seam the TUI —
 and later web/IDE shells — plug into; the core never knows which face is attached.
 
+Other frames: `notice` (a chat-line message such as a skipped config file or goal status),
+`error` (a failed command without a request id; `fatal: true` when serve cannot start), and
+`trust_request` (`root`, `keys`, `files`: the project's config has trust-gated keys and no
+decision yet; answer with `set_trust`).
+
+The remaining commands, grouped. Fields in parentheses are the command's inputs; `→` names the
+reply data. Most of these also skip the prompt queue.
+
+| group | commands |
+| --- | --- |
+| settings | `set_effort` (`level`), `set_plan` (`on`), `set_autocompact` (`value`, 0 = off), `set_statusline` (`template`, null clears), `set_bubble` (`bubble`), `set_animations` (`animations`) |
+| config and trust | `config_show` (→ merged `config`, `sources`, `line`), `trust_status` (→ `root`, `trusted`, `gated`, `line`), `set_trust` (`trusted` → `reload`: restart serve to apply) |
+| permissions | `permissions_list` (→ `allow` with each rule's layer), `permissions_add` / `permissions_remove` (`rule` → `allow`, `path` of the file written), `import` (`source`: claude-code, grok or codex; `path` → `imported`, `skipped`) |
+| directories | `cd` (`dir` → `cwd`), `pwd` (→ `cwd`), `add_dir` (`dir` → `extraDirs`, `path`) |
+| background work | `bg` (`prompt`, `name`, `long`), `subtask` (`prompt`, `name`; runs in its own worktree), `tasks` (→ `tasks`), `stop_task` (task `id`) |
+| worktrees | `worktree_create` (`name`, `base`), `worktree_list`, `worktree_merge` (`name`), `worktree_remove` (`name`, `force`) |
+| goals | `goal` (`op`, `text`; → `goal`, `paused`, `maxRounds`), `loop` (`prompt`, `everySec`, or `off`) |
+| review | `review` (reviews the working-tree diff), `security_review` (`paths`) |
+| during a turn | `supplement` (`text`, `images`: adds to the running turn; the model sees it at its next step), `editlast` (`entryIndex` optional: interrupt, rewind to before that prompt, → its original text for re-editing) |
+| sessions | `session_preview` (`session` → `preview`), `session_rename` (`session`, `name`), `queue` (→ `running`, `queued`) |
+| memory and skills | `memory` (→ `text`, `path`), `remember` (`text`), `skills` (→ `skills`), `preset_save` / `preset_get` (`name`, `text`), `preset_list` (→ `presets`), `init` (`force`; writes AGENTS.md) |
+| models and agents | `agents_show` (→ `roles`, `driver`), `agents_set` (`role`, `model`) |
+| usage and diagnostics | `usage` / `stats` (requests and cost by model and session), `insights` (→ `path` of an HTML report), `doctor` (→ `checks`), `debug_zip` (→ `path`), `mcp_list` (→ `servers`), `plugins_list` (→ `plugins`) |
+
 ## TUI
 
 `tui/` holds the Rust client (ratatui + crossterm): `cargo build --release` in `tui/`, then run
@@ -432,7 +473,7 @@ cursor between logical lines (arrow keys still scroll chat). `/` and `@` return 
 nothing. Ctrl+S submits the complete draft in either mode (and in non-Vim mode); NORMAL `:wq` and
 `:wqa` also submit. Entering `:` expands the input by one row: the draft stays visible above and
 the command has its own bottom line. Esc cancels that line without clearing the draft. The optional `keys`
-object remaps `expandTools`, `newline`, `interrupt`, `clearInput`,
+object remaps `expandTools`, `editLast` (Alt+E: interrupt and edit the last prompt), `newline`, `interrupt`, `clearInput`,
 `scrollUp`, `scrollDown`, `pageUp`, `pageDown`, `promptPrev`, and `promptNext`, using values such as `ctrl+u` or `alt+enter`.
 Unknown actions, keys, and editor values fall back to defaults. Ctrl+C always remains a safe
 interrupt/clear binding even when `interrupt` is remapped. Example:
@@ -513,6 +554,30 @@ All user state lives in `~/.tango/` (override with `TANGO_HOME`):
 letters, digits and underscores (`"DEEPSEEK_API_KEY"`) is read from that variable; anything else is
 used as the literal key. Nothing is inferred. `tango --models` shows which variable each preset reads.
 
+### `config.json` keys
+
+| key | what it does | set by |
+| --- | --- | --- |
+| `model` | default model id | `/model <id>` |
+| `feishuWebhook` | Feishu/Lark bot webhook for `notify` and scheduled tasks (global file only) | edit |
+| `theme` | `dark`, `light` or `auto` (from `COLORFGBG`) | `/theme` |
+| `mouse` | mouse capture; `false` keeps native selection (default `true`) | `/mouse` |
+| `animations` | busy-rule, thinking and splash motion (default `true`) | `/animations` |
+| `bubble` | user messages as right-aligned bubbles (default `true`) or full width | `/bubble` |
+| `editor` | `default` or `vim` input editing | `/vim` |
+| `keys` | remap TUI actions, e.g. `{ "expandTools": "ctrl+u" }` (see "TUI") | edit |
+| `nvimViewer` | `ask` or `readonly`: how Neovim opens read-only views | Neovim picker |
+| `checkpoint` | `off` disables per-turn workspace snapshots (default on) | edit |
+| `autocompact` | compact when context passes this share of the window (default `0.75`); `off` disables | `/autocompact` |
+| `maxTurns` | model round-trips per prompt before tango stops the loop (1-500, default 64) | edit |
+| `warming` | keep prompt caches warm: `true` or `{ "interval": 240, "duration": 1800 }` (see "Session warming") | edit |
+| `statusline` | status bar template with `{model} {mode} {cost} {ctx} {pct} {session} {tokens}` | `/statusline` |
+| `permissions` | `{ "allow": [rules] }` (see "Permissions rules"; trust-gated in project files) | `/permissions add` |
+| `extraDirs` | extra writable directories (trust-gated in project files) | `/add_dir` |
+| `hooks` | lifecycle hooks (see "Hooks"; trust-gated in project files) | edit |
+| `roles` | models for `driver`, `subagent`, `longContext` | `/agents` |
+| `mcpServers` | MCP servers `{ name: { command, args, env } }` (trust-gated in project files) | edit |
+
 ### Project config and trust
 
 A session merges up to three config files, lowest first:
@@ -574,6 +639,21 @@ npm test            # test:ts (node) + test:tui (cargo test in tui/)
 `npm test` needs a Rust toolchain because `test:tui` runs `cargo test` in `tui/`. Among those
 tests is the slash-command sync check: TUI handlers, `/help`, `docs/handbook.md` and the command
 list above must agree. Use `npm run test:ts` for the TypeScript tests alone.
+
+### Docs coverage
+
+Docs are part of every feature: other agents may compare tango by reading these docs alone.
+`node scripts/docs-check.mjs` reads the source and lists every tool, CLI flag and subcommand,
+config key, serve command and frame, env var, hook event and TUI key action that the docs
+don't name (in backticks or a code block, in the section it belongs to). Slash commands are
+checked by a cargo test against `SLASH`, the handbook reference and the list above.
+`tests/docs-guard.test.ts` keeps coverage at zero gaps.
+
+In this repo `scripts/hooks/docs-guard.mjs` also runs as project hooks (`.tango/config.json`).
+`UserPromptSubmit` records where the turn started. At `Stop`, if the turn changed code under
+`src/`, `tui/src/`, `scripts/` or `bin/`, it sends the model back while coverage has gaps, and
+once more if no doc file (`README.md`, `AGENTS.md`, `docs/*.md` outside `docs/notes/`) changed.
+After that one reminder the model may finish, for example by saying nothing user-visible changed.
 
 ### Adding a hook event
 
