@@ -1189,7 +1189,10 @@ test('permissions: add/list/remove rules take effect live', async () => {
     s.send({ id: 201, cmd: 'permissions_add', rule: 'bash:rm' });
     const add = await s.until((f: any) => f.type === 'result' && f.id === 201, 'add');
     assert.ok(add.ok);
-    assert.deepEqual(JSON.parse(await readFile(join(home, 'config.json'), 'utf8')).permissions.allow, ['bash:rm']);
+    // a project session writes rules to the project's personal file, not the global one
+    assert.ok(String(add.data.path).endsWith(join('.tango', 'config.local.json')), add.data.path);
+    assert.deepEqual(JSON.parse(await readFile(join(work, '.tango', 'config.local.json'), 'utf8')).permissions.allow, ['bash:rm']);
+    assert.ok(!existsSync(join(home, 'config.json')), 'global config untouched');
 
     s.send({ id: 202, cmd: 'permissions_list' });
     const list = await s.until((f: any) => f.type === 'result' && f.id === 202, 'list');
@@ -1244,7 +1247,7 @@ test('import: maps Claude Code allowed-tools into rules, skips unmappable entrie
     assert.ok(imp.data.imported.includes('path:src'));
     assert.ok(imp.data.imported.includes('tool:web_fetch'));
     assert.ok(imp.data.skipped.some((x: any) => String(x.raw).startsWith('Dangerous')), 'unmappable reported, not silent');
-    const cfg = JSON.parse(await readFile(join(home, 'config.json'), 'utf8'));
+    const cfg = JSON.parse(await readFile(join(work, '.tango', 'config.local.json'), 'utf8'));
     assert.deepEqual(cfg.permissions.allow, imp.data.imported);
 
     // missing source file → readable error
@@ -1303,7 +1306,7 @@ test('cd/pwd/add_dir/config_show: cwd moves live and extra dirs allow writes', a
     s.send({ id: 203, cmd: 'add_dir', dir: extra });
     const ad = await s.until((f: any) => f.type === 'result' && f.id === 203, 'add_dir');
     assert.ok(ad.ok);
-    assert.deepEqual(JSON.parse(await readFile(join(home, 'config.json'), 'utf8')).extraDirs, [extra]);
+    assert.deepEqual(JSON.parse(await readFile(join(work, '.tango', 'config.local.json'), 'utf8')).extraDirs, [extra]);
     target = join(extra, 'b.txt');
     s.send({ id: 101, cmd: 'prompt', text: 'write into extra dir' });
     const r2 = await s.until((f: any) => f.type === 'result' && f.id === 101, 'turn2');
@@ -1316,6 +1319,8 @@ test('cd/pwd/add_dir/config_show: cwd moves live and extra dirs allow writes', a
     assert.ok(cfg.ok);
     assert.ok(cfg.data.path.includes('config.json'));
     assert.ok(Array.isArray(cfg.data.config.extraDirs));
+    assert.deepEqual(cfg.data.sources.map((x: any) => x.scope), ['global', 'project', 'local']);
+    assert.match(cfg.data.line, /个人 ✓/);
   } finally {
     s.child.kill();
     mock.server.close();

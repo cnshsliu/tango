@@ -8,10 +8,11 @@ import { join } from 'node:path';
  */
 import { Agent } from './core/agent.js';
 import { checkpointEnabled, installCheckpoints } from './core/checkpoint.js';
-import { keyProblem, loadConfig, loadModels, pickModel, sessionsDir, tangoDir } from './core/config.js';
+import { keyProblem, loadModels, pickModel, sessionsDir, tangoDir } from './core/config.js';
 import { installDiagnostics } from './core/diagnostics.js';
 import { EventBus } from './core/events.js';
 import { mergeHookConfigs, runHooks, type HookConfig } from './core/hooks.js';
+import { resolveConfig, type Resolved } from './core/project-config.js';
 import { installPermissionGate, parseRule, type AllowRule, type AskFn, type PermissionMode } from './core/permissions.js';
 import { SessionStore } from './core/session.js';
 import { ToolRegistry } from './core/tools/registry.js';
@@ -103,10 +104,10 @@ export function loadPluginHooks(): {
 }
 
 /** Wire PreToolUse / PostToolUse / UserPromptSubmit / Stop hooks onto the event bus. */
-function installLifecycleHooks(events: EventBus, hooks: HookConfig, ctx: { cwd: () => string; sessionId: () => string }): void {
+function installLifecycleHooks(events: EventBus, hooks: HookConfig, ctx: { cwd: () => string; sessionId: () => string; projectDir?: string }): void {
   const base = () => ({ session_id: ctx.sessionId(), cwd: ctx.cwd() });
   const run = (ev: keyof HookConfig, payload: Record<string, unknown>, tool?: string) =>
-    runHooks(hooks, ev, { ...base(), ...payload }, { cwd: ctx.cwd(), tool });
+    runHooks(hooks, ev, { ...base(), ...payload }, { cwd: ctx.cwd(), tool, projectDir: ctx.projectDir ?? ctx.cwd() });
   if (hooks.PreToolUse) {
     events.on('before_tool', async ({ call, tool }) => {
       const r = await run('PreToolUse', { tool_name: tool.name, tool_input: call.input }, tool.name);
@@ -136,7 +137,7 @@ function installLifecycleHooks(events: EventBus, hooks: HookConfig, ctx: { cwd: 
   }
 }
 
-export function makeAgent(model: ModelSpec, store: SessionStore, cwd: string, perm: PermState, cfg: { checkpoint?: string; permissions?: { allow: string[] }; extraDirs?: string[]; hooks?: { beforeTool?: string; afterTool?: string } & Record<string, unknown>; maxTurns?: number } = {}): Agent {
+export function makeAgent(model: ModelSpec, store: SessionStore, cwd: string, perm: PermState, cfg: { checkpoint?: string; permissions?: { allow: string[] }; extraDirs?: string[]; hooks?: { beforeTool?: string; afterTool?: string } & Record<string, unknown>; maxTurns?: number; projectDir?: string } = {}): Agent {
   const events = new EventBus();
   // gate first: a vetoed call is never announced as running
   const rules = perm.rules ?? { allow: cfg.permissions?.allow ? [...cfg.permissions.allow] : [] };
@@ -158,6 +159,7 @@ export function makeAgent(model: ModelSpec, store: SessionStore, cwd: string, pe
   // lifecycle hooks before the gate: a policy hook can refuse a call before anyone is asked
   installLifecycleHooks(events, mergeHookConfigs([cfg.hooks, ...plugins.lifecycle]), {
     cwd: () => agent.cwd,
+    projectDir: cfg.projectDir,
     sessionId: () => store.id
   });
   installPermissionGate(events, {
@@ -207,13 +209,11 @@ export interface Opened {
   cwd: string;
   /** why the current model can't be called right now (missing key); the host decides how to show it */
   warning?: string;
+  /** the layered config this session was assembled from (resolved once, for the session cwd) */
+  resolved: Resolved;
 }
 
 export async function openAgent(args: HostArgs, perm: PermState): Promise<Opened> {
-  const cfg = await loadConfig();
-  const models = await loadModels();
-  const model = pickModel(models, cfg, args.model);
-
   let store: SessionStore;
   if (args.resume) {
     store = await SessionStore.open(sessionsDir(), await resolveSessionId(args.resume));
@@ -230,9 +230,14 @@ export async function openAgent(args: HostArgs, perm: PermState): Promise<Opened
   }
 
   const cwd = args.cwd ?? store.meta()?.cwd ?? process.cwd();
+  // config depends on where the session runs: global, then that project's layers
+  const resolved = await resolveConfig(cwd);
+  const cfg = resolved.config;
+  const models = await loadModels();
+  const model = pickModel(models, cfg, args.model);
   // honour a model switch made earlier in a resumed session unless the user asked explicitly
   const stored = !args.model && !cfg.model ? store.lastModel() : undefined;
   const effective = stored ? models.find((m) => m.id === stored) ?? model : model;
-  const agent = makeAgent(effective, store, cwd, perm, cfg);
-  return { agent, store, cwd, warning: keyProblem(effective) };
+  const agent = makeAgent(effective, store, cwd, perm, { ...cfg, projectDir: resolved.project?.root });
+  return { agent, store, cwd, warning: keyProblem(effective), resolved };
 }

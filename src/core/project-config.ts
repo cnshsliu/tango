@@ -247,3 +247,8 @@ export function describeSources(r: Resolved): string {
   }
   return `配置：${parts.join(' · ')}`;
 }
+
+/** One layer file as-is (no stripping), for callers that edit or attribute rules. */
+export async function readLayerJson(path: string): Promise<{ cfg?: Config; error?: string }> {
+  return readLayer(path);
+}

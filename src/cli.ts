@@ -19,6 +19,7 @@ import { listDrafts, promoteDraft, saveDraft } from './core/skills.js';
 import { keyEnvName } from './core/models/util.js';
 import { groupModels } from './core/models/registry.js';
 import { SessionStore, type SessionSummary } from './core/session.js';
+import { resolveConfig } from './core/project-config.js';
 import type { AskFn, PermissionMode } from './core/permissions.js';
 import { addTask, daemonLoop, feishuWebhook, lastRunAt, loadTasks, parseInterval, removeTask, runDueOnce, sendFeishu, summarizeOutput } from './core/scheduler.js';
 import type { Message, ModelSpec, ToolCallBlock } from './core/types.js';
@@ -181,7 +182,7 @@ function textOf(m: Message): string {
 }
 
 /** host.makeAgent + the REPL's one-line tool printer (stdout here is human output, not a protocol). */
-function replAgent(model: ModelSpec, store: SessionStore, cwd: string, cfg: { checkpoint?: string } = {}): Agent {
+function replAgent(model: ModelSpec, store: SessionStore, cwd: string, cfg: Parameters<typeof makeAgent>[4] = {}): Agent {
   const agent = makeAgent(model, store, cwd, perm, cfg);
   // registered after the gate: a vetoed call is never announced as running
   agent.events.on('before_tool', ({ call }) => {
@@ -218,8 +219,13 @@ function printSessions(sessions: SessionSummary[]): void {
 
 /** host.openAgent + the REPL's warnings and tool printer (stdout here is human output, not a protocol). */
 async function openReplAgent(args: Args): Promise<{ agent: Agent; store: SessionStore }> {
-  const { agent, store, warning } = await openAgent(args, perm);
+  const { agent, store, warning, resolved } = await openAgent(args, perm);
   if (warning) console.error(red(`⚠ ${warning}`));
+  for (const src of resolved.sources) if (src.error) console.error(red(`⚠ 配置文件已跳过：${src.path}（${src.error}）`));
+  // the REPL has no trust prompt: gated project keys stay off until trusted in the TUI
+  if (resolved.project && resolved.project.trusted !== true && resolved.project.gated.length) {
+    console.error(dim(`项目配置中的 ${resolved.project.gated.join(', ')} 未生效（项目未信任，可在 tango TUI 中确认）`));
+  }
   // registered after the gate: a vetoed call is never announced as running
   agent.events.on('before_tool', ({ call }) => {
     if (process.stdout.isTTY) process.stdout.write(dim(`⚙ ${call.name} ${toolSummary(call)}\n`));
@@ -366,7 +372,8 @@ async function interactive(agent: Agent, store: SessionStore): Promise<void> {
         return true;
       case 'new': {
         store = await SessionStore.create(sessionsDir(), process.cwd());
-        agent = replAgent(agent.model, store, process.cwd(), await loadConfig());
+        const r = await resolveConfig(process.cwd());
+        agent = replAgent(agent.model, store, process.cwd(), { ...r.config, projectDir: r.project?.root });
         console.log(dim(`new session ${store.id.slice(0, 8)}`));
         return true;
       }

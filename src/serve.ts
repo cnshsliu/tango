@@ -20,7 +20,7 @@ import { worktreeCreate, worktreeList, worktreeMerge, worktreeRemove } from './c
 import { parseRule } from './core/permissions.js';
 import { briefCommand } from './core/bash-brief.js';
 import { restoreSnapshot, snapshotFileList } from './core/git-snapshot.js';
-import { hasKey, keyProblem, loadConfig, loadModels, pickModel, saveConfig, sessionsDir, tangoDir } from './core/config.js';
+import { type Config, hasKey, keyProblem, loadConfig, loadModels, pickModel, saveConfig, sessionsDir, tangoDir } from './core/config.js';
 import { loadImages } from './core/images.js';
 import { listDrafts, promoteDraft, saveDraft } from './core/skills.js';
 import { join, resolve } from 'node:path';
@@ -30,6 +30,7 @@ import { holdSessionLock, sessionHolder } from './core/session-lock.js';
 import { costUsd, displayPlatform, groupModels } from './core/models/registry.js';
 import type { AskFn, PermissionMode } from './core/permissions.js';
 import type { ToolResult } from './core/types.js';
+import { describeSources, localFile, projectFile, readLayerJson, resolveConfig, setTrust, updateLocalConfig } from './core/project-config.js';
 import { buildTools, loadPluginHooks, openAgent, resolveSessionId, VERSION, type HostArgs, type PermState } from './host.js';
 import { diffTool } from './core/tools/diff.js';
 
@@ -67,7 +68,7 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
   const envMode = process.env.TANGO_MODE;
   if (!args.readonly && (envMode === 'ask' || envMode === 'auto' || envMode === 'readonly')) perm.mode = envMode;
 
-  let opened;
+  let opened: Awaited<ReturnType<typeof openAgent>>;
   try {
     opened = await openAgent(args, perm);
   } catch (e: any) {
@@ -77,6 +78,10 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
   }
   const { agent, store } = opened;
   let cwd = opened.cwd; // /cd moves it (agent.cwd is the same truth)
+  // config layers stay those of the directory the session opened in (/restart re-reads)
+  const configCwd = opened.cwd;
+  const resolvedAtStart = opened.resolved;
+  const effectiveConfig = () => resolveConfig(configCwd);
 
   // same-repo concurrency guard (single-writer convention): warn when another live serve
   // holds this cwd — its snapshots/checkpoints could interleave with ours
@@ -114,7 +119,7 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
   }
   // per-session liveness, so /handoff can tell the target is open in another window
   await holdSessionLock(store.id, cwd).catch(() => {});
-  const config = await loadConfig();
+  const config = opened.resolved.config;
   // the persisted threshold (or 'off') must survive restarts
   if (config.autocompact === 'off') agent.compactAt = 0;
   else if (typeof config.autocompact === 'number') agent.compactAt = config.autocompact;
@@ -266,6 +271,19 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
     statusline: config.statusline,
     tools: agent.tools.schemas().map(({ name, description }) => ({ name, description }))
   });
+  for (const src of opened.resolved.sources) {
+    if (src.error) out({ type: 'notice', text: `⚠ 配置文件已跳过：${src.path}（${src.error}）` });
+  }
+  const project = opened.resolved.project;
+  if (project?.needsTrust) {
+    // the UI asks once; until answered the gated keys stay off (headless runs never ask)
+    out({
+      type: 'trust_request',
+      root: project.localRoot,
+      keys: project.gated,
+      files: opened.resolved.sources.filter((x) => x.scope !== 'global' && x.ignored.some((i) => i.why === 'untrusted')).map((x) => x.path)
+    });
+  }
 
   /** /goal auto-continuation: ask (no tools) whether the goal is done; continue or clear. */
   async function maybeContinueGoal(): Promise<void> {
@@ -303,6 +321,27 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
     configMutex = run.then(() => undefined, () => undefined);
     return run;
   };
+
+  /**
+   * Edit the file user-made permission changes belong in: the project's personal file when
+   * there is a project, else the global one. Returns that path and the merged view after.
+   */
+  const editNearest = (fn: (c: Config) => Config) =>
+    withConfig(async () => {
+      const project = (await effectiveConfig()).project;
+      let path: string;
+      if (project) path = updateLocalConfig(project.localRoot, fn);
+      else {
+        await saveConfig(fn(await loadConfig()));
+        path = join(tangoDir(), 'config.json');
+      }
+      const r = await effectiveConfig();
+      if (perm.rules) perm.rules.allow = r.config.permissions?.allow ?? [];
+      if (perm.extraDirs) perm.extraDirs.dirs = r.config.extraDirs ?? [];
+      return { path, config: r.config };
+    });
+  const addRules = (rules: string[]) =>
+    editNearest((c) => ({ ...c, permissions: { allow: [...new Set([...(c.permissions?.allow ?? []), ...rules])] } }));
 
   const reply = (cmd: Command, ok: boolean, data?: unknown, error?: string) => {
     if (cmd.id === undefined) return;
@@ -765,7 +804,7 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
         const prompt = String(cmd.prompt ?? '');
         if (!prompt.trim()) return reply(cmd, false, undefined, 'subtask: empty prompt');
         try {
-          const roles = (await loadConfig()).roles;
+          const roles = (await effectiveConfig()).config.roles;
           const task = await startBgTask({
             prompt: `${prompt}\n\n（你是子代理：在当前目录独立完成这个小任务，最后一句话总结你做了什么。）`,
             name: String(cmd.name ?? ''),
@@ -781,7 +820,7 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
         return;
       }
       case 'agents_show': {
-        const cfg0 = await loadConfig();
+        const cfg0 = (await effectiveConfig()).config;
         reply(cmd, true, { roles: cfg0.roles ?? {}, driver: agent.model.id });
         return;
       }
@@ -815,7 +854,7 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
         const prompt = String(cmd.prompt ?? '');
         if (!prompt.trim()) return reply(cmd, false, undefined, 'bg: empty prompt');
         try {
-          const roles = (await loadConfig()).roles;
+          const roles = (await effectiveConfig()).config.roles;
           const roleModel = cmd.long === true ? roles?.longContext : roles?.subagent;
           const task = await startBgTask({
             prompt,
@@ -1049,19 +1088,24 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
           isDir = statSync(target).isDirectory();
         } catch {}
         if (!isDir) return reply(cmd, false, undefined, `add_dir: not a directory: ${target}`);
-        const dirs = await withConfig(async () => {
-          const cfg0 = await loadConfig();
-          const merged = [...new Set([...(cfg0.extraDirs ?? []), target])];
-          await saveConfig({ ...cfg0, extraDirs: merged });
-          return merged;
-        });
-        if (perm.extraDirs) perm.extraDirs.dirs = dirs;
-        reply(cmd, true, { extraDirs: dirs });
+        // the project's personal file when there is one: an extra root is about this project
+        try {
+          const { path, config: c1 } = await editNearest((c) => ({ ...c, extraDirs: [...new Set([...(c.extraDirs ?? []), target])] }));
+          reply(cmd, true, { extraDirs: c1.extraDirs ?? [], path });
+        } catch (e: any) {
+          reply(cmd, false, undefined, String(e?.message ?? e));
+        }
         return;
       }
       case 'config_show': {
-        const cfg0 = await loadConfig();
-        reply(cmd, true, { config: cfg0, path: join(sessionsDir(), '..', 'config.json') });
+        // the merged view this session would load now, plus which files it came from
+        const r = await effectiveConfig();
+        reply(cmd, true, {
+          config: r.config,
+          path: join(sessionsDir(), '..', 'config.json'),
+          sources: r.sources.map((x) => ({ scope: x.scope, path: x.path, exists: x.exists, ignored: x.ignored, error: x.error })),
+          line: describeSources(r)
+        });
         return;
       }
       case 'import': {
@@ -1099,14 +1143,9 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
               else skipped0.push({ raw: `command = "${c}"`, reason: p.error });
             }
             if (!cmds.length) skipped0.push({ raw: tomlPath, reason: 'no trusted command entries found' });
-            const allowT = await withConfig(async () => {
-              const cfgT = await loadConfig();
-              const merged = [...new Set([...(cfgT.permissions?.allow ?? []), ...imported0])];
-              await saveConfig({ ...cfgT, permissions: { allow: merged } });
-              return merged;
-            });
-            if (perm.rules) perm.rules.allow = allowT;
-            reply(cmd, true, { imported: imported0, skipped: skipped0 });
+            const addedT = await addRules(imported0).catch((e: any) => String(e?.message ?? e));
+            if (typeof addedT === 'string') return reply(cmd, false, undefined, addedT);
+            reply(cmd, true, { imported: imported0, skipped: skipped0, path: addedT.path });
             return;
           }
           else return reply(cmd, false, undefined, `import: unknown source "${source}" (claude-code | grok | codex)`);
@@ -1140,44 +1179,54 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
             skipped.push({ raw, reason: 'unsupported shape' });
           }
         }
-        const allow = await withConfig(async () => {
-          const cfg0 = await loadConfig();
-          const merged = [...new Set([...(cfg0.permissions?.allow ?? []), ...imported])];
-          await saveConfig({ ...cfg0, permissions: { allow: merged } });
-          return merged;
-        });
-        if (perm.rules) perm.rules.allow = allow;
-        reply(cmd, true, { imported, skipped });
+        const addedI = await addRules(imported).catch((e: any) => String(e?.message ?? e));
+        if (typeof addedI === 'string') return reply(cmd, false, undefined, addedI);
+        reply(cmd, true, { imported, skipped, path: addedI.path });
         return;
       }
       case 'permissions_list':
       case 'permissions_add':
       case 'permissions_remove': {
+        // rules live in three layers; the live list is their union (perm.rules mirrors it)
+        const label: Record<string, string> = { global: '全局', project: '项目共享', local: '个人' };
         if (cmd.cmd === 'permissions_list') {
-          const cfg0 = await loadConfig();
-          reply(cmd, true, { allow: (cfg0.permissions?.allow ?? []).map((rule) => ({ rule, note: ruleNote(rule) })) });
+          const r = await effectiveConfig();
+          const scopes = new Map<string, string>();
+          for (const src of r.sources) {
+            const { cfg } = await readLayerJson(src.path);
+            const untrusted = src.ignored.some((i) => i.key === 'permissions' && i.why === 'untrusted');
+            for (const rule of cfg?.permissions?.allow ?? []) if (!scopes.has(rule)) scopes.set(rule, untrusted ? `${label[src.scope]} · 未信任，未生效` : label[src.scope]);
+          }
+          reply(cmd, true, { allow: [...scopes].map(([rule, scope]) => ({ rule, note: `[${scope}] ${ruleNote(rule)}`, scope })) });
           return;
         }
-        // the read-modify-write runs under the config mutex: concurrent add/remove cannot lose updates
+        const raw = String(cmd.rule ?? '').trim();
         try {
-          const allow = await withConfig(async () => {
-            const cfg0 = await loadConfig();
-            const list = cfg0.permissions?.allow ? [...cfg0.permissions.allow] : [];
-            if (cmd.cmd === 'permissions_add') {
-              const raw = String(cmd.rule ?? '').trim();
-              const p = parseRule(raw);
-              if (!p.ok) throw new Error(p.error);
-              if (!list.includes(raw)) list.push(raw);
-            } else {
-              const idx = list.indexOf(String(cmd.rule ?? ''));
-              if (idx < 0) throw new Error(`rule not found: ${cmd.rule}`);
-              list.splice(idx, 1);
+          if (cmd.cmd === 'permissions_add') {
+            const p = parseRule(raw);
+            if (!p.ok) throw new Error(p.error);
+            // personal to this project when there is one (Claude Code's settings.local.json)
+            const { path, config: c1 } = await addRules([raw]);
+            return reply(cmd, true, { allow: c1.permissions?.allow ?? [], path });
+          }
+          // remove from whichever writable layer holds it; the shared file is the repo's to edit
+          const drop = (c: Config): Config => ({ ...c, permissions: { allow: (c.permissions?.allow ?? []).filter((x: string) => x !== raw) } });
+          const path = await withConfig(async () => {
+            const project = (await effectiveConfig()).project;
+            if (project && (await readLayerJson(localFile(project.localRoot))).cfg?.permissions?.allow?.includes(raw)) return updateLocalConfig(project.localRoot, drop);
+            const g = await loadConfig();
+            if (g.permissions?.allow?.includes(raw)) {
+              await saveConfig(drop(g));
+              return join(tangoDir(), 'config.json');
             }
-            await saveConfig({ ...cfg0, permissions: { allow: list } });
-            return list;
+            if (project && (await readLayerJson(projectFile(project.root))).cfg?.permissions?.allow?.includes(raw)) {
+              throw new Error(`该规则来自项目共享配置 ${projectFile(project.root)}，请直接编辑该文件（它随仓库提交）`);
+            }
+            throw new Error(`rule not found: ${raw}`);
           });
-          if (perm.rules) perm.rules.allow = allow;
-          reply(cmd, true, { allow });
+          const r = await effectiveConfig();
+          if (perm.rules) perm.rules.allow = r.config.permissions?.allow ?? [];
+          reply(cmd, true, { allow: r.config.permissions?.allow ?? [], path });
         } catch (e: any) {
           reply(cmd, false, undefined, String(e?.message ?? e));
         }
@@ -1398,6 +1447,23 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
           return reply(cmd, false, undefined, `bad animations value "${cmd.animations}" (true|false)`);
         await saveConfig({ ...(await loadConfig()), animations: cmd.animations });
         reply(cmd, true, { animations: cmd.animations });
+        return;
+      }
+      case 'trust_status': {
+        const r = await effectiveConfig();
+        if (!r.project) return reply(cmd, true, { root: null, line: describeSources(r) });
+        reply(cmd, true, { root: r.project.localRoot, trusted: r.project.trusted ?? null, gated: r.project.gated, line: describeSources(r) });
+        return;
+      }
+      case 'set_trust': {
+        if (typeof cmd.trusted !== 'boolean') return reply(cmd, false, undefined, `bad trusted value "${cmd.trusted}" (true|false)`);
+        const before = await effectiveConfig();
+        if (!before.project) return reply(cmd, false, undefined, 'trust: 当前目录没有项目配置层（在主目录下运行？）');
+        const prev = before.project.trusted === true;
+        setTrust(before.project.localRoot, cmd.trusted);
+        // hooks / MCP / rules are wired at startup: a change that matters needs a respawn
+        const reload = prev !== cmd.trusted && before.project.gated.length > 0;
+        reply(cmd, true, { trusted: cmd.trusted, root: before.project.localRoot, gated: before.project.gated, reload });
         return;
       }
       case 'set_mouse': {
@@ -1732,7 +1798,9 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
           sessionTokens,
           goal: goal.text,
           loop: loop.prompt || null,
-          plan: perm.plan?.on === true
+          plan: perm.plan?.on === true,
+          // what this process actually loaded (a trust change applies after restart)
+          configSources: describeSources(resolvedAtStart)
         });
         return;
       default:
