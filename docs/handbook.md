@@ -180,8 +180,11 @@ Every tool call passes a permission gate. There are three modes:
 | `auto` | `tango -y` | Everything runs |
 | `readonly` | `tango --readonly` | Reads only. Writes and shell are refused |
 
-Switch at any time with `/mode ask|auto|readonly`. Answering `a` in a permission dialog
-switches to `auto` for the rest of the session.
+Switch at any time with `/mode ask|auto|readonly`. Answering `a` (始终允许) in a permission
+dialog saves a persistent allow rule for that call and allows it — `bash:git branch` for
+`git branch -D x`, the written file's directory for an outside write, `tool:<name>` otherwise —
+so the same thing never asks again, in this session or the next. `/permissions` lists and removes
+the rules it created.
 
 `/plan` is a stricter, temporary mode for research: all writes are refused and the model
 writes a plan instead. Run `/plan` again to leave it and carry the plan out.

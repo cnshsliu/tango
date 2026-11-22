@@ -161,3 +161,21 @@ test('redirecting to /dev/null is not a system-path write (false positive fix)',
   assert.equal(decide('ask', call('cat disk.img > /dev/sda'), '/w').action, 'ask');
   assert.equal(decide('ask', call('dd if=a of=/dev/disk2 bs=1m'), '/w').action, 'ask');
 });
+
+test('suggestRule derives the rule "always allow" remembers for a call', async () => {
+  const { suggestRule } = await import('../src/core/permissions.js');
+  const bash = (command: string) => ({ type: 'tool_call' as const, id: 'x', name: 'bash', input: { command } });
+  assert.equal(suggestRule(bash('git branch -D backup-pre-split')), 'bash:git branch');
+  assert.equal(suggestRule(bash('npm publish --access public')), 'bash:npm publish');
+  assert.equal(suggestRule(bash('rm -rf /tmp/x')), 'bash:rm');
+  // segment before ; && || | — the rule never covers a piped tail
+  assert.equal(suggestRule(bash('cd /tmp && git branch -D x')), 'bash:cd');
+  // a flag right after the tool is not a subcommand
+  assert.equal(suggestRule(bash('git -C /x branch -D y')), 'bash:git');
+  assert.equal(suggestRule(bash('')), null);
+  const write = (path: string) => ({ type: 'tool_call' as const, id: 'x', name: 'write', input: { path } });
+  assert.equal(suggestRule(write('/etc/hosts')), 'path:/etc');
+  assert.equal(suggestRule(write('notes.txt')), 'path:.');
+  const tool = { type: 'tool_call' as const, id: 'x', name: 'notify', input: {} };
+  assert.equal(suggestRule(tool as any), 'tool:notify');
+});

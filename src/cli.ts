@@ -19,8 +19,8 @@ import { listDrafts, promoteDraft, saveDraft } from './core/skills.js';
 import { keyEnvName } from './core/models/util.js';
 import { groupModels } from './core/models/registry.js';
 import { SessionStore, type SessionSummary } from './core/session.js';
-import { resolveConfig } from './core/project-config.js';
-import type { AskFn, PermissionMode } from './core/permissions.js';
+import { resolveConfig, updateLocalConfig, type Resolved } from './core/project-config.js';
+import { suggestRule, type AskFn, type PermissionMode } from './core/permissions.js';
 import { addTask, daemonLoop, feishuWebhook, lastRunAt, loadTasks, parseInterval, removeTask, runDueOnce, sendFeishu, summarizeOutput } from './core/scheduler.js';
 import type { Message, ModelSpec, ToolCallBlock } from './core/types.js';
 import type { Task } from './core/scheduler.js';
@@ -218,7 +218,7 @@ function printSessions(sessions: SessionSummary[]): void {
 }
 
 /** host.openAgent + the REPL's warnings and tool printer (stdout here is human output, not a protocol). */
-async function openReplAgent(args: Args): Promise<{ agent: Agent; store: SessionStore }> {
+async function openReplAgent(args: Args): Promise<{ agent: Agent; store: SessionStore; resolved: Resolved }> {
   const { agent, store, warning, resolved } = await openAgent(args, perm);
   if (warning) console.error(red(`⚠ ${warning}`));
   for (const src of resolved.sources) if (src.error) console.error(red(`⚠ 配置文件已跳过：${src.path}（${src.error}）`));
@@ -230,7 +230,7 @@ async function openReplAgent(args: Args): Promise<{ agent: Agent; store: Session
   agent.events.on('before_tool', ({ call }) => {
     if (process.stdout.isTTY) process.stdout.write(dim(`⚙ ${call.name} ${toolSummary(call)}\n`));
   });
-  return { agent, store };
+  return { agent, store, resolved };
 }
 
 async function runOnce(agent: Agent, input: string): Promise<void> {
@@ -249,7 +249,7 @@ async function runOnce(agent: Agent, input: string): Promise<void> {
   }
 }
 
-async function interactive(agent: Agent, store: SessionStore): Promise<void> {
+async function interactive(agent: Agent, store: SessionStore, resolved: Resolved): Promise<void> {
   console.log(dim(`tango ${VERSION} · ${agent.model.id} · ${perm.mode} · session ${store.id.slice(0, 8)} · ${store.meta()?.cwd ?? ''}`));
   console.log(dim('/help for commands\n'));
 
@@ -267,12 +267,27 @@ async function interactive(agent: Agent, store: SessionStore): Promise<void> {
   perm.ask = (call, reason) =>
     new Promise((resolveAsk) => {
       process.stdout.write(`\n${red('?')} ${call.name}: ${toolSummary(call)}\n  ${dim(reason)} — allow? [y/N/a=always] `);
-      answer = (line) => {
+      answer = async (line: string) => {
         answer = undefined;
         const a = line.trim().toLowerCase();
         if (a === 'a' || a === 'always') {
-          perm.mode = 'auto';
-          console.log(dim('permission mode → auto for this session'));
+          const rule = suggestRule(call);
+          if (rule) {
+            // nearest scope, same as the serve /permissions add: the project's
+            // personal file inside a project, the global config outside
+            let where: string;
+            if (resolved?.project) where = updateLocalConfig(resolved.project.localRoot, (c) => ({ ...c, permissions: { allow: [...new Set([...(c.permissions?.allow ?? []), rule])] } }));
+            else {
+              const cfg = await loadConfig();
+              await saveConfig({ ...cfg, permissions: { allow: [...new Set([...(cfg.permissions?.allow ?? []), rule])] } });
+              where = 'config.json';
+            }
+            perm.rules!.allow = [...new Set([...(perm.rules?.allow ?? []), rule])];
+            console.log(dim(`allow rule saved (${where}): ${rule} · /permissions rm ${rule} undoes it`));
+          } else {
+            perm.mode = 'auto';
+            console.log(dim('nothing to remember for this call — permission mode → auto for this session'));
+          }
         }
         resolveAsk(a === 'y' || a === 'yes' || a === 'a' || a === 'always');
       };
@@ -540,9 +555,9 @@ async function main(): Promise<void> {
   // the TUI is the product: an interactive terminal with no prompt opens it
   if (!args.repl && !args.input && process.stdin.isTTY && process.stdout.isTTY) return launchTui(args);
   perm.mode = args.yes ? 'auto' : args.readonly ? 'readonly' : 'ask';
-  const { agent, store } = await openReplAgent(args);
+  const { agent, store, resolved } = await openReplAgent(args);
   if (args.input) return runOnce(agent, args.input);
-  await interactive(agent, store);
+  await interactive(agent, store, resolved);
 }
 
 main().catch((e) => {

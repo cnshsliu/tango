@@ -92,6 +92,37 @@ export function ruleMatches(rule: AllowRule, call: ToolCallBlock, cwd: string): 
   return first === prefix || first.startsWith(prefix + ' ');
 }
 
+/** Tools whose second word is a subcommand (git branch …, npm publish …). */
+const SUBCOMMAND_TOOLS = new Set([
+  'git', 'npm', 'pnpm', 'yarn', 'bun', 'npx', 'pip', 'pip3', 'uv', 'brew', 'cargo',
+  'go', 'docker', 'kubectl', 'helm', 'apt', 'apt-get', 'dnf', 'yum', 'systemctl',
+  'service', 'gh', 'tango'
+]);
+
+/** The rule a permission dialog's "a = always allow" saves for a call:
+ * - bash: the command word plus its subcommand for known multi-word tools
+ *   (`git branch -D x` → `bash:git branch`; `rm -rf /tmp` → `bash:rm`)
+ * - write tools: the written file's directory (`path:<dir>`)
+ * - anything else: the tool itself (`tool:<name>`)
+ * Null when there is nothing sensible to remember. */
+export function suggestRule(call: ToolCallBlock): string | null {
+  const input = (call.input ?? {}) as Record<string, unknown>;
+  if (call.name === 'bash') {
+    const seg = String(input.command ?? '').split(/[;|&]/)[0].trim();
+    const toks = seg.split(/\s+/);
+    if (!toks[0]) return null;
+    const sub = SUBCOMMAND_TOOLS.has(toks[0]) && /^\w[\w.-]*$/.test(toks[1] ?? '') ? ` ${toks[1]}` : '';
+    return `bash:${toks[0]}${sub}`;
+  }
+  if (WRITE_TOOLS.has(call.name)) {
+    const path = String(input.path ?? '').trim();
+    if (!path) return null;
+    const dir = path.includes('/') ? path.replace(/\/[^/]*$/, '') : '.';
+    return `path:${dir || '/'}`;
+  }
+  return `tool:${call.name}`;
+}
+
 /** Segment a bash command into its ; && || | parts (first tokens), for tail re-checks. */
 function bashSegments(command: string): string[] {
   return command

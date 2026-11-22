@@ -201,7 +201,10 @@ project's personal `.tango/config.local.json`, or the global file outside a proj
 `tool:<name>` (always allow that tool), `path:<prefix>` (allow writes under a path — relative to
 cwd or absolute, segment-boundary matched so `src` never matches `src-evil/`), `bash:<prefix>`
 (first command tokens, so `bash:git status` matches `git status -s` but not `git_status`).
-Rules never override readonly mode; they only turn "ask" into "allow".
+Rules never override readonly mode; they only turn "ask" into "allow". Answering `a`
+(始终允许) in a permission dialog creates exactly such a rule for the pending call — `bash:git
+branch` for `git branch -D x`, the directory for an outside write, `tool:<name>` otherwise — and
+allows the call (it no longer flips the session to auto mode).
 `/import claude-code|grok|codex` maps another agent's allowed-tools into these rules and
 reports every entry it could not represent (codex reads trusted `command = "…"` entries from
 `~/.codex/config.toml`, loose TOML scan, `path:` override for testing). Bash rules cover only

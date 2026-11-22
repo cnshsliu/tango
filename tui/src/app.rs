@@ -5399,9 +5399,17 @@ impl App {
                     self.answer(serve, true)
                 }
                 KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => self.answer(serve, false),
-                // always: allow this one and stop asking for the rest of the session (REPL parity)
+                // always: persist an allow rule for THIS call — what 始终允许 promises
+                // — then allow it. (It used to flip the whole session to /mode auto:
+                // broader than the user meant, and remembered nothing past exit.)
                 KeyCode::Char('a') | KeyCode::Char('A') => {
-                    self.run_slash("/mode auto", serve);
+                    if let Some(rule) = self.permission.as_ref().and_then(Self::always_rule) {
+                        let id = serve.command(
+                            "permissions_add",
+                            vec![("rule", Value::String(rule))],
+                        );
+                        self.pending.push((id, Pending::PermissionsAdd));
+                    }
                     self.answer(serve, true);
                 }
                 // copy the pending command to the clipboard without answering
@@ -5939,6 +5947,47 @@ impl App {
             KeyCode::End => self.cursor = self.input.len(),
             _ => {}
         }
+    }
+
+    /// The rule "a 始终允许" saves for a pending permission (Rust mirror of
+    /// core/permissions.ts suggestRule): bash → command word plus subcommand for
+    /// known multi-word tools (`git branch -D x` → `bash:git branch`); a write
+    /// outside cwd → its directory; anything else → the tool itself.
+    fn always_rule(p: &Permission) -> Option<String> {
+        const SUBCOMMAND_TOOLS: &[&str] = &[
+            "git", "npm", "pnpm", "yarn", "bun", "npx", "pip", "pip3", "uv", "brew", "cargo", "go",
+            "docker", "kubectl", "helm", "apt", "apt-get", "dnf", "yum", "systemctl", "service",
+            "gh", "tango",
+        ];
+        if p.name == "bash" {
+            let seg = p.detail.split([';', '|', '&']).next().unwrap_or("").trim();
+            let mut toks = seg.split_whitespace();
+            let cmd = toks.next()?;
+            let mut rule = cmd.to_string();
+            if SUBCOMMAND_TOOLS.contains(&cmd) {
+                if let Some(sub) = toks.next().filter(|t| {
+                    !t.starts_with('-')
+                        && t.chars().next().is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+                        && t.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
+                }) {
+                    rule = format!("{cmd} {sub}");
+                }
+            }
+            return Some(format!("bash:{rule}"));
+        }
+        if matches!(p.name.as_str(), "write" | "edit" | "office_write") {
+            let path = p.detail.trim();
+            if path.is_empty() {
+                return None;
+            }
+            let dir = std::path::Path::new(path)
+                .parent()
+                .and_then(|d| d.to_str())
+                .filter(|d| !d.is_empty())
+                .unwrap_or(".");
+            return Some(format!("path:{dir}"));
+        }
+        Some(format!("tool:{}", p.name))
     }
 
     fn answer(&mut self, serve: &mut Serve, allow: bool) {
@@ -9337,6 +9386,70 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn always_rule_derivation() {
+        let p = |name: &str, detail: &str| Permission {
+            request: 1,
+            name: name.into(),
+            detail: detail.into(),
+            reason: "deletes a branch".into(),
+            brief: String::new(),
+        };
+        assert_eq!(
+            App::always_rule(&p("bash", "git branch -D backup-pre-split")).as_deref(),
+            Some("bash:git branch")
+        );
+        assert_eq!(App::always_rule(&p("bash", "rm -rf /tmp/x")).as_deref(), Some("bash:rm"));
+        assert_eq!(
+            App::always_rule(&p("bash", "cd /tmp && git branch -D x")).as_deref(),
+            Some("bash:cd")
+        );
+        assert_eq!(
+            App::always_rule(&p("bash", "git -C /x branch -D y")).as_deref(),
+            Some("bash:git")
+        );
+        assert_eq!(
+            App::always_rule(&p("write", "/etc/hosts")).as_deref(),
+            Some("path:/etc")
+        );
+        assert_eq!(App::always_rule(&p("notify", "")).as_deref(), Some("tool:notify"));
+        assert_eq!(App::always_rule(&p("bash", "")).as_deref(), None);
+    }
+
+    #[test]
+    fn permission_a_saves_rule_and_allows_without_mode_flip() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.permission = Some(Permission {
+            request: 7,
+            name: "bash".into(),
+            detail: "git branch -D backup-pre-split".into(),
+            reason: "deletes a branch".into(),
+            brief: "删除分支 backup-pre-split".into(),
+        });
+        app.key(
+            crossterm::event::KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE),
+            &mut serve,
+        );
+        let add: Value = serde_json::from_str(
+            serve.sent.iter().find(|m| m.contains("permissions_add")).expect("rule saved"),
+        )
+        .unwrap();
+        assert_eq!(add["rule"], "bash:git branch");
+        let ans: Value = serde_json::from_str(
+            serve.sent.iter().find(|m| m.contains("\"permission\"")).expect("answered"),
+        )
+        .unwrap();
+        assert_eq!(ans["request"], 7);
+        assert_eq!(ans["allow"], true);
+        assert!(
+            !serve.sent.iter().any(|m| m.contains("set_mode")),
+            "a must not flip the session to auto mode"
+        );
+        assert!(app.permission.is_none());
+    }
+
     /// two quick press/release pairs on the same spot = a double-click
     fn dblclick(app: &mut App, row: u16, col: u16) {
         app.chat_press(row, col);
