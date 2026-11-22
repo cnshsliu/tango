@@ -11,7 +11,7 @@ How to use it day to day: [docs/handbook.md](docs/handbook.md).
 
 Core loop is working: agent loop, JSONL sessions with compaction, Anthropic + OpenAI-compatible
 adapters, built-in tools (read / write / edit / bash / grep / find / ls / web_search / web_fetch /
-office_read / office_write / notify / diff / session_search), a permission gate, AGENTS.md + skills context assembly,
+office_read / office_write / notify / diff / session_search / process_logs / process_stop / process_list), a permission gate, AGENTS.md + skills context assembly,
 typed event bus, cost tracking with long-prompt price tiers, `/save-as-skill`, scheduled tasks
 (`tango task`) with Feishu webhook delivery, auto type diagnostics after edits, a JSONL
 serve protocol (`tango serve`), and a Rust TUI client (`tui/`) on top of it.
@@ -545,6 +545,24 @@ China but can break if Bing changes its markup. Force one with `TANGO_SEARCH=bin
 decoding GBK pages correctly. It refuses binary content, stops at 5 MB and times out after 30 s.
 Both tools count as reads for permissions.
 
+## Background processes
+
+`bash` with `background: true` starts the command detached in its own process group and returns
+at once (after a 1 s grace period that catches commands failing right away) with an id such as
+`p1`, its pid and the first output lines. Use it for dev servers, watchers and other commands
+that would hit the 120 s foreground timeout. At most 8 run at a time; each keeps the last 200 000
+characters of combined stdout+stderr.
+
+| tool           | input                 | what it does                                                         |
+| -------------- | --------------------- | -------------------------------------------------------------------- |
+| `process_logs` | `id`, `lines` (50)    | last N output lines plus state (`running Ns`, `exited N`, `killed`)  |
+| `process_stop` | `id`                  | SIGTERM to the process group, SIGKILL 3 s later if it is still alive |
+| `process_list` | none                  | every background process this tango started, running or finished     |
+
+`process_logs` and `process_list` count as reads. `process_stop` never asks in `ask` mode, since
+it can only signal processes this tango started; `readonly` refuses it (and `bash`). Background
+processes belong to the tango process and are killed when it exits.
+
 ## Past conversations
 
 `session_search` greps the user's earlier sessions in `~/.tango/sessions` (user and assistant
@@ -657,6 +675,7 @@ src/core/
   permissions.ts  ask / auto / readonly gate on before_tool
   models/       anthropic-messages + openai-completions adapters, presets, cost
   tools/        registry + read/write/edit/bash + grep/find/ls + web_search/web_fetch + notify + diff
+                + process_logs/process_stop/process_list (state in core/processes.ts)
                 office/ = office_read (zip + xml readers) + office_write (zip writer, docx/xlsx)
 src/host.ts     shared agent assembly for every host (REPL, serve, tasks)
 src/serve.ts    tango serve: JSONL protocol for external UIs (the TUI seam)

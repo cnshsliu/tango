@@ -19,6 +19,7 @@ import { SessionStore } from './core/session.js';
 import { ToolRegistry } from './core/tools/registry.js';
 import { bashTool } from './core/tools/bash.js';
 import { diffTool } from './core/tools/diff.js';
+import { processListTool, processLogsTool, processStopTool } from './core/tools/process.js';
 import { editTool, readTool, writeTool } from './core/tools/fs.js';
 import { officeReadTool, officeWriteTool } from './core/tools/office/index.js';
 import { notifyTool } from './core/tools/notify.js';
@@ -32,7 +33,7 @@ export const VERSION = '0.1.0';
 
 export function buildTools(): ToolRegistry {
   const tools = new ToolRegistry();
-  for (const t of [readTool, writeTool, editTool, bashTool, grepTool, findTool, lsTool, webSearchTool, webFetchTool, officeReadTool, officeWriteTool, notifyTool, diffTool, sessionSearchTool])
+  for (const t of [readTool, writeTool, editTool, bashTool, grepTool, findTool, lsTool, webSearchTool, webFetchTool, officeReadTool, officeWriteTool, notifyTool, diffTool, sessionSearchTool, processLogsTool, processStopTool, processListTool])
     tools.register(t);
   return tools;
 }

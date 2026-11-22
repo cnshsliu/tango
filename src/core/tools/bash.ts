@@ -1,21 +1,40 @@
 import { spawn } from 'node:child_process';
 import type { Tool } from '../types.js';
-import { text, truncate } from './registry.js';
+import { describe, startProcess, tail } from '../processes.js';
+import { error, text, truncate } from './registry.js';
 
-export const bashTool: Tool<{ command: string; timeout?: number }> = {
+export const bashTool: Tool<{ command: string; timeout?: number; background?: boolean }> = {
   name: 'bash',
   writeEffect: true,
   description:
-    'Run a shell command in cwd and return stdout+stderr. Use for ls, grep, find, git, tests, etc. Long output is truncated.',
+    'Run a shell command in cwd and return stdout+stderr. Use for ls, grep, find, git, tests, etc. Long output is truncated. ' +
+    'Set background: true for dev servers, watchers and other long-running commands: it returns a process id at once ' +
+    '(read output with process_logs, end it with process_stop, see all with process_list; at most 8 run at a time).',
   input: {
     type: 'object',
     properties: {
       command: { type: 'string' },
-      timeout: { type: 'number', description: 'Seconds (default 120)' }
+      timeout: { type: 'number', description: 'Seconds (default 120; ignored when background)' },
+      background: { type: 'boolean', description: 'Run detached and return a process id immediately' }
     },
     required: ['command']
   },
-  execute({ command, timeout = 120 }, ctx) {
+  async execute({ command, timeout = 120, background }, ctx) {
+    if (background) {
+      let p;
+      try {
+        p = startProcess(command, ctx.cwd);
+      } catch (e) {
+        return error((e as Error).message);
+      }
+      // a short grace period catches commands that fail right away (typo, port in use)
+      await Promise.race([p.exited, new Promise((r) => setTimeout(r, 1000))]);
+      const head = tail(p, 20);
+      return {
+        content: [{ type: 'text', text: `started ${describe(p)}` + (head ? `\n${head}` : '') }],
+        isError: p.done && p.exitCode !== 0
+      };
+    }
     return new Promise((resolvePromise) => {
       // detached → own process group: kills reach curl/sleep grandkids too.
       // Killing only the bash wrapper orphans them and they keep the output pipe
