@@ -13,7 +13,7 @@
 
 ## P1：价值高，先做
 
-- [x] **1. 模型自己派子 agent（`task` 工具）和自定义命名子 agent**（COMMIT）
+- [x] **1. 模型自己派子 agent（`task` 工具）和自定义命名子 agent**（`7a74b3b`）
   - grok：模型可以调用 `task`，选 `explore`（只读、快速调查）或 `general`（多步执行），也能选配置里 `subAgents: [{name, model, instruction}]` 定义的子 agent。系统提示鼓励它主动派活。见 `src/grok/tools.ts:366`、`src/utils/subagents-settings.test.ts`、`src/ui/agents-modal.tsx`。
   - tango：`/subtask`、`/bg` 只能由用户发起，模型没有派活的工具。`/agents` 只能按角色选模型，不能带指令。
   - 已做：`task` 工具（explore / general / config `subAgents`），只读子 agent 可后台跑，报告以 user 消息写回；子会话记 parent、列表隐藏。同批修了 `/bg` `/subtask`：5 秒轮询发完成通知、提示词要求提交、worktree 软链 `node_modules`、`/subtask` 报告改为 user 消息（上限 2000 字）。
