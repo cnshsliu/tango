@@ -1667,6 +1667,82 @@ test('hooks: beforeTool runs with the call JSON on stdin; failures never block',
   }
 });
 
+test('lifecycle hooks: PreToolUse exit 2 blocks, PostToolUse talks back, UserPromptSubmit rejects, Stop continues once', async () => {
+  const mock = await startMock();
+  const home = await mkdtemp(join(tmpdir(), 'tango-serve-home-'));
+  const work = await mkdtemp(join(tmpdir(), 'tango-serve-work-'));
+  await writeFile(join(home, 'models.json'), JSON.stringify([
+    { id: 'mock/mock', provider: 'mock', model: 'm', api: 'openai-completions', baseUrl: `http://127.0.0.1:${(mock.server.address() as AddressInfo).port}/v1`, apiKey: 'MOCK_SERVE_KEY', contextWindow: 200000 }
+  ]));
+  await writeFile(join(home, 'config.json'), JSON.stringify({
+    mode: 'auto',
+    hooks: {
+      PreToolUse: [{ matcher: 'bash', hooks: [{ type: 'command', command: `grep -q 'rm -rf' && { echo 'no rm -rf here' >&2; exit 2; }; exit 0` }] }],
+      PostToolUse: [{ matcher: 'ls', command: `echo 'lint says hi' >&2; exit 2` }],
+      UserPromptSubmit: [{ command: `grep -q SECRET && { echo 'prompt has a secret' >&2; exit 2; }; exit 0` }],
+      Stop: [{ command: `cat > ${join(work, 'stop.json')}; grep -q '"stop_hook_active":false' ${join(work, 'stop.json')} && { echo 'run the tests first' >&2; exit 2; }; exit 0` }]
+    }
+  }));
+  const sent = (r: any) => JSON.stringify(r.messages);
+  mock.setScript(() => {
+    const last = sent(mock.requests.at(-1));
+    const call = (id: string, name: string, args: object) =>
+      SSE({ choices: [{ delta: { tool_calls: [{ index: 0, id, function: { name, arguments: JSON.stringify(args) } }] }, finish_reason: 'tool_calls' }] }) + 'data: [DONE]\n\n';
+    const text = (t: string) => SSE({ choices: [{ delta: { content: t } }] }) + SSE({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1 } }) + 'data: [DONE]\n\n';
+    if (!last.includes('"h1"')) return call('h1', 'bash', { command: 'rm -rf /tmp/nothing-here' });
+    if (!last.includes('"h2"')) return call('h2', 'ls', { path: '.' });
+    return text('all done');
+  });
+  const s = await startServe(home, work, 0, { TANGO_MODE: 'auto' });
+  try {
+    await s.next();
+    s.send({ id: 1, cmd: 'prompt', text: 'SECRET token inside' });
+    const rejected = await s.until((f: any) => f.type === 'result' && f.id === 1, 'rejected prompt');
+    assert.equal(rejected.ok, false);
+    assert.match(rejected.error, /prompt has a secret/);
+    assert.equal(mock.requests.length, 0, 'a rejected prompt never reaches the model');
+
+    s.send({ id: 2, cmd: 'prompt', text: 'clean up' });
+    await s.until((f: any) => f.type === 'result' && f.id === 2 && f.ok, 'turn');
+    const all = mock.requests.map(sent).join('\n');
+    assert.match(all, /PreToolUse hook: no rm -rf here/, 'the model saw why bash was blocked');
+    assert.match(all, /\[PostToolUse hook\] lint says hi/, 'the PostToolUse note rode along with the ls result');
+    assert.match(all, /\[Stop hook\] run the tests first/, 'Stop sent the model back once');
+    const stop = JSON.parse(await readFile(join(work, 'stop.json'), 'utf8'));
+    assert.equal(stop.hook_event_name, 'Stop');
+    assert.equal(stop.stop_hook_active, true, 'the second Stop knows it already continued');
+    assert.equal(stop.last_assistant_message, 'all done');
+  } finally {
+    s.child.kill();
+    mock.server.close();
+    await rm(home, { recursive: true, force: true });
+    await rm(work, { recursive: true, force: true });
+  }
+});
+
+test('Stop hook: a hook that always says no is honored at most 3 times per prompt', async () => {
+  const mock = await startMock();
+  const home = await mkdtemp(join(tmpdir(), 'tango-serve-home-'));
+  const work = await mkdtemp(join(tmpdir(), 'tango-serve-work-'));
+  await writeFile(join(home, 'models.json'), JSON.stringify([
+    { id: 'mock/mock', provider: 'mock', model: 'm', api: 'openai-completions', baseUrl: `http://127.0.0.1:${(mock.server.address() as AddressInfo).port}/v1`, apiKey: 'MOCK_SERVE_KEY', contextWindow: 200000 }
+  ]));
+  await writeFile(join(home, 'config.json'), JSON.stringify({ hooks: { Stop: [{ command: `echo again >&2; exit 2` }] } }));
+  mock.setScript(() => SSE({ choices: [{ delta: { content: 'ok' } }] }) + SSE({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1 } }) + 'data: [DONE]\n\n');
+  const s = await startServe(home, work, 0);
+  try {
+    await s.next();
+    s.send({ id: 1, cmd: 'prompt', text: 'hi' });
+    await s.until((f: any) => f.type === 'result' && f.id === 1 && f.ok, 'turn');
+    assert.equal(mock.requests.length, 4, 'one answer + 3 hook continuations');
+  } finally {
+    s.child.kill();
+    mock.server.close();
+    await rm(home, { recursive: true, force: true });
+    await rm(work, { recursive: true, force: true });
+  }
+});
+
 test('C1-C3: interrupt during goal check stops continuation; loop never overlaps; goal rides the queue', async () => {
   const mock = await startMock();
   const home = await mkdtemp(join(tmpdir(), 'tango-serve-home-'));

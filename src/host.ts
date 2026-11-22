@@ -11,6 +11,7 @@ import { checkpointEnabled, installCheckpoints } from './core/checkpoint.js';
 import { keyProblem, loadConfig, loadModels, pickModel, sessionsDir, tangoDir } from './core/config.js';
 import { installDiagnostics } from './core/diagnostics.js';
 import { EventBus } from './core/events.js';
+import { mergeHookConfigs, runHooks, type HookConfig } from './core/hooks.js';
 import { installPermissionGate, parseRule, type AllowRule, type AskFn, type PermissionMode } from './core/permissions.js';
 import { SessionStore } from './core/session.js';
 import { ToolRegistry } from './core/tools/registry.js';
@@ -69,15 +70,18 @@ function runHook(script: string, payload: unknown): void {
 export function loadPluginHooks(): {
   plugins: { name: string; description: string; enabled: boolean }[];
   hooks: { beforeTool?: string[]; afterTool?: string[] };
+  /** lifecycle hooks (PreToolUse, Stop, …) from each enabled plugin, in order */
+  lifecycle: unknown[];
 } {
   const plugins: { name: string; description: string; enabled: boolean }[] = [];
   const hooks: { beforeTool?: string[]; afterTool?: string[] } = {};
+  const lifecycle: unknown[] = [];
   const dir = join(tangoDir(), 'plugins');
   let names: string[] = [];
   try {
     names = readdirSync(dir).filter((d) => d !== '.DS_Store').sort(); // deterministic hook merge order
   } catch {
-    return { plugins, hooks };
+    return { plugins, hooks, lifecycle };
   }
   for (const name of names) {
     let meta: any;
@@ -93,11 +97,46 @@ export function loadPluginHooks(): {
     // every enabled plugin's hook runs — a chain, not first-wins (limitation D)
     if (meta.hooks?.beforeTool) (hooks.beforeTool ??= []).push(meta.hooks.beforeTool);
     if (meta.hooks?.afterTool) (hooks.afterTool ??= []).push(meta.hooks.afterTool);
+    if (meta.hooks) lifecycle.push(meta.hooks);
   }
-  return { plugins, hooks };
+  return { plugins, hooks, lifecycle };
 }
 
-export function makeAgent(model: ModelSpec, store: SessionStore, cwd: string, perm: PermState, cfg: { checkpoint?: string; permissions?: { allow: string[] }; extraDirs?: string[]; hooks?: { beforeTool?: string; afterTool?: string }; maxTurns?: number } = {}): Agent {
+/** Wire PreToolUse / PostToolUse / UserPromptSubmit / Stop hooks onto the event bus. */
+function installLifecycleHooks(events: EventBus, hooks: HookConfig, ctx: { cwd: () => string; sessionId: () => string }): void {
+  const base = () => ({ session_id: ctx.sessionId(), cwd: ctx.cwd() });
+  const run = (ev: keyof HookConfig, payload: Record<string, unknown>, tool?: string) =>
+    runHooks(hooks, ev, { ...base(), ...payload }, { cwd: ctx.cwd(), tool });
+  if (hooks.PreToolUse) {
+    events.on('before_tool', async ({ call, tool }) => {
+      const r = await run('PreToolUse', { tool_name: tool.name, tool_input: call.input }, tool.name);
+      if (r.block) return { block: true, reason: `PreToolUse hook: ${r.block}` };
+    });
+  }
+  if (hooks.PostToolUse) {
+    events.on('after_tool', async ({ call, result }) => {
+      const text = result.content.map((b) => (b.type === 'text' ? b.text : '')).join('').slice(0, 20_000);
+      const r = await run('PostToolUse', { tool_name: call.name, tool_input: call.input, tool_response: { text, is_error: !!result.isError } }, call.name);
+      // exit 2 after the fact: the tool already ran, so the hook's word goes to the model
+      if (r.block) result.content.push({ type: 'text', text: `\n[PostToolUse hook] ${r.block}` });
+    });
+  }
+  if (hooks.UserPromptSubmit) {
+    events.on('before_prompt', async ({ text }) => {
+      const r = await run('UserPromptSubmit', { prompt: text });
+      if (r.block) return { block: true, reason: r.block };
+    });
+  }
+  if (hooks.Stop) {
+    events.on('before_stop', async ({ message, continued }) => {
+      const last = message.content.map((b) => (b.type === 'text' ? b.text : '')).join('');
+      const r = await run('Stop', { stop_hook_active: continued, last_assistant_message: last.slice(0, 20_000) });
+      if (r.block) return { block: true, reason: r.block };
+    });
+  }
+}
+
+export function makeAgent(model: ModelSpec, store: SessionStore, cwd: string, perm: PermState, cfg: { checkpoint?: string; permissions?: { allow: string[] }; extraDirs?: string[]; hooks?: { beforeTool?: string; afterTool?: string } & Record<string, unknown>; maxTurns?: number } = {}): Agent {
   const events = new EventBus();
   // gate first: a vetoed call is never announced as running
   const rules = perm.rules ?? { allow: cfg.permissions?.allow ? [...cfg.permissions.allow] : [] };
@@ -115,6 +154,12 @@ export function makeAgent(model: ModelSpec, store: SessionStore, cwd: string, pe
     ? Math.floor(cfg.maxTurns as number)
     : undefined;
   const agent = new Agent({ store, tools: buildTools(), model, cwd, events, maxTurns });
+  const plugins = loadPluginHooks();
+  // lifecycle hooks before the gate: a policy hook can refuse a call before anyone is asked
+  installLifecycleHooks(events, mergeHookConfigs([cfg.hooks, ...plugins.lifecycle]), {
+    cwd: () => agent.cwd,
+    sessionId: () => store.id
+  });
   installPermissionGate(events, {
     mode: () => perm.mode,
     cwd: () => agent.cwd,
@@ -125,8 +170,8 @@ export function makeAgent(model: ModelSpec, store: SessionStore, cwd: string, pe
   });
   installDiagnostics(events, () => agent.cwd); // /cd moves the checker root too
   // hook chains: config first, then every enabled plugin in sorted order
-  const beforeChain = [cfg.hooks?.beforeTool, ...(loadPluginHooks().hooks.beforeTool ?? [])].filter(Boolean) as string[];
-  const afterChain = [cfg.hooks?.afterTool, ...(loadPluginHooks().hooks.afterTool ?? [])].filter(Boolean) as string[];
+  const beforeChain = [cfg.hooks?.beforeTool, ...(plugins.hooks.beforeTool ?? [])].filter(Boolean) as string[];
+  const afterChain = [cfg.hooks?.afterTool, ...(plugins.hooks.afterTool ?? [])].filter(Boolean) as string[];
   if (beforeChain.length) {
     events.on('before_tool', ({ call, tool }) => {
       for (const script of beforeChain) runHook(script, { phase: 'before', name: call.name, tool: tool.name, input: call.input });

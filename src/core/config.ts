@@ -51,8 +51,12 @@ export interface Config {
   permissions?: { allow: string[] };
   /** Extra write roots outside cwd (/add_dir) */
   extraDirs?: string[];
-  /** Tool-call hooks: sh -c <cmd>, the call JSON arrives on stdin; failures never block */
-  hooks?: { beforeTool?: string; afterTool?: string };
+  /**
+   * Hooks. Legacy beforeTool/afterTool: sh -c, call JSON on stdin, never block.
+   * Lifecycle (see core/hooks.ts): PreToolUse / PostToolUse / UserPromptSubmit / Stop,
+   * arrays of { matcher?, command, timeout? }; exit 2 blocks.
+   */
+  hooks?: { beforeTool?: string; afterTool?: string } & Record<string, unknown>;
   /** Role-based model routing (/agents): driver / subagent / longContext */
   roles?: { driver?: string; subagent?: string; longContext?: string };
   /** MCP servers (stdio JSON-RPC); tools bridge in as mcp_<server>_<tool> */

@@ -102,8 +102,8 @@ TUI commands: `/model`, `/agents`, `/resume`, `/new`, `/restart`, `/rename`, `/m
   (permission rules apply). Dead servers lazily reconnect on the next call (capped at 3
   attempts); spawn failures and EPIPE never take serve down.
 - **/plugins** — local plugins: `~/.tango/plugins/<name>/plugin.json` with
-  `{name, description, enabled?, hooks?: {beforeTool?, afterTool?}}`; hooks receive the call
-  JSON on stdin like config hooks; `enabled: false` skips.
+  `{name, description, enabled?, hooks?}`; `hooks` takes the same keys as config hooks and
+  runs after them; `enabled: false` skips.
 
 Not doing (by design): concurrent writers in the main workspace (worktrees are the only
 isolation), MCP server→client capabilities (sampling/roots), plugin marketplaces.
@@ -123,8 +123,39 @@ isolation), MCP server→client capabilities (sampling/roots), plugin marketplac
   correctness/security audit prompt.
 - `/remember <text>` appends one line to `~/.tango/AGENTS.md` (the global memory every
   session's context assembles); `/memory` views/edits it.
-- `hooks` in config.json: `beforeTool` / `afterTool` shell commands receive the call JSON on
-  **stdin**; hook failures warn on stderr and never block the tool.
+- `hooks` in config.json — see [Hooks](#hooks).
+
+## Hooks
+
+Shell commands at four points of a turn, configured under `hooks` in `~/.tango/config.json`
+(Claude Code's format; plugin hooks run after these):
+
+```json
+{ "hooks": {
+  "PreToolUse":       [{ "matcher": "bash", "command": "./guard.sh", "timeout": 10 }],
+  "PostToolUse":      [{ "matcher": "edit|write", "command": "npm run -s lint" }],
+  "UserPromptSubmit": [{ "command": "./no-secrets.sh" }],
+  "Stop":             [{ "command": "./tests-green.sh" }]
+} }
+```
+
+Each command runs as `sh -c` in the session's cwd with the event JSON on stdin (`hook_event_name`,
+`session_id`, `cwd`, plus `tool_name` / `tool_input` / `tool_response`, `prompt`, or
+`stop_hook_active` / `last_assistant_message`). `matcher` is an anchored regex over the tool name;
+missing or `*` matches every tool. The nested `{matcher, hooks: [{type: "command", command}]}`
+form works too. `timeout` is in seconds (default 10) and a timed-out hook is killed.
+
+Exit 0 means go on. Exit 2 acts on the event, with stderr as the reason:
+
+| Event | Exit 2 does |
+| --- | --- |
+| `PreToolUse` | the call is refused; the model sees `blocked: PreToolUse hook: <reason>` |
+| `PostToolUse` | the tool already ran; the reason is appended to its result for the model |
+| `UserPromptSubmit` | the prompt is rejected before it is saved or sent |
+| `Stop` | the model keeps going with the reason as a note; `stop_hook_active` is true on the next stop, so a hook can let it finish; at most 3 times per prompt |
+
+Any other exit code warns on stderr and never blocks. The older `beforeTool` / `afterTool` string
+keys still work as before (notify only, never block).
 
 ## Lean by design (token plans)
 

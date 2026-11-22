@@ -42,6 +42,9 @@ const HANDOFF_INSTRUCTION =
  * The agent loop: append user message, then model → tools → model until the
  * model stops without tool calls. Every step is persisted and evented.
  */
+/** A Stop hook can send the model back at most this many times per prompt (cost fuse). */
+const MAX_STOP_CONTINUES = 3;
+
 export class Agent {
   readonly events: EventBus;
   model: ModelSpec;
@@ -111,6 +114,8 @@ export class Agent {
 
   /** Append a user message and loop (model → tools → model) until the model stops. */
   async prompt(text: string, onStream?: (ev: StreamEvent) => void, images?: ImageBlock[]): Promise<Message> {
+    const rejected = await this.events.emit('before_prompt', { text });
+    if (rejected && rejected.block) throw new Error(`prompt blocked by hook: ${rejected.reason}`);
     const user: Message = {
       role: 'user',
       content: [{ type: 'text', text }, ...(images ?? [])]
@@ -119,6 +124,7 @@ export class Agent {
     await this.events.emit('prompt_start', { text });
 
     this.controller = new AbortController();
+    let continued = 0; // times a Stop hook sent the model back this prompt (capped)
     try {
       for (let turn = 0; turn < this.maxTurns; turn++) {
         await this.flushSupplements();
@@ -143,7 +149,16 @@ export class Agent {
         await this.events.emit('turn_end', { stopReason: message.stopReason ?? 'stop', usage, costUsd: cost });
 
         const calls = message.content.filter((b): b is ToolCallBlock => b.type === 'tool_call');
-        if (!calls.length) return message;
+        if (!calls.length) {
+          const keepGoing = await this.events.emit('before_stop', { message, continued: continued > 0 });
+          if (!(keepGoing && keepGoing.block) || continued >= MAX_STOP_CONTINUES || this.controller.signal.aborted) return message;
+          continued++;
+          await this.store.appendMessage({
+            role: 'user',
+            content: [{ type: 'text', text: `[Stop hook] ${keepGoing.reason}` }]
+          });
+          continue;
+        }
 
         // Sequential on purpose: order is observable and simple to reason about.
         const results: ContentBlock[] = [];

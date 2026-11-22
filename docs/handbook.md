@@ -192,6 +192,25 @@ It reads `.claude/settings.json` in the project, `~/.grok/settings.json`, or
 
 `/add_dir <dir>` makes a directory outside the project writable without asking.
 
+### Hooks
+
+Hooks run your own scripts at fixed points and can say no, for checks that a permission rule
+can't express. Add them under `hooks` in `~/.tango/config.json`:
+
+```json
+{ "hooks": {
+  "PreToolUse": [{ "matcher": "bash", "command": "./guard.sh" }],
+  "Stop":       [{ "command": "npm test --silent >/dev/null 2>&1 || { echo 'tests fail' >&2; exit 2; }" }]
+} }
+```
+
+The script reads the event as JSON on stdin. Exiting with 2 refuses a tool call
+(`PreToolUse`), tells the model something after a tool ran (`PostToolUse`), rejects your
+prompt (`UserPromptSubmit`), or sends the model back to work instead of finishing (`Stop`).
+Whatever the script prints to stderr is the reason the model sees. A `Stop` hook gets
+`"stop_hook_active": true` once it has already sent the model back, so it can let it finish. tango stops honoring it after 3 sends per prompt.
+Details and payload fields: README, "Hooks".
+
 ## Slash-command reference
 
 Arguments in `<angle brackets>` are required, `[square brackets]` optional. Commands work
