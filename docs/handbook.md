@@ -46,7 +46,7 @@ git diff | tango "review this patch"
 | Park a half-written draft | Alt+S (press again to restore) |
 | Edit a draft in Neovim | Ctrl+E, or `/nvim` |
 | See a full tool output | Ctrl+O, or double-click the tool line |
-| Read the model's full reasoning | Alt+T expands / collapses the newest thinking block, or double-click a block |
+| Read the model's full reasoning | Double-click a thinking block to expand / collapse it |
 | Copy over SSH or inside tmux | Works by default: over SSH tango copies through the terminal (OSC 52). In tmux set `set -g set-clipboard on`; if it still fails, try `/clipboard osc52` |
 | Emoji show as boxes or misalign | `/ascii on` draws them (and the thinking robot) as plain ASCII |
 | Screen tears or flickers while streaming | Use a terminal with synchronized output (iTerm2, Kitty, WezTerm, Ghostty, Alacritty, Windows Terminal, recent tmux); tango sends each frame as one update |
@@ -63,8 +63,7 @@ the same line becomes `⚙ bash <command> · <ms>` (double-click it or press ctr
 
 Reasoning the model streamed shows as a block headed by `🤖`, with a `┃` bar on its left. The whole
 text is kept: short reasoning shows in full, a long block collapses to its first 3 lines plus
-`alt+t 展开思考（还有 N 字 · 共 M 行）`. Press Alt+T to expand or collapse the newest block, or
-double-click any block to toggle it; Ctrl+T's transcript always shows thinking in full. While the
+`双击展开思考（还有 N 字 · 共 M 行）`. Double-click any block to expand or collapse it; Ctrl+T's transcript always shows thinking in full. While the
 turn runs, that bar's color scrolls down the newest thinking block (in 256 colors on
 terminals without 24-bit color; once idle, or with `/animations off`, it is a flat dim bar).
 

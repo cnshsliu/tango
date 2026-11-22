@@ -5,7 +5,6 @@ use serde_json::Value;
 pub enum Action {
     ExpandTools,
     EditLast,
-    ToggleThinking,
     Newline,
     Interrupt,
     ClearInput,
@@ -22,7 +21,6 @@ impl Action {
         match self {
             Action::ExpandTools => "expandTools",
             Action::EditLast => "editLast",
-            Action::ToggleThinking => "toggleThinking",
             Action::Newline => "newline",
             Action::Interrupt => "interrupt",
             Action::ClearInput => "clearInput",
@@ -106,7 +104,7 @@ impl Binding {
 }
 
 pub struct Keymap {
-    bindings: [(Action, Binding); 12],
+    bindings: [(Action, Binding); 11],
 }
 
 impl Keymap {
@@ -116,15 +114,6 @@ impl Keymap {
             .iter()
             .map(|(action, binding)| (action.name(), binding.to_string()))
             .collect()
-    }
-
-    /// the key currently bound to `action`, as shown in hints (e.g. "alt+t")
-    pub fn label(&self, action: Action) -> String {
-        self.bindings
-            .iter()
-            .find(|(a, _)| *a == action)
-            .map(|(_, b)| b.to_string())
-            .unwrap_or_default()
     }
 
     pub fn from_json(config: Option<&Value>) -> Self {
@@ -144,7 +133,6 @@ impl Keymap {
             bindings: [
                 (Action::ExpandTools, ctrl('o')),
                 (Action::EditLast, alt('e')),
-                (Action::ToggleThinking, alt('t')),
                 (
                     Action::Newline,
                     Binding {
@@ -177,7 +165,6 @@ impl Keymap {
         let names = [
             "expandTools",
             "editLast",
-            "toggleThinking",
             "newline",
             "interrupt",
             "clearInput",

@@ -164,15 +164,14 @@ fn asciify(s: &str) -> String {
 
 /// What a thinking line shows: short blocks in full; long ones as a preview
 /// plus a hint while collapsed, or in full plus a collapse hint when expanded.
-fn thinking_view(text: &str, expanded: bool, keys: &Keymap) -> String {
-    let key = keys.label(Action::ToggleThinking);
+fn thinking_view(text: &str, expanded: bool) -> String {
     let chars = text.chars().count();
     let lines = text.lines().count();
     if lines <= THINK_PREVIEW_LINES && chars <= THINK_PREVIEW_CHARS {
         return text.to_string();
     }
     if expanded {
-        return format!("{text}\n{key} 收起思考");
+        return format!("{text}\n双击收起思考");
     }
     let mut preview = String::new();
     for (i, line) in text.lines().take(THINK_PREVIEW_LINES).enumerate() {
@@ -183,7 +182,7 @@ fn thinking_view(text: &str, expanded: bool, keys: &Keymap) -> String {
     }
     let preview: String = preview.chars().take(THINK_PREVIEW_CHARS).collect();
     let hidden = chars.saturating_sub(preview.chars().count());
-    format!("{preview} …\n{key} 展开思考（还有 {hidden} 字 · 共 {lines} 行）")
+    format!("{preview} …\n双击展开思考（还有 {hidden} 字 · 共 {lines} 行）")
 }
 
 /// Cut `s` to at most `width` columns, ending in … when anything was dropped.
@@ -2673,13 +2672,6 @@ impl App {
         }
     }
 
-    /// Expand or collapse the newest thinking block (alt+t by default).
-    fn toggle_latest_thinking(&mut self) {
-        if let Some(line) = self.lines.iter_mut().rev().find(|l| l.tone == Tone::Thinking) {
-            line.expanded = !line.expanded;
-        }
-    }
-
     fn open_transcript(&mut self) {
         let mut text = String::new();
         let mut prompt_rows = Vec::new();
@@ -2755,7 +2747,7 @@ impl App {
     fn commit_stream(&mut self) {
         if !self.thinking.is_empty() {
             // the whole block is kept; chat_lines shows a collapsed preview until
-            // alt+t (or a click) expands it
+            // a double-click expands it
             let t = std::mem::take(&mut self.thinking);
             self.push_tool(format!("{THINK_ICON} {}", t.trim_end()), Tone::Thinking, None);
         }
@@ -5595,10 +5587,6 @@ impl App {
             self.open_latest_viewer();
             return;
         }
-        if self.keys.matches(Action::ToggleThinking, k) {
-            self.toggle_latest_thinking();
-            return;
-        }
         // Ctrl+C always remains a safe interrupt even when the action is remapped.
         // the prompt menu grabs number keys; anything else closes it first
         if self.prompt_menu.is_some() {
@@ -7727,7 +7715,7 @@ impl App {
             })
             .map(|(source_index, line)| {
                 let mut text = if line.tone == Tone::Thinking {
-                    thinking_view(&line.text, line.expanded, &self.keys)
+                    thinking_view(&line.text, line.expanded)
                 } else {
                     line.text.clone()
                 };
@@ -11592,16 +11580,12 @@ mod tests {
         assert_eq!(line.text, format!("{THINK_ICON} {body}"), "no 400-char truncation");
         let shown = app.chat_lines().last().unwrap().text.clone();
         assert_eq!(shown.lines().count(), 4, "3 preview lines + hint: {shown}");
-        assert!(shown.contains("alt+t 展开思考"), "{shown}");
+        assert!(shown.contains("双击展开思考"), "{shown}");
         assert!(!shown.contains("第9步推理"));
-        let mut serve = Serve::mock();
-        app.key(
-            crossterm::event::KeyEvent::new(KeyCode::Char('t'), KeyModifiers::ALT),
-            &mut serve,
-        );
+        app.lines.last_mut().unwrap().expanded = true; // what a double-click does
         let shown = app.chat_lines().last().unwrap().text.clone();
-        assert!(shown.contains("第9步推理") && shown.contains("alt+t 收起思考"), "{shown}");
-        app.toggle_latest_thinking();
+        assert!(shown.contains("第9步推理") && shown.contains("双击收起思考"), "{shown}");
+        app.lines.last_mut().unwrap().expanded = false;
         assert!(!app.chat_lines().last().unwrap().text.contains("第9步推理"));
     }
 
