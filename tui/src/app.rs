@@ -807,16 +807,6 @@ fn thinking_bar_color(frame: u128, local_row: usize, animate: bool) -> Color {
     THINK_WAVE[phase as usize]
 }
 
-/// The running gear's color cycle: same cyan family as the thinking wave, one
-/// step every 2 frames (~240ms). Without truecolor it alternates dark-gray and
-/// cyan, which is the most any 256-color terminal can express.
-/// The busy pulse: one dot on the tango's 3-3-2 rhythm (tresillo) — beats
-/// 1, 4 and 7 of eight flash, the rest rest. One beat per 120ms frame, so a
-/// bar is ~1s, about the dance's own tempo.
-fn pulse_on(frame: u128) -> bool {
-    matches!(frame % 8, 0 | 3 | 6)
-}
-
 /// How quickly output is arriving, as the rule sweep's speed in cells per
 /// animation frame: streaming (output in the last 0.5s) runs, waiting on a
 /// tool or the network (under 10s) drifts, past 10s of silence it stops.
@@ -856,6 +846,9 @@ fn sweep_color(x: usize, head: u64, width: usize, stalled: bool) -> Option<Color
     }
 }
 
+/// The running gear's color cycle: same cyan family as the thinking wave, one
+/// step every 2 frames (~240ms). Without truecolor it alternates dark-gray and
+/// cyan, which is the most any 256-color terminal can express.
 fn gear_color(frame: u128, animate: bool) -> Color {
     if !animate {
         return Color::DarkGray;
@@ -1268,7 +1261,7 @@ pub struct App {
     /// user-message style: true = right-positioned bubble (default),
     /// false = Claude Code style (same theme, left, full-width bg) — /bubble
     user_bubble: bool,
-    /// motion on (default): pulse, rule sweep, thinking wave, gear, splash
+    /// motion on (default): rule sweep, thinking wave, gear, splash
     /// twinkle. Off keeps the same text with static colors — /animations
     pub animations: bool,
     /// scroll offset of the permission dialog's command preview (↑↓/wheel)
@@ -8006,7 +7999,7 @@ impl App {
             let frames = self.think_frame.saturating_sub(self.sweep_frame).min(8) as u64;
             self.sweep_pos = self.sweep_pos.wrapping_add(frames * speed);
             self.sweep_frame = self.think_frame;
-            Some((pulse_on(self.think_frame), self.sweep_pos, speed == 0))
+            Some((self.sweep_pos, speed == 0))
         } else {
             None
         };
@@ -8516,7 +8509,7 @@ impl App {
                 .is_some_and(|c| c == '●')
                 || text == "idle"
             {
-                // the work segment (pulse dot, or idle):
+                // the work segment (busy dot, or idle):
                 // counter first, then the timer — the dot stays to the last
                 if text == "idle" {
                     4 // never clipped to a stub; dropped whole when out of room
@@ -8557,7 +8550,7 @@ impl App {
         }
     }
 
-    /// "● 12s · ↓14.0k" (the 3-3-2 pulse dot) while a turn runs, "idle" otherwise.
+    /// "● 12s · ↓14.0k" (a steady dot) while a turn runs, "idle" otherwise.
     /// Lives on the input rule's
     /// left end (and in a custom statusline's {work}); the default status bar no longer carries it.
     fn work_text(&self) -> String {
@@ -8580,8 +8573,8 @@ impl App {
 
     /// The input rule: work state on the left, a rotating tip on the right, dashes between.
     /// Too narrow for both → the tip goes; narrower still → the work text sheds the counter,
-    /// then the timer, keeping the dot. `anim` (busy only) is the pulse's lit state and the
-    /// sweep's (head, stalled): the leading ● dims off-beat, the dashes carry the cyan band,
+    /// then the timer, keeping the dot. `anim` (busy only) is the
+    /// sweep's (head, stalled): the leading ● stays steady, the dashes carry the cyan band,
     /// and a stalled turn greys the dot and freezes the band out.
     fn rule_line(
         work: &str,
@@ -8589,7 +8582,7 @@ impl App {
         width: usize,
         dash: Style,
         live: Style,
-        anim: Option<(bool, u64, bool)>,
+        anim: Option<(u64, bool)>,
     ) -> Line<'static> {
         let mut work = work.to_string();
         let mut tip = tip.map(str::to_string);
@@ -8610,7 +8603,7 @@ impl App {
             }
         }
         let right = tip.map(|t| format!(" {t} ─")).unwrap_or_default();
-        let Some((lit, head, stalled)) = anim else {
+        let Some((head, stalled)) = anim else {
             let left = format!("─ {work} ");
             let fill = width.saturating_sub(display_width(&left) + display_width(&right));
             return Line::from(vec![
@@ -8622,12 +8615,11 @@ impl App {
         let mut spans = vec![Span::styled("─ ", dash)];
         let rest = match work.strip_prefix('●') {
             Some(rest) => {
+                // steady while working; greys out with the rest on a stall
                 let dot = if stalled {
                     dash
-                } else if lit {
-                    live.add_modifier(ratatui::style::Modifier::BOLD)
                 } else {
-                    live.add_modifier(ratatui::style::Modifier::DIM)
+                    live.add_modifier(ratatui::style::Modifier::BOLD)
                 };
                 spans.push(Span::styled("●", dot));
                 rest.to_string()
@@ -13876,17 +13868,14 @@ mod tests {
         let s = app.work_text();
         assert!(
             s.contains("↓14.0k") && s.starts_with('●'),
-            "the pulse dot leads the work text: {s}"
+            "the dot leads the work text: {s}"
         );
         app.busy = false;
         assert_eq!(app.work_text(), "idle");
     }
 
     #[test]
-    fn busy_pulse_beats_the_tango_tresillo() {
-        let bar: Vec<bool> = (0..8).map(pulse_on).collect();
-        assert_eq!(bar, vec![true, false, false, true, false, false, true, false], "3-3-2");
-        assert_eq!(pulse_on(8), pulse_on(0), "one bar loops");
+    fn busy_dot_leads_the_work_text() {
         let mut app = App::new();
         app.busy = true;
         app.turn_started = None;
@@ -13910,14 +13899,14 @@ mod tests {
         // a stalled rule greys the dot; it still reads the same text
         let plain = Style::default();
         let live = Style::default().fg(Color::Green);
-        let l = App::rule_line("● 12s · ↓1.0k", None, 40, plain, live, Some((true, 5, true)));
+        let l = App::rule_line("● 12s · ↓1.0k", None, 40, plain, live, Some((5, true)));
         let dot = l.spans.iter().find(|s| s.content == "●").unwrap();
         assert_eq!(dot.style, plain, "stalled dot drops the live color");
         let t: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(t.starts_with("─ ● 12s · ↓1.0k ─"), "{t}");
         assert_eq!(display_width(&t), 40);
-        // live and on-beat: the dot is bold live color
-        let l = App::rule_line("● 12s", None, 30, plain, live, Some((true, 5, false)));
+        // live: the dot is steady bold live color
+        let l = App::rule_line("● 12s", None, 30, plain, live, Some((5, false)));
         let dot = l.spans.iter().find(|s| s.content == "●").unwrap();
         assert_eq!(dot.style.fg, Some(Color::Green));
         let t: String = l.spans.iter().map(|s| s.content.as_ref()).collect();

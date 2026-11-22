@@ -45,7 +45,7 @@ git diff | tango "review this patch"
 | Park a half-written draft | Alt+S (press again to restore) |
 | Edit a draft in Neovim | Ctrl+E, or `/nvim` |
 | See a full tool output | Ctrl+O, or click the tool line |
-| Check whether it's still working | The rule above the input: `idle`, or a pulsing `●` with the elapsed time and received characters; a band of light flows along the rule while output arrives, and stops and dims after 10s of silence |
+| Check whether it's still working | The rule above the input: `idle`, or a `●` with the elapsed time and received characters; a band of light flows along the rule while output arrives, and stops and dims after 10s of silence |
 | Find the logo | An empty session shows the centered TANGO wordmark (block letters, cyan gradient + twinkle) with the dancer and a hint; the first message replaces it |
 | Get back to the prompt you're reading about | Scrolled up, the dim top row shows that prompt; click it to jump there |
 | Hop between your prompts | `alt+↑` / `alt+↓` walk to the previous / next prompt, landing it at the top of the view; the last `alt+↓` returns to the bottom |

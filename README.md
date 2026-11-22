@@ -314,7 +314,7 @@ durations, a centered permission modal (y/n/a), a bottom status bar below the in
 cost · session, fitted to the terminal width — on a narrow screen ctx and sess go first, then the
 pinned ▶, and the model name shortens, while cost and the ❓ badge stay). The rule above the input
 carries the work state on its left end — `idle`, or the elapsed time and
-received characters behind a `●` that pulses in the tango 3-3-2 rhythm (about one bar per second) — and
+received characters behind a steady `●` — and
 a rotating tip on its right end during long turns; on a narrow terminal the tip goes first, then the
 counter, then the timer. While a turn runs, a cyan band of light flows along the rule's dashes: fast
 while text streams, a slow drift while waiting on tools; after 10s with no output it stops and dims.
