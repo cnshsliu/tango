@@ -33,7 +33,7 @@ export interface Config {
   /** TUI action → key binding, e.g. { "expandTools": "ctrl+u" } */
   keys?: Record<string, string>;
   /** Neovim viewer preference; standard Vim is never used */
-  nvimViewer?: 'ask' | 'readonly';
+  nvimViewer?: 'ask' | 'readonly' | 'internal';
   /** Per-turn workspace snapshots for time travel; missing means on */
   checkpoint?: 'on' | 'off';
   /** Auto-compact threshold as a window share; 'off'/0 disables. Missing means 0.75. */

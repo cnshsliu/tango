@@ -421,7 +421,9 @@ confined to the inner rectangle. Focus is viewer → permission → picker → c
 scrolling never leaks into the chat, pickers support wheel/click, and Esc closes the focused layer.
 Opening full content checks `nvim` and `vim` with `--version`; only an actual `NVIM` is used,
 never standard Vim. On first detection, choose one-time read-only, persistent read-only
-(`nvimViewer: "readonly"`), edit, or the internal viewer. In the internal viewer, Ctrl+E edits the
+(`nvimViewer: "readonly"`), edit, or the internal viewer — picking the internal viewer persists it
+(`nvimViewer: "internal"`, no external editor at all), and that mode is the way back from
+`readonly` without hand-editing `config.json`. In the internal viewer, Ctrl+E edits the
 current item in Neovim. After saving, choose a new request, full reprocessing, or a correction
 containing a unified diff; the original session history and tool results are never rewritten.
 Unchanged saves submit nothing. Leaving Neovim returns to the prompt (or to the edit-resolution
@@ -578,7 +580,7 @@ used as the literal key. Nothing is inferred. `tango --models` shows which varia
 | `bubble` | user messages as right-aligned bubbles (default `true`) or full width | `/bubble` |
 | `editor` | `default` or `vim` input editing | `/vim` |
 | `keys` | remap TUI actions, e.g. `{ "expandTools": "ctrl+u" }` (see "TUI") | edit |
-| `nvimViewer` | `ask` or `readonly`: how Neovim opens read-only views | Neovim picker |
+| `nvimViewer` | `ask`, `readonly` (Neovim for read-only views) or `internal` (built-in viewer) | Neovim picker |
 | `checkpoint` | `off` disables per-turn workspace snapshots (default on) | edit |
 | `autocompact` | compact when context passes this share of the window (default `0.75`); `off` disables | `/autocompact` |
 | `maxTurns` | model round-trips per prompt before tango stops the loop (1-500, default 64) | edit |

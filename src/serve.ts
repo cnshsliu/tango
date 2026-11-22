@@ -1483,8 +1483,8 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
       }
       case 'set_nvim_viewer': {
         const mode = String(cmd.mode ?? '');
-        if (mode !== 'ask' && mode !== 'readonly')
-          return reply(cmd, false, undefined, `bad nvim viewer mode "${cmd.mode}" (ask|readonly)`);
+        if (mode !== 'ask' && mode !== 'readonly' && mode !== 'internal')
+          return reply(cmd, false, undefined, `bad nvim viewer mode "${cmd.mode}" (ask|readonly|internal)`);
         await saveConfig({ ...(await loadConfig()), nvimViewer: mode });
         reply(cmd, true, { nvimViewer: mode });
         return;

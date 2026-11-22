@@ -1806,14 +1806,14 @@ impl App {
                 self.prompt_menu = source;
                 return;
             }
-        }
-        let vrow = row.saturating_sub(chat_y) as usize;
-        if let Some(index) = self.line_at_visual_row(
-            self.chat_area.width as usize,
-            self.chat_area.height as usize,
-            vrow,
-        ) {
-            self.open_line_viewer_quiet(index);
+            // only a line that actually carries collapsed output opens the transcript
+            // viewer — and only the line the hit above resolved to. (An earlier version
+            // re-walked the rows with a naive wrap that ignored bubble borders, drifted
+            // several lines below the click, and opened whatever output-bearing line
+            // happened to sit there; plain prose and notices must do nothing.)
+            if let Some(l) = self.chat_lines().get(li).filter(|l| l.output.is_some()) {
+                self.open_line_viewer_quiet(l.source_index);
+            }
         }
     }
 
@@ -2498,6 +2498,7 @@ impl App {
         let preference = self.nvim_preference.clone();
         match (preference.as_str(), self.detect_nvim()) {
             ("readonly", Some(editor)) => self.launch_nvim(editor, viewer, true),
+            ("internal", _) => self.viewer = Some(viewer),
             ("ask", Some(_)) => {
                 self.pending_viewer = Some(viewer);
                 let item = |id: &str, label: &str, note: &str| PickItem {
@@ -2514,7 +2515,7 @@ impl App {
                         item("once", "仅此次使用 Neovim 只读", "本次打开，下次仍询问"),
                         item("always", "以后都使用 Neovim 只读", "保存到配置"),
                         item("edit", "本次使用 Neovim 编辑", "保存后选择如何处理修改"),
-                        item("internal", "使用内置查看器", "不启动外部编辑器"),
+                        item("internal", "以后都用内置查看器", "存到配置，不启动外部编辑器"),
                     ],
                 ));
             }
@@ -5087,6 +5088,11 @@ impl App {
                 PickerKind::NvimBackend => {
                     if let Some(viewer) = self.pending_viewer.take() {
                         if item.id == "internal" {
+                            let id = serve.command(
+                                "set_nvim_viewer",
+                                vec![("mode", Value::String("internal".into()))],
+                            );
+                            self.pending.push((id, Pending::NvimViewer));
                             self.viewer = Some(viewer);
                         } else if let Some(editor) = self.detect_nvim() {
                             if item.id == "always" {
@@ -7771,22 +7777,6 @@ impl App {
             .sum()
     }
 
-    fn line_at_visual_row(&self, width: usize, chat_height: usize, row: usize) -> Option<usize> {
-        let lines = self.chat_lines();
-        let total = Self::visual_lines(&lines, width);
-        let offset = total.saturating_sub(chat_height + self.scroll_back);
-        let target = offset + row;
-        let mut top = 0;
-        for line in &lines {
-            let height = Self::visual_lines(std::slice::from_ref(line), width);
-            if target >= top && target < top + height {
-                return line.output.is_some().then_some(line.source_index);
-            }
-            top += height;
-        }
-        None
-    }
-
     pub fn draw(&mut self, f: &mut Frame) {
         let area = f.area();
         let input_h = self.input_height(area.width);
@@ -9515,13 +9505,68 @@ mod tests {
 
     #[test]
     fn click_row_maps_to_the_visible_expandable_card() {
+        use ratatui::{Terminal, backend::TestBackend};
         let mut app = App::new();
+        app.nvim_preference = "internal".into();
         app.push_tool("first", Tone::Muted, Some("one".into()));
         app.push_tool("second", Tone::Muted, Some("two".into()));
         app.push_tool("third", Tone::Muted, Some("three".into()));
-        assert_eq!(app.line_at_visual_row(80, 2, 0), Some(1));
-        assert_eq!(app.line_at_visual_row(80, 2, 1), Some(2));
-        assert_eq!(app.line_at_visual_row(80, 2, 2), None);
+        {
+            let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+            terminal.draw(|f| app.draw(f)).unwrap();
+        }
+        // short lines: one display row each, top-anchored at chat y=0
+        app.chat_press(1, 3);
+        app.chat_release(0, 1, 3);
+        assert_eq!(app.viewer.as_ref().unwrap().text, "two");
+        // a row past the last line (empty space) opens nothing new
+        app.viewer = None;
+        let bottom = app.chat_area.height.saturating_sub(1) as u16;
+        app.chat_press(bottom, 3);
+        app.chat_release(0, bottom, 3);
+        assert!(app.viewer.is_none(), "clicking empty space opens nothing");
+    }
+
+    #[test]
+    fn click_on_plain_text_opens_no_viewer_despite_bubble_drift() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut app = App::new();
+        app.nvim_preference = "internal".into();
+        app.push_user("一句比较长的用户输入，占据多行气泡，为下面的行制造偏移");
+        app.push("当前模型未标注视觉能力，图片仍会随消息发送", Tone::Muted);
+        app.push_tool("⚙ bash", Tone::Muted, Some("popup.png: PNG image data".into()));
+        {
+            let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+            terminal.draw(|f| app.draw(f)).unwrap();
+        }
+        // the notice line: a plain line with no output. The old code walked a naive
+        // wrap that ignored the bubble's border rows, resolved several rows too far
+        // down, and opened the bash card's viewer instead.
+        let notice_row = app
+            .chat_rows
+            .iter()
+            .position(|r| {
+                app.chat_lines()
+                    .get(r.line)
+                    .is_some_and(|l| l.text.starts_with("当前模型") && l.output.is_none())
+            })
+            .unwrap() as u16;
+        app.chat_press(notice_row, 5);
+        app.chat_release(0, notice_row, 5);
+        assert!(app.viewer.is_none(), "plain notice must not open a viewer");
+        // the tool line still opens exactly its own output
+        let tool_row = app
+            .chat_rows
+            .iter()
+            .position(|r| {
+                app.chat_lines()
+                    .get(r.line)
+                    .is_some_and(|l| l.text.starts_with("⚙ bash"))
+            })
+            .unwrap() as u16;
+        app.chat_press(tool_row, 5);
+        app.chat_release(0, tool_row, 5);
+        assert_eq!(app.viewer.as_ref().unwrap().text, "popup.png: PNG image data");
     }
 
     #[test]
@@ -12882,13 +12927,6 @@ mod tests {
             .x as u16;
         app.chat_press(0, x + 3);
         app.chat_release(0, 0, x + 3);
-        eprintln!(
-            "dbg: x={x} prompt_menu={:?} line0 tone={:?} output={:?} lavr={:?}",
-            app.prompt_menu,
-            app.lines.first().map(|l| l.tone),
-            app.lines.first().and_then(|l| l.output.as_deref()),
-            app.line_at_visual_row(80, 17, 0)
-        );
         assert_eq!(app.prompt_menu, Some(0), "menu opens anchored to the line");
         {
             let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();

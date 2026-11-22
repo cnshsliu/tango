@@ -299,8 +299,15 @@ test('serve: sessions listing, TANGO_RESUME restores context, TANGO_MODE, save_s
     b.send({ id: 7, cmd: 'set_nvim_viewer', mode: 'ask' });
     const viewer = await b.until((f) => f.type === 'result' && f.id === 7, 'nvim viewer result');
     assert.deepEqual(viewer.data, { nvimViewer: 'ask' });
-    const config = JSON.parse(await readFile(join(home, 'config.json'), 'utf8'));
+    let config = JSON.parse(await readFile(join(home, 'config.json'), 'utf8'));
     assert.equal(config.nvimViewer, 'ask');
+    // "internal" persists too: the built-in viewer mode — the UI escape hatch
+    // from readonly (Neovim popping up on every transcript click)
+    b.send({ id: 8, cmd: 'set_nvim_viewer', mode: 'internal' });
+    const internal = await b.until((f) => f.type === 'result' && f.id === 8, 'internal viewer result');
+    assert.deepEqual(internal.data, { nvimViewer: 'internal' });
+    config = JSON.parse(await readFile(join(home, 'config.json'), 'utf8'));
+    assert.equal(config.nvimViewer, 'internal');
   } finally {
     b.child.kill();
     mock.server.close();
