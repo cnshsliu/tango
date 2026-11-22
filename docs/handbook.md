@@ -37,7 +37,7 @@ git diff | tango "review this patch"
 | You want to | Do this |
 | --- | --- |
 | Send | Enter (Ctrl+S always sends, also in Vim mode) |
-| Add a newline | Alt+Enter while idle, or switch Enter's meaning with `/multiline` |
+| Add a newline | Alt+Enter while idle; Shift+Enter in terminals with the Kitty keyboard protocol (kitty, WezTerm, Ghostty, iTerm2 with CSI u); or switch Enter's meaning with `/multiline` |
 | Include a file | `@src/app.ts`, or a line range: `@src/app.ts#20-45` |
 | Ask about a file by its path | Paste or drag the full path (`/Users/me/notes.md`, `~/x.md`, quoted or with `\ ` escapes), alone or followed by your question. It goes to the model as `文件：<path>` plus your text; a bare path asks the model to read and understand the file. It is never taken for a slash command; a path that doesn't exist says so |
 | Attach an image | Paste it; terminals paste a temp file path, which becomes a `[图片 #N]` chip |

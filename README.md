@@ -514,7 +514,14 @@ the command has its own bottom line. Esc cancels that line without clearing the 
 object remaps `expandTools`, `editLast` (Alt+E: interrupt and edit the last prompt), `newline`, `interrupt`, `clearInput`,
 `scrollUp`, `scrollDown`, `pageUp`, `pageDown`, `promptPrev`, and `promptNext`, using values such as `ctrl+u` or `alt+enter`.
 Unknown actions, keys, and editor values fall back to defaults. Ctrl+C always remains a safe
-interrupt/clear binding even when `interrupt` is remapped. Example:
+interrupt/clear binding even when `interrupt` is remapped, and Shift+Enter always inserts a
+newline. Shift+Enter needs the Kitty keyboard protocol: at startup the TUI asks the terminal
+(`CSI ? u`, in the same round trip as the OSC 11 background query) and, when it answers (kitty,
+WezTerm, Ghostty, foot, iTerm2 with "Report keys using CSI u", recent Alacritty), pushes the
+"disambiguate escape codes" level so Shift+Enter, Ctrl+I vs Tab and a bare Esc arrive as distinct
+keys. The flags are popped on exit, `/restart` and while Neovim runs. Other terminals keep the
+legacy encoding, where Shift+Enter is plain Enter; use Alt+Enter there. `TANGO_KITTY_KEYS=off`
+skips the protocol. Example:
 
 ```json
 { "editor": "vim", "keys": { "expandTools": "ctrl+u" } }

@@ -4,6 +4,10 @@
 //! at the timeout. The reply is read straight from stdin, so callers must make
 //! sure crossterm's input thread is not reading at the same time (it would turn
 //! the reply into Alt+] and typed text).
+//!
+//! The same round trip asks `CSI ? u` (Kitty keyboard protocol flags): a
+//! terminal that answers it supports the protocol, so main.rs can turn on
+//! disambiguated keys (Shift+Enter, Ctrl+I vs Tab, Esc without delay).
 
 /// Parse an OSC 11 reply (`ESC ]11;rgb:RRRR/GGGG/BBBB` or `#rrggbb`, ended by
 /// BEL or ST) anywhere in `buf` into 8-bit RGB.
@@ -55,30 +59,56 @@ fn has_da1(buf: &[u8]) -> bool {
 /// Ask the terminal for its background and wait up to `timeout` for the
 /// reply. `None` when the terminal does not answer OSC 11 (or stdin is not a
 /// tty). Raw mode must be on.
-static DETECTED: std::sync::OnceLock<Option<bool>> = std::sync::OnceLock::new();
-
-/// Run the startup query once and remember the answer for `detected()`.
-pub fn detect_once(timeout: std::time::Duration) {
-    DETECTED.get_or_init(|| query(timeout));
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Probe {
+    /// `Some(true)` light background, `Some(false)` dark, `None` no OSC 11 answer
+    pub light: Option<bool>,
+    /// the terminal answered `CSI ? u`: Kitty keyboard protocol available
+    pub kitty_keys: bool,
 }
 
-/// The startup answer: `Some(true)` light, `Some(false)` dark, `None` unknown.
+static DETECTED: std::sync::OnceLock<Probe> = std::sync::OnceLock::new();
+
+/// Run the startup query once and remember the answer for `detected()`.
+pub fn detect_once(timeout: std::time::Duration) -> Probe {
+    *DETECTED.get_or_init(|| query(timeout))
+}
+
+/// The startup background answer: `Some(true)` light, `Some(false)` dark, `None` unknown.
 pub fn detected() -> Option<bool> {
-    DETECTED.get().copied().flatten()
+    DETECTED.get().and_then(|p| p.light)
+}
+
+/// Parse everything the startup round trip got back.
+pub fn parse_probe(buf: &[u8]) -> Probe {
+    Probe {
+        light: parse_reply(buf).map(is_light),
+        kitty_keys: has_kitty_flags(buf),
+    }
+}
+
+/// A `CSI ? <digits> u` reply: the terminal reports Kitty keyboard flags.
+fn has_kitty_flags(buf: &[u8]) -> bool {
+    let s = String::from_utf8_lossy(buf);
+    s.match_indices("\x1b[?").any(|(i, _)| {
+        s[i + 3..].chars().find(|c| !c.is_ascii_digit()) == Some('u')
+    })
 }
 
 #[cfg(unix)]
-pub fn query(timeout: std::time::Duration) -> Option<bool> {
+pub fn query(timeout: std::time::Duration) -> Probe {
     use std::io::Write;
     use std::os::fd::AsRawFd;
     let stdin = std::io::stdin();
     let fd = stdin.as_raw_fd();
     if unsafe { libc::isatty(fd) } != 1 {
-        return None;
+        return Probe::default();
     }
     let mut out = std::io::stdout();
-    out.write_all(b"\x1b]11;?\x07\x1b[c").ok()?;
-    out.flush().ok()?;
+    // replies come back in order, so DA1 last still marks the end
+    if out.write_all(b"\x1b]11;?\x07\x1b[?u\x1b[c").and_then(|_| out.flush()).is_err() {
+        return Probe::default();
+    }
     let deadline = std::time::Instant::now() + timeout;
     let mut buf = Vec::new();
     while !has_da1(&buf) {
@@ -97,12 +127,12 @@ pub fn query(timeout: std::time::Duration) -> Option<bool> {
         }
         buf.extend_from_slice(&chunk[..n as usize]);
     }
-    parse_reply(&buf).map(is_light)
+    parse_probe(&buf)
 }
 
 #[cfg(not(unix))]
-pub fn query(_timeout: std::time::Duration) -> Option<bool> {
-    None
+pub fn query(_timeout: std::time::Duration) -> Probe {
+    Probe::default()
 }
 
 #[cfg(test)]
@@ -128,6 +158,15 @@ mod tests {
         assert!(is_light((253, 246, 227))); // solarized light
         assert!(!is_light((0, 43, 54))); // solarized dark
         assert!(!is_light((30, 30, 46)));
+    }
+
+    #[test]
+    fn kitty_flags_reply_means_the_protocol_is_there() {
+        let both = parse_probe(b"\x1b]11;rgb:ffff/ffff/ffff\x07\x1b[?0u\x1b[?62;22c");
+        assert_eq!(both, Probe { light: Some(true), kitty_keys: true });
+        let legacy = parse_probe(b"\x1b]11;rgb:0/0/0\x07\x1b[?62;22c");
+        assert_eq!(legacy, Probe { light: Some(false), kitty_keys: false });
+        assert!(!parse_probe(b"\x1b[?62;22c").kitty_keys, "DA1 alone is not a flags reply");
     }
 
     #[test]

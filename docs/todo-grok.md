@@ -82,7 +82,7 @@
 - [x] **20. OSC 52 剪贴板**（已完成：`tui/src/clipboard.rs`，`/clipboard`，配置 `clipboard`）
   - OpenTUI：通过终端转义序列复制，SSH 和 tmux 里也能用。见 `packages/core/src/lib/clipboard-service.ts`。
   - tango：`tui/src/clipboard.rs` 调用本机剪贴板命令，远程登录时复制不到本地。
-- [ ] **21. Kitty 键盘协议**
+- [x] **21. Kitty 键盘协议**（已完成：启动时 `CSI ? u` 探测，支持就推 disambiguate 级别；Shift+Enter 恒为换行；`TANGO_KITTY_KEYS=off` 关闭）
   - OpenTUI：开启后能区分 Shift+Enter、Ctrl+I 和 Tab 这类组合键。见 `packages/core/src/renderer.ts:908`。
   - tango：没开。Shift+Enter 换行在很多终端里识别不了。
 - [ ] **22. Markdown 渲染和代码高亮**

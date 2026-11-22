@@ -198,6 +198,11 @@ impl Keymap {
             || (matches!(action, Action::Interrupt)
                 && key.code == KeyCode::Char('c')
                 && key.modifiers == KeyModifiers::CONTROL)
+            // Shift+Enter always inserts a newline; terminals only report it
+            // distinctly with the Kitty keyboard protocol (main.rs turns it on)
+            || (matches!(action, Action::Newline)
+                && key.code == KeyCode::Enter
+                && key.modifiers == KeyModifiers::SHIFT)
     }
 }
 
@@ -206,6 +211,15 @@ mod tests {
     use super::*;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use serde_json::json;
+
+    #[test]
+    fn shift_enter_is_a_newline_even_when_newline_is_rebound() {
+        let shift_enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT);
+        assert!(Keymap::from_json(None).matches(Action::Newline, shift_enter));
+        let rebound = Keymap::from_json(Some(&json!({ "newline": "ctrl+j" })));
+        assert!(rebound.matches(Action::Newline, shift_enter));
+        assert!(!rebound.matches(Action::Newline, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
+    }
 
     #[test]
     fn defaults_match_existing_bindings() {

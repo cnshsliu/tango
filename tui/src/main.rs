@@ -62,8 +62,9 @@ fn report<W: std::io::Write>(
 fn main() -> Result<(), Box<dyn Error>> {
     entry();
     enable_raw_mode()?;
-    // before the input thread exists: the reply is read straight off stdin
-    termbg::detect_once(Duration::from_millis(300));
+    // before the input thread exists: the replies are read straight off stdin
+    let probe = termbg::detect_once(Duration::from_millis(300));
+    let kitty = probe.kitty_keys && std::env::var("TANGO_KITTY_KEYS").as_deref() != Ok("off");
     let mut stdout = std::io::stdout();
     execute!(
         stdout,
@@ -72,9 +73,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         crossterm::event::EnableMouseCapture,
         crossterm::event::EnableBracketedPaste
     )?;
+    kitty_keys(&mut stdout, kitty, true)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
 
-    let result = run(&mut terminal);
+    let result = run(&mut terminal, kitty);
 
     // drop tango's status record so the pane doesn't keep claiming an agent at rest
     report(
@@ -82,6 +84,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         &mut status::Reporter::default(),
         status::ProgramStatus::Clear,
     );
+    kitty_keys(terminal.backend_mut(), kitty, false)?;
     disable_raw_mode()?;
     execute!(
         terminal.backend_mut(),
@@ -103,6 +106,23 @@ fn main() -> Result<(), Box<dyn Error>> {
         Ok(Exit::Quit(None)) => {}
     }
     Ok(())
+}
+
+/// Kitty keyboard protocol, disambiguate level only: Shift+Enter, Ctrl+I vs
+/// Tab and a bare Esc arrive as distinct keys; plain typing is unchanged. Pushed
+/// on the terminal's flag stack, so popping restores whatever the shell had.
+fn kitty_keys<W: std::io::Write>(out: &mut W, enabled: bool, on: bool) -> std::io::Result<()> {
+    use crossterm::event::{
+        KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    };
+    match (enabled, on) {
+        (false, _) => Ok(()),
+        (true, true) => execute!(
+            out,
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+        ),
+        (true, false) => execute!(out, PopKeyboardEnhancementFlags),
+    }
 }
 
 enum Exit {
@@ -168,7 +188,10 @@ fn restart(session: &str, mode: &str) {
     }
 }
 
-fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<Exit, Box<dyn Error>> {
+fn run(
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    kitty: bool,
+) -> Result<Exit, Box<dyn Error>> {
     let (tx, rx) = mpsc::channel::<Event>();
     let mut serve = Serve::spawn(tx.clone(), 0, None, None, None)?;
     let input_enabled = Arc::new(AtomicBool::new(true));
@@ -269,6 +292,7 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<Exit, Box<dy
             input_enabled.store(false, Ordering::Relaxed);
             // let the input thread finish its current poll before Neovim takes the tty
             thread::sleep(Duration::from_millis(220));
+            kitty_keys(terminal.backend_mut(), kitty, false)?; // Neovim negotiates its own
             disable_raw_mode()?;
             execute!(
                 terminal.backend_mut(),
@@ -289,6 +313,7 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<Exit, Box<dy
                 crossterm::cursor::Hide,
                 crossterm::event::EnableBracketedPaste
             )?;
+            kitty_keys(terminal.backend_mut(), kitty, true)?;
             if app.mouse_enabled() {
                 execute!(terminal.backend_mut(), crossterm::event::EnableMouseCapture)?;
             }
@@ -353,6 +378,18 @@ mod tests {
         fn flush(&mut self) -> std::io::Result<()> {
             Ok(())
         }
+    }
+
+    #[test]
+    fn kitty_keys_push_disambiguate_and_pop_only_when_supported() {
+        let mut out = Vec::new();
+        kitty_keys(&mut out, true, true).unwrap();
+        kitty_keys(&mut out, true, false).unwrap();
+        assert_eq!(String::from_utf8(out).unwrap(), "\x1b[>1u\x1b[<1u");
+        let mut none = Vec::new();
+        kitty_keys(&mut none, false, true).unwrap();
+        kitty_keys(&mut none, false, false).unwrap();
+        assert!(none.is_empty(), "terminals without the protocol get nothing");
     }
 
     #[test]
