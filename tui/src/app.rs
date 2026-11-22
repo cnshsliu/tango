@@ -83,6 +83,10 @@ fn clip_to_width(s: &str, width: usize) -> String {
     out
 }
 
+/// how long a first Ctrl+C on an empty input waits for the second one
+const EXIT_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
+const EXIT_HINT: &str = "再按一次 Ctrl+C 退出";
+
 struct ChatLine {
     text: String,
     tone: Tone,
@@ -1300,6 +1304,8 @@ pub struct App {
     /// alt+e armed: the destructive confirm (interrupt + code rollback) waits
     /// for a second press
     editlast_armed: bool,
+    /// first Ctrl+C on an empty, idle input: a second one within EXIT_WINDOW quits
+    exit_armed: Option<std::time::Instant>,
     /// the prompt menu (click a user bubble): anchored line index
     prompt_menu: Option<usize>,
     /// clickable rows of the prompt menu, rebuilt every draw
@@ -1421,6 +1427,7 @@ impl App {
             perm_scroll: 0,
             perm_wrap_w: 76,
             editlast_armed: false,
+            exit_armed: None,
             prompt_menu: None,
             prompt_menu_buttons: Vec::new(),
             edit_target_head: None,
@@ -5035,6 +5042,8 @@ impl App {
         // any key may edit the input, which would make the display indices stale
         self.input_sel = None;
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+        // any other key cancels a pending "press Ctrl+C again to exit"
+        let exit_armed = self.exit_armed.take();
         if self.viewer.is_some() {
             // Ctrl+C always remains a safe interrupt even when the action is remapped —
             // and even while a viewer (e.g. an in-flight /btw answer) has the keys
@@ -5510,6 +5519,21 @@ impl App {
             self.edit_mode = EditMode::Normal;
             self.popup = None;
             self.cursor = self.cursor.saturating_sub(1);
+            return;
+        }
+        // Ctrl+C on an empty input while idle: the first press warns on the input
+        // rule, a second one within EXIT_WINDOW leaves like /exit
+        if self.keys.matches(Action::Interrupt, k)
+            && self.input.is_empty()
+            && self.history_nav.is_none()
+            && !self.busy
+        {
+            self.editlast_armed = false;
+            if exit_armed.is_some_and(|t| t.elapsed() < EXIT_WINDOW) {
+                self.quit = true;
+            } else {
+                self.exit_armed = Some(std::time::Instant::now());
+            }
             return;
         }
         if self.keys.matches(Action::Interrupt, k) || self.keys.matches(Action::ClearInput, k) {
@@ -8185,6 +8209,8 @@ impl App {
             self.theme.style(Tone::Muted),
             self.theme.style(if self.busy {
                 Tone::Success
+            } else if self.exit_pending() {
+                Tone::Warning
             } else {
                 Tone::Muted
             }),
@@ -8727,11 +8753,19 @@ impl App {
         }
     }
 
+    /// a first Ctrl+C is waiting for its second press
+    fn exit_pending(&self) -> bool {
+        self.exit_armed.is_some_and(|t| t.elapsed() < EXIT_WINDOW)
+    }
+
     /// "● 12s · ↓14.0k" (a steady dot) while a turn runs, "idle" otherwise.
     /// Lives on the input rule's
     /// left end (and in a custom statusline's {work}); the default status bar no longer carries it.
     fn work_text(&self) -> String {
         if !self.busy {
+            if self.exit_pending() {
+                return EXIT_HINT.to_string();
+            }
             return "idle".to_string();
         }
         match self.turn_started {
@@ -9989,6 +10023,46 @@ mod tests {
             crossterm::event::KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
             &mut serve,
         );
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        assert_eq!(sent["cmd"], "interrupt");
+    }
+
+    #[test]
+    fn ctrl_c_on_an_empty_idle_input_asks_once_then_quits() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        let ctrl_c = crossterm::event::KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        let key = |c| crossterm::event::KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+        // with text, Ctrl+C only clears the input
+        app.key(key('h'), &mut serve);
+        app.key(ctrl_c, &mut serve);
+        assert!(app.input.is_empty() && !app.quit);
+        assert_eq!(app.work_text(), "idle", "clearing does not arm the exit");
+        // first press on the empty input: the rule shows the hint, nothing quits
+        app.key(ctrl_c, &mut serve);
+        assert!(!app.quit);
+        assert_eq!(app.work_text(), EXIT_HINT);
+        // any other key cancels it
+        app.key(key('x'), &mut serve);
+        app.key(crossterm::event::KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE), &mut serve);
+        assert_eq!(app.work_text(), "idle");
+        // two presses in a row quit
+        app.key(ctrl_c, &mut serve);
+        app.key(ctrl_c, &mut serve);
+        assert!(app.quit);
+        // an expired first press only re-arms
+        let mut app = App::new();
+        app.exit_armed = Some(std::time::Instant::now() - EXIT_WINDOW);
+        app.key(ctrl_c, &mut serve);
+        assert!(!app.quit);
+        assert_eq!(app.work_text(), EXIT_HINT);
+        // while a turn runs, an empty-input Ctrl+C still interrupts and never quits
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.busy = true;
+        app.key(ctrl_c, &mut serve);
+        app.key(ctrl_c, &mut serve);
+        assert!(!app.quit);
         let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
         assert_eq!(sent["cmd"], "interrupt");
     }
