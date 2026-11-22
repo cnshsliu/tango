@@ -183,7 +183,8 @@ To stop being asked about something specific without going fully `auto`, add an 
 /permissions                          list rules · /permissions rm <rule> removes one
 ```
 
-Rules are saved in `~/.tango/config.json`. They only turn "ask" into "allow" and never
+Rules are saved in the project's personal `.tango/config.local.json` (outside a project: in
+`~/.tango/config.json`); `/permissions` labels each rule with its file. They only turn "ask" into "allow" and never
 loosen `readonly` or `/plan`. A bash rule covers only the part of a command line it
 matches, so `git status; rm -rf build` still asks. `/import claude-code|grok|codex` copies
 another agent's allow list into these rules and lists any entries it couldn't convert.
@@ -210,6 +211,19 @@ prompt (`UserPromptSubmit`), or sends the model back to work instead of finishin
 Whatever the script prints to stderr is the reason the model sees. A `Stop` hook gets
 `"stop_hook_active": true` once it has already sent the model back, so it can let it finish. tango stops honoring it after 3 sends per prompt.
 Details and payload fields: README, "Hooks".
+
+### Project config
+
+A repo can carry its own `.tango/config.json` (committed), and you can keep a personal
+`.tango/config.local.json` next to it that git ignores. Both sit on top of
+`~/.tango/config.json`: single values come from the nearest file, rule and hook lists add up.
+`/config` shows every file and the merged result.
+
+Project hooks, permission rules, MCP servers and extra dirs can run commands or loosen access.
+The first time you open such a repo, tango lists them and asks whether to trust the project.
+Until you say yes they stay off; everything else in the file applies right away. The answer is
+remembered per repo (worktrees included). `/trust` shows the state and asks again; `/trust yes`
+or `/trust no` changes it and restarts the session's backend.
 
 ## Slash-command reference
 
@@ -315,7 +329,8 @@ while a turn is running unless noted. `/help` prints a short list inside the TUI
 | `/plugins` | Installed local plugins |
 | `/permissions [add\|rm <rule>]` | List, add or remove allow rules |
 | `/import claude-code\|grok\|codex [path]` | Copy another agent's allow list into tango's rules |
-| `/config` | View the current config |
+| `/config` | View the merged config and the files it came from |
+| `/trust [yes\|no]` | Whether this project's hooks, rules and MCP servers apply. Bare: show state and ask |
 | `/doctor` | Check the environment: git, API keys, directories, versions |
 | `/debug-zip` (`/feedback`) | Write a diagnostics zip (webhook redacted) to the working directory |
 

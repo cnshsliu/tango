@@ -81,7 +81,7 @@ TUI commands: `/model`, `/agents`, `/resume`, `/new`, `/restart`, `/rename`, `/m
 `/focus`, `/density`, `/mouse`, `/animations`, `/theme`, `/compact`, `/autocompact`, `/skill`, `/skills`,
 `/memory`, `/remember`, `/cost`, `/usage`, `/stats`, `/insights`, `/context`, `/queue`,
 `/timestamps`, `/statusline`, `/preset`, `/permissions`, `/import`, `/cd`, `/pwd`, `/add_dir`,
-`/config`, `/keymap`, `/init`, `/doctor`, `/debug-zip`, `/status`, `/clear`, `/rewind`, `/undo`,
+`/config`, `/trust`, `/keymap`, `/init`, `/doctor`, `/debug-zip`, `/status`, `/clear`, `/rewind`, `/undo`,
 `/redo`, `/fork`, `/handoff`, `/takeover`, `/branch`, `/tree`, `/find`, `/export`, `/transcript`, `/copy`, `/recap`,
 `/help`, `/exit`. `/model <id>` also saves the choice as the default for new sessions.
 
@@ -128,7 +128,8 @@ isolation), MCP server→client capabilities (sampling/roots), plugin marketplac
 ## Hooks
 
 Shell commands at four points of a turn, configured under `hooks` in `~/.tango/config.json`
-(Claude Code's format; plugin hooks run after these):
+or a trusted project's `.tango/config.json` (see "Project config and trust"; Claude Code's format;
+global hooks run first, then project, then personal, then plugin hooks):
 
 ```json
 { "hooks": {
@@ -172,7 +173,8 @@ first-class: per-model `reasoningField` (qwen/dashscope `reasoning_content` by d
 
 ## Permissions rules
 
-Three rule kinds, persisted in config.json (`permissions.allow`) and live via `/permissions`:
+Three rule kinds, persisted in `permissions.allow` and live via `/permissions` (which adds to the
+project's personal `.tango/config.local.json`, or the global file outside a project):
 `tool:<name>` (always allow that tool), `path:<prefix>` (allow writes under a path — relative to
 cwd or absolute, segment-boundary matched so `src` never matches `src-evil/`), `bash:<prefix>`
 (first command tokens, so `bash:git status` matches `git status -s` but not `git_status`).
@@ -498,10 +500,34 @@ All user state lives in `~/.tango/` (override with `TANGO_HOME`):
 | `AGENTS.md`              | global instructions appended to the system prompt                                                                                                        |
 | `skills/<name>/SKILL.md` | global skills (project-level: `<cwd>/.tango/skills/`)                                                                                                    |
 | `sessions/*.jsonl`       | append-only sessions, one line per entry                                                                                                                 |
+| `trusted.json`           | your trust decision per project (keyed by the main checkout), see below                                                                                  |
 
 `apiKey` is either an environment variable name or the key itself. A value made only of uppercase
 letters, digits and underscores (`"DEEPSEEK_API_KEY"`) is read from that variable; anything else is
 used as the literal key. Nothing is inferred. `tango --models` shows which variable each preset reads.
+
+### Project config and trust
+
+A session merges up to three config files, lowest first:
+
+| layer | file | notes |
+| --- | --- | --- |
+| global | `~/.tango/config.json` | `/theme`, `/mouse`, `/animations`, `/model` write here |
+| project shared | `<git toplevel>/.tango/config.json` | committed with the repo |
+| project personal | `<main checkout>/.tango/config.local.json` | `/permissions add`, `/import`, `/add_dir` write here; tango adds it to `.git/info/exclude` |
+
+CLI flags and environment variables still win over all three. Single values come from the
+nearest layer. `permissions.allow`, `extraDirs` and each hook event's list add up across layers;
+`mcpServers`, `roles` and `keys` merge by name. `feishuWebhook` and legacy `beforeTool`/`afterTool`
+hooks are read only from the global file. A file with broken JSON is skipped with a notice.
+
+`hooks`, `permissions`, `mcpServers` and `extraDirs` from the shared file run commands or widen
+access, so they apply only after you trust the project. The TUI asks on the first start in such a
+project and remembers the answer in `~/.tango/trusted.json`; `/trust yes|no` changes it later and
+restarts serve. Until then the other keys still apply, and `/status` shows what was skipped.
+Worktrees share the main checkout's trust and personal file. The personal file needs no trust
+unless git tracks it. Project hooks get `$TANGO_PROJECT_DIR` (the git toplevel), so
+`"command": "$TANGO_PROJECT_DIR/scripts/check.sh"` works from any subdirectory.
 
 ## Layout
 
