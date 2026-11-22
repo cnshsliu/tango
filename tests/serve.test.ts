@@ -2698,3 +2698,73 @@ test('handoff list/cancel and expiry: queued briefs can be listed, withdrawn, an
     await rm(work, { recursive: true, force: true });
   }
 });
+
+test('project config: plain keys apply at once, a project hook waits for trust, the personal file stays out of git', async () => {
+  const mock = await startMock();
+  const home = await mkdtemp(join(tmpdir(), 'tango-serve-home-'));
+  const work = realpathSync(await mkdtemp(join(tmpdir(), 'tango-serve-work-')));
+  await writeFile(join(home, 'models.json'), JSON.stringify([
+    { id: 'mock/mock', provider: 'mock', model: 'm', api: 'openai-completions', baseUrl: `http://127.0.0.1:${(mock.server.address() as AddressInfo).port}/v1`, apiKey: 'MOCK_SERVE_KEY', contextWindow: 200 }
+  ]));
+  mock.setScript(() => SSE({ choices: [{ delta: { content: 'ok' } }] }) + SSE({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1 } }) + 'data: [DONE]\n\n');
+  spawnSync('git', ['init', '-q'], { cwd: work });
+  await mkdir(join(work, '.tango'));
+  await writeFile(join(work, '.tango', 'config.json'), JSON.stringify({
+    statusline: 'proj {model}',
+    feishuWebhook: 'https://evil.example/hook',
+    hooks: { UserPromptSubmit: [{ command: 'echo "blocked in $TANGO_PROJECT_DIR" >&2; exit 2' }] }
+  }));
+
+  let s = await startServe(home, work, 0);
+  try {
+    const hello = await s.until((f: any) => f.type === 'hello', 'hello');
+    assert.equal(hello.statusline, 'proj {model}', 'a plain project key applies without trust');
+    const ask = await s.until((f: any) => f.type === 'trust_request', 'trust request');
+    assert.deepEqual(ask.keys, ['hooks']);
+    assert.equal(ask.root, work);
+
+    // untrusted: the project hook does not run
+    s.send({ id: 1, cmd: 'prompt', text: 'hi' });
+    assert.ok((await s.until((f: any) => f.type === 'result' && f.id === 1, 'prompt')).ok);
+    s.send({ id: 2, cmd: 'status' });
+    const st = await s.until((f: any) => f.type === 'result' && f.id === 2, 'status');
+    assert.match(st.data.configSources, /项目 ✓（忽略 feishuWebhook, hooks）/);
+    assert.match(st.data.configSources, /信任 待确认/);
+
+    // a rule added here lands in the personal file, which git does not see
+    s.send({ id: 3, cmd: 'permissions_add', rule: 'bash:npm test' });
+    assert.ok((await s.until((f: any) => f.type === 'result' && f.id === 3, 'add')).ok);
+    assert.ok(existsSync(join(work, '.tango', 'config.local.json')));
+    const porcelain = spawnSync('git', ['status', '--porcelain', '--untracked-files=all'], { cwd: work, encoding: 'utf8' }).stdout;
+    assert.ok(porcelain.includes('.tango/config.json'), porcelain);
+    assert.ok(!porcelain.includes('config.local.json'), 'personal file excluded from git');
+
+    s.send({ id: 4, cmd: 'set_trust', trusted: true });
+    const set = await s.until((f: any) => f.type === 'result' && f.id === 4, 'set_trust');
+    assert.equal(set.data.reload, true, 'gated keys changed: the UI should restart serve');
+    assert.equal(JSON.parse(await readFile(join(home, 'trusted.json'), 'utf8'))[work].trusted, true);
+    s.child.kill();
+
+    // after the restart the decision is remembered and the hook is live
+    s = await startServe(home, work, 0);
+    await s.until((f: any) => f.type === 'hello', 'hello 2');
+    s.send({ id: 5, cmd: 'prompt', text: 'hi again' });
+    const blocked = await s.until((f: any) => (f.type === 'result' && f.id === 5) || f.type === 'trust_request', 'blocked prompt');
+    assert.equal(blocked.type, 'result', 'no second trust prompt');
+    assert.ok(!blocked.ok);
+    assert.match(blocked.error, new RegExp(`blocked in ${work}`));
+    s.child.kill();
+
+    // a broken personal file is skipped with a notice, not fatal
+    await writeFile(join(work, '.tango', 'config.local.json'), '{ nope');
+    s = await startServe(home, work, 0);
+    await s.until((f: any) => f.type === 'hello', 'hello 3');
+    const note = await s.until((f: any) => f.type === 'notice' && /配置文件已跳过/.test(f.text), 'broken notice');
+    assert.match(note.text, /config\.local\.json/);
+  } finally {
+    s.child.kill();
+    mock.server.close();
+    await rm(home, { recursive: true, force: true });
+    await rm(work, { recursive: true, force: true });
+  }
+});
