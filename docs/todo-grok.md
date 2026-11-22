@@ -73,7 +73,7 @@
 
 ## TUI：从 OpenTUI 学
 
-- [ ] **18. 同步输出（DEC 2026）防闪烁**
+- [x] **18. 同步输出（DEC 2026）防闪烁**（已完成：`tui/src/main.rs` 的 `draw_synced`）
   - OpenTUI：每帧包在 `CSI ?2026h … ?2026l` 里，终端整帧一次显示。见 `packages/core/src/renderer.ts:157`。
   - tango：没用。crossterm 自带 `BeginSynchronizedUpdate`，改动很小。
 - [ ] **19. 主题自动检测：用 OSC 11 查询背景色，监听 997 主题变化通知**

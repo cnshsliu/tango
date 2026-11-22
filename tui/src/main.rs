@@ -27,6 +27,22 @@ use std::sync::{
 use std::thread;
 use std::time::Duration;
 
+/// One frame inside DEC 2026 synchronized output (`CSI ?2026h … ?2026l`): the
+/// terminal holds the old screen until the whole frame has arrived and swaps it
+/// in at once, so streaming/animation redraws never show half-painted rows.
+/// Terminals without 2026 ignore both sequences.
+fn draw_synced<W: std::io::Write>(
+    terminal: &mut Terminal<CrosstermBackend<W>>,
+    app: &mut App,
+) -> std::io::Result<()> {
+    use crossterm::terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate};
+    crossterm::queue!(terminal.backend_mut(), BeginSynchronizedUpdate)?;
+    let drawn = terminal.draw(|f| app.draw(f)).map(|_| ());
+    // always close the update, even if drawing failed, or the screen freezes
+    execute!(terminal.backend_mut(), EndSynchronizedUpdate)?;
+    drawn
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     entry();
     enable_raw_mode()?;
@@ -194,7 +210,7 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<Exit, Box<dy
     let mut app = App::new();
     animating.store(app.busy && app.animations, Ordering::Relaxed);
     loop {
-        terminal.draw(|f| app.draw(f))?;
+        draw_synced(terminal, &mut app)?;
         match rx.recv()? {
             // stale frames from a killed serve child (session switch): drop by epoch
             Event::Server(epoch, _) if epoch != serve.epoch => {}
@@ -291,5 +307,41 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<Exit, Box<dy
     } else {
         // hand the user the way back before the process goes away
         Ok(Exit::Quit(app.exit_note()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    #[derive(Clone, Default)]
+    struct Shared(Arc<Mutex<Vec<u8>>>);
+    impl std::io::Write for Shared {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(b);
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn every_frame_is_wrapped_in_synchronized_output() {
+        let buf = Shared::default();
+        let options = ratatui::TerminalOptions {
+            viewport: ratatui::Viewport::Fixed(Rect::new(0, 0, 40, 10)),
+        };
+        let mut terminal =
+            Terminal::with_options(CrosstermBackend::new(buf.clone()), options).unwrap();
+        let mut app = App::new();
+        draw_synced(&mut terminal, &mut app).unwrap();
+        let out = String::from_utf8_lossy(&buf.0.lock().unwrap()).to_string();
+        let begin = out.find("\x1b[?2026h").expect("begin sync");
+        let end = out.rfind("\x1b[?2026l").expect("end sync");
+        assert_eq!(begin, 0, "nothing painted before the update opens");
+        assert!(out[begin..end].len() > 20, "the frame's cells are inside");
+        assert_eq!(end + "\x1b[?2026l".len(), out.len(), "update closes last");
     }
 }

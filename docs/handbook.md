@@ -45,9 +45,10 @@ git diff | tango "review this patch"
 | Search earlier prompts | Ctrl+R |
 | Park a half-written draft | Alt+S (press again to restore) |
 | Edit a draft in Neovim | Ctrl+E, or `/nvim` |
-| See a full tool output | Ctrl+O, or click the tool line |
-| Read the model's full reasoning | Alt+T expands / collapses the newest thinking block, or click a block |
+| See a full tool output | Ctrl+O, or double-click the tool line |
+| Read the model's full reasoning | Alt+T expands / collapses the newest thinking block, or double-click a block |
 | Emoji show as boxes or misalign | `/ascii on` draws them (and the thinking robot) as plain ASCII |
+| Screen tears or flickers while streaming | Use a terminal with synchronized output (iTerm2, Kitty, WezTerm, Ghostty, Alacritty, Windows Terminal, recent tmux); tango sends each frame as one update |
 | Check whether it's still working | The rule above the input: `idle`, or a `●` with the elapsed time and received characters; a band of light flows along the rule while output arrives, and stops and dims after 10s of silence |
 | Find the logo | An empty session shows the centered TANGO wordmark (block letters, cyan gradient + twinkle) with the dancer and a hint; the first message replaces it |
 | Get back to the prompt you're reading about | Scrolled up, the dim top row shows that prompt; click it to jump there |
@@ -57,13 +58,13 @@ git diff | tango "review this patch"
 | Answer the model's ❓ panel | ↑↓ + Enter, click, or type the option number + Enter. Esc hides it; `/todo` brings it back |
 
 A tool call in flight shows as `⚙ bash …` with the gear color cycling; when it finishes
-the same line becomes `⚙ bash <command> · <ms>` (click it or press ctrl+o for the output).
+the same line becomes `⚙ bash <command> · <ms>` (double-click it or press ctrl+o for the output).
 
 Reasoning the model streamed shows as a block headed by a small robot girl `ʚ[◕ᴗ◕]ɞ✧`, with
 a `┃` bar on its left. While the turn runs she blinks and her sparkle flickers. The whole
 text is kept: short reasoning shows in full, a long block collapses to its first 3 lines plus
 `alt+t 展开思考（还有 N 字 · 共 M 行）`. Press Alt+T to expand or collapse the newest block, or
-click any block to toggle it; Ctrl+T's transcript always shows thinking in full. While the
+double-click any block to toggle it; Ctrl+T's transcript always shows thinking in full. While the
 turn runs, that bar's color scrolls down the newest thinking block (in 256 colors on
 terminals without 24-bit color; once idle, or with `/animations off`, it is a flat dim bar).
 

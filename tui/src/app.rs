@@ -1389,6 +1389,10 @@ pub struct App {
     input_dragging: bool,
     /// previous left press in the input box (time, row, column) — double-click detection
     input_last_click: Option<(std::time::Instant, u16, u16)>,
+    /// previous plain click in the chat area (time, row): a second click on the
+    /// same row within 400 ms is a double-click — the only click that opens
+    /// viewers/menus/toggles, so a stray single click never launches anything
+    chat_last_click: Option<(std::time::Instant, u16)>,
     /// the user prompt currently being worked on — pinned in the status bar so
     /// switching between many agents never loses track of "which ask is this"
     current_prompt: Option<String>,
@@ -1551,6 +1555,7 @@ impl App {
             input_sel: None,
             input_dragging: false,
             input_last_click: None,
+            chat_last_click: None,
             current_prompt: None,
             local_queue: Vec::new(),
             queue_dialog: false,
@@ -1775,9 +1780,11 @@ impl App {
         Some((li, full, click_idx))
     }
 
-    /// A click (press + release, no drag) in the chat area: an image chip under the
-    /// cursor opens the image; a file path under the cursor opens the read-only
-    /// viewer; a line with collapsed output opens the transcript viewer.
+    /// A double-click (press + release + press + release, no drag) in the chat
+    /// area: an image chip under the cursor opens the image; a file path under
+    /// the cursor opens the read-only viewer; a line with collapsed output opens
+    /// the transcript viewer. Single clicks are handled in chat_release and
+    /// never reach this.
     fn chat_click(&mut self, row: u16, column: u16, chat_y: u16) {
         if let Some((li, full, click_idx)) = self.chat_line_hit(row, column, chat_y) {
             if let Some(path) = self.image_chip_at(&full, click_idx) {
@@ -1961,15 +1968,24 @@ impl App {
         }
     }
 
-    /// Release: a press+release without movement is a click (chips/paths/viewers);
-    /// anything dragged over is copied exactly to the system clipboard.
+    /// Release: a press+release without movement is a click — but only a
+    /// double-click acts (opens chips/paths/viewers, toggles, menus); a single
+    /// click just anchors/clears the selection. Anything dragged over is copied
+    /// exactly to the system clipboard.
     fn chat_release(&mut self, chat_y: u16, row: u16, column: u16) {
         let clicked = self.sel_anchor_pos == Some((row, column));
         let text = self.selected_text(chat_y);
         self.sel_anchor_pos = None;
         self.sel_end_pos = None;
         if clicked {
-            self.chat_click(row, column, chat_y);
+            let now = std::time::Instant::now();
+            let double = self.chat_last_click.is_some_and(|(t, r)| {
+                r == row && now.duration_since(t).as_millis() < 400
+            });
+            self.chat_last_click = Some((now, row));
+            if double {
+                self.chat_click(row, column, chat_y);
+            }
         } else if let Some(text) = text
             && !text.trim().is_empty()
         {
@@ -2466,7 +2482,7 @@ impl App {
             let preview = text.lines().take(2).collect::<Vec<_>>().join(" ⏎ ");
             let preview = preview.chars().take(160).collect::<String>();
             self.push_tool(
-                format!("❯ [粘贴 {chars} 字 · {line_count} 行 · ctrl+o/点击展开]\n  {preview} …"),
+                format!("❯ [粘贴 {chars} 字 · {line_count} 行 · ctrl+o/双击展开]\n  {preview} …"),
                 Tone::User,
                 Some(text.to_string()),
             );
@@ -4492,7 +4508,7 @@ impl App {
         self.next_paste += 1;
         self.cursor = end;
         self.push(
-            format!("🖼 已附加图片 #{id} · 点击查看 · 随下一条消息发送"),
+            format!("🖼 已附加图片 #{id} · 双击查看 · 随下一条消息发送"),
             Tone::Muted,
         );
     }
@@ -4517,7 +4533,7 @@ impl App {
         });
         self.next_paste += 1;
         self.push(
-            format!("🖼 已附加图片 #{id} · 点击查看 · 随下一条消息发送"),
+            format!("🖼 已附加图片 #{id} · 双击查看 · 随下一条消息发送"),
             Tone::Muted,
         );
     }
@@ -9349,6 +9365,14 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    /// two quick press/release pairs on the same spot = a double-click
+    fn dblclick(app: &mut App, row: u16, col: u16) {
+        app.chat_press(row, col);
+        app.chat_release(0, row, col);
+        app.chat_press(row, col);
+        app.chat_release(0, row, col);
+    }
+
     use super::*;
     use std::collections::BTreeSet;
 
@@ -9530,12 +9554,14 @@ mod tests {
         // short lines: one display row each, top-anchored at chat y=0
         app.chat_press(1, 3);
         app.chat_release(0, 1, 3);
+        assert!(app.viewer.is_none(), "a single click opens nothing");
+        dblclick(&mut app, 1, 3);
         assert_eq!(app.viewer.as_ref().unwrap().text, "two");
         // a row past the last line (empty space) opens nothing new
         app.viewer = None;
+        app.chat_last_click = None;
         let bottom = app.chat_area.height.saturating_sub(1) as u16;
-        app.chat_press(bottom, 3);
-        app.chat_release(0, bottom, 3);
+        dblclick(&mut app, bottom, 3);
         assert!(app.viewer.is_none(), "clicking empty space opens nothing");
     }
 
@@ -9566,6 +9592,8 @@ mod tests {
         app.chat_press(notice_row, 5);
         app.chat_release(0, notice_row, 5);
         assert!(app.viewer.is_none(), "plain notice must not open a viewer");
+        dblclick(&mut app, notice_row, 5);
+        assert!(app.viewer.is_none(), "double-clicking a notice still opens nothing");
         // the tool line still opens exactly its own output
         let tool_row = app
             .chat_rows
@@ -9576,8 +9604,8 @@ mod tests {
                     .is_some_and(|l| l.text.starts_with("⚙ bash"))
             })
             .unwrap() as u16;
-        app.chat_press(tool_row, 5);
-        app.chat_release(0, tool_row, 5);
+        app.chat_last_click = None;
+        dblclick(&mut app, tool_row, 5);
         assert_eq!(app.viewer.as_ref().unwrap().text, "popup.png: PNG image data");
     }
 
@@ -12956,6 +12984,8 @@ mod tests {
             .x as u16;
         app.chat_press(0, x + 3);
         app.chat_release(0, 0, x + 3);
+        assert_eq!(app.prompt_menu, None, "single click does not open the menu");
+        dblclick(&mut app, 0, x + 3);
         assert_eq!(app.prompt_menu, Some(0), "menu opens anchored to the line");
         {
             let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
@@ -13326,9 +13356,12 @@ mod tests {
             "mouse down must not open the file viewer"
         );
         assert_eq!(app.sel_anchor_pos, Some((1, 30)));
-        // release on the path → viewer opens, selection cleared
+        // a single click (release, no second press) still opens nothing
         app.chat_release(0, 1, 30);
-        let v = app.viewer.as_ref().expect("viewer opened on release");
+        assert!(app.viewer.is_none(), "single click must not open the viewer");
+        // double-click on the path → viewer opens, selection cleared
+        dblclick(&mut app, 1, 30);
+        let v = app.viewer.as_ref().expect("viewer opened on double-click");
         assert!(v.read_only);
         assert!(v.title.contains("target.md"));
         assert_eq!(v.text, "CONTENT");
@@ -13353,6 +13386,9 @@ mod tests {
             app.viewer.is_none(),
             "release off the path must not open the viewer"
         );
+        // even a double-click off the path opens nothing
+        dblclick(&mut app, 0, 3);
+        assert!(app.viewer.is_none(), "double-click off the path opens nothing");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -13532,7 +13568,6 @@ mod tests {
         }
     }
 
-    #[test]
     #[test]
     fn alt_arrows_hop_between_user_prompts() {
         let mut app = App::new();
@@ -13816,10 +13851,9 @@ mod tests {
         app.chat_inner_w = 200;
         app.chat_scroll_offset = 0;
         app.chat_rows = wrap_chat_rows(&[format!("Files in {}/ and more", dir.display())], 200);
-        // click (press+release) on the directory path itself
+        // double-click (press+release, twice) on the directory path itself
         let on_path = 9 + dir.display().to_string().chars().count() / 2;
-        app.chat_press(0, on_path as u16);
-        app.chat_release(0, 0, on_path as u16);
+        dblclick(&mut app, 0, on_path as u16);
         assert!(
             app.viewer.is_none(),
             "directories never open as text in the viewer"
@@ -13835,8 +13869,7 @@ mod tests {
             .filter(|l| l.text.contains("打开目录"))
             .count();
         let off = 2u16;
-        app.chat_press(0, off);
-        app.chat_release(0, 0, off);
+        dblclick(&mut app, 0, off);
         assert_eq!(
             app.lines
                 .iter()
@@ -15046,16 +15079,27 @@ mod tests {
         let term_row = app.chat_area.y + (g - app.chat_scroll_offset) as u16;
         // the user line renders as a right-positioned bubble: add its indent + pad
         let bubble = app.chat_rows[g].x as usize + 2 * usize::from(app.chat_rows[g].user);
-        // chips open on release (press+release, no drag), like file paths
-        app.handle(
-            Event::Mouse(crossterm::event::MouseEvent {
-                kind: MouseEventKind::Down(MouseButton::Left),
-                column: (col + 1 + bubble) as u16,
-                row: term_row,
-                modifiers: KeyModifiers::NONE,
-            }),
-            &mut serve,
-        );
+        // chips open on double-click (two press+release pairs), like file paths
+        for _ in 0..2 {
+            app.handle(
+                Event::Mouse(crossterm::event::MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    column: (col + 1 + bubble) as u16,
+                    row: term_row,
+                    modifiers: KeyModifiers::NONE,
+                }),
+                &mut serve,
+            );
+            app.handle(
+                Event::Mouse(crossterm::event::MouseEvent {
+                    kind: MouseEventKind::Up(MouseButton::Left),
+                    column: (col + 1 + bubble) as u16,
+                    row: term_row,
+                    modifiers: KeyModifiers::NONE,
+                }),
+                &mut serve,
+            );
+        }
         app.handle(
             Event::Mouse(crossterm::event::MouseEvent {
                 kind: MouseEventKind::Up(MouseButton::Left),

@@ -223,8 +223,8 @@ tools and checkpoints follow live); `/add_dir <dir>` registers an extra writable
   every terminal). While the turn runs, the newest block's robot blinks and glances, its sparkle
   flickers and its color cycles (~360ms per pose; still with `/animations off` or when idle).
   Up to 3 lines / 240 chars show in full; longer blocks show a 3-line preview plus
-  `alt+t 展开思考（还有 N 字 · 共 M 行）`. Alt+T (keymap action `toggleThinking`) or a click on the
-  block expands / collapses it in place; Ctrl+T's transcript always has the full text.
+  `alt+t 展开思考（还有 N 字 · 共 M 行）`. Alt+T (keymap action `toggleThinking`) or a double-click
+  on the block expands / collapses it in place; Ctrl+T's transcript always has the full text.
 - **ASCII mode** (`/ascii`, config `ascii`): the robot becomes `*` and emoji in chat, the ❓ panel,
   `/todo` and the status bar become ASCII (`❓`→`?`, `➕`→`+`, `📋`→`#`, `📂`→`>`, other emoji →`*`),
   for terminals that show tofu boxes or misalign emoji.
@@ -242,9 +242,11 @@ tools and checkpoints follow live); `/add_dir <dir>` registers an extra writable
   the draft returns to the box. Inside a multi-line entry Up/Down move the cursor between
   lines first. With no history at all, Up/Down still scroll the chat.
 - **Mouse basics** (Claude Code / OpenCode parity): drag in the chat to select — whole
-  logical lines highlight and release copies them to the system clipboard; a click on a
-  complete local file path (absolute, `./…`, `~/…`, `:line` suffix tolerated) opens the file
-  in the read-only viewer; in the input box, a click moves the cursor there, drag selects text and release copies it, and a
+  logical lines highlight and release copies them to the system clipboard. In the chat a
+  single click only anchors a selection; a **double-click** acts — on a complete local file
+  path (absolute, `./…`, `~/…`, `:line` suffix tolerated) it opens the file in the read-only
+  viewer, on tool/thinking/prompt lines it opens the viewer, toggles the block or pops the
+  prompt menu (mis-clicks stay harmless); in the input box, a click moves the cursor there, drag selects text and release copies it, and a
   double-click selects the whole prompt and copies it (paste chips expand to the full pasted
   text), the highlight clearing on the next key; the permission modal takes `c` to copy the pending command before
   answering y/n/a. `/mouse off` still hands selection back to the terminal natively.
@@ -400,7 +402,9 @@ reply data. Most of these also skip the prompt queue.
 
 `tui/` holds the Rust client (ratatui + crossterm): `cargo build --release` in `tui/`, then run
 `tango` (`tango -c` / `tango -r <id>` open a previous session). It spawns `tango serve` and speaks the protocol above — fullscreen
-alternate screen, mouse wheel scrolling, streaming answers, thinking lines, tool status lines with
+alternate screen (every frame is sent as one DEC 2026 synchronized update, `CSI ?2026h … ?2026l`,
+so supporting terminals swap whole frames and streaming or animation never flickers; others ignore
+it), mouse wheel scrolling, streaming answers, thinking lines, tool status lines with
 durations, a centered permission modal (y/n/a), a bottom status bar below the input (model · mode ·
 cost · session, fitted to the terminal width — on a narrow screen ctx and sess go first, then the
 pinned ▶, and the model name shortens, while cost and the ❓ badge stay). The rule above the input
@@ -415,7 +419,7 @@ thinking bar and splash.
 A custom `/statusline` template can still place `{work}` in the status bar. A prompt that starts with an existing file or directory path is sent as `文件：<path>` (or `目录：`) plus the rest of the text, or a request to read it when nothing follows; known slash commands still win. The input is multi-line with Tab-completed `/` commands and `@file` inlining (contents ride along in the
 prompt, 6KB cap), fences render as indented gray blocks, and long pasted prompts collapse to a
 short summary (over 600 chars or 8 lines). Ctrl+O opens the latest full prompt/tool output in an
-independent scrollable viewer; clicking a specific summary/tool line opens that item. Closing the
+independent scrollable viewer; double-clicking a specific summary/tool line opens that item. Closing the
 viewer restores the original chat position. All overlays use the shared `tui/src/dialog.rs` frame:
 rounded complete borders, a themed surface and title background, bottom key hints, and content
 confined to the inner rectangle. Focus is viewer → permission → picker → completion → chat; modal
@@ -440,11 +444,11 @@ Pasting an **image** works like the CLI agents: terminals drop a clipboard image
 paste its path (e.g. `/var/folders/…/orca-paste-….png`); tango recognizes a single-line paste naming an
 existing `.png/.jpg/.jpeg/.gif/.webp` file and turns it into a compact `[图片 #N]` chip instead of the
 long path. The chip is atomic (Backspace/Delete removes it whole), survives Alt+S draft stashing, and
-is **mouse-clickable** — clicking it (in the input box or in the chat transcript) opens the image in
-the system viewer (macOS `open` / Linux `xdg-open`). On submit the image rides the next prompt as a
+is **mouse-clickable** — clicking it in the input box, or double-clicking it in the chat transcript,
+  opens the image in the system viewer (macOS `open` / Linux `xdg-open`). On submit the image rides the next prompt as a
 base64 upload (`images` field → `ImageBlock` → vendor `image_url`/`image` content), with the chip text
 `[图片 #N]` left in the message so the model knows where it sits; queued and Alt+Enter-supplemented
-prompts carry their images too. Resumed history replays images as clickable `[图片 <path>]` chips.
+prompts carry their images too. Resumed history replays images as double-clickable `[图片 <path>]` chips.
 Models flagged `vision: true` (Claude / Gemini / GPT consumer flagships / Grok-4.7 / qwen4-max presets) accept
 images silently; an unflagged model still receives the image but prints a heads-up notice — override
 per-model with `"vision": true` in `~/.tango/models.json`. The `read` tool likewise returns image files
