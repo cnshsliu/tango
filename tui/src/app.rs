@@ -180,6 +180,8 @@ enum Pending {
     Subtask,
     McpList,
     PluginsList,
+    Trust,
+    TrustStatus,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -201,6 +203,8 @@ enum PickerKind {
     Permissions,
     Skills,
     Worktree,
+    /// first start in a project whose config would run commands or widen access
+    Trust,
 }
 
 #[derive(Clone)]
@@ -565,6 +569,10 @@ const SLASH: &[(&str, &str)] = &[
         "自定义状态栏模板：{model} {mode} {cost} {ctx} {pct} {session}",
     ),
     ("/theme", "选择并实时应用 dark/light/auto 主题"),
+    (
+        "/trust [yes|no]",
+        "项目配置的 hooks/permissions/mcpServers 是否生效（按仓库记住）",
+    ),
     ("/timestamps", "聊天行首 [HH:MM] 时间戳开关"),
     (
         "/transcript",
@@ -3049,6 +3057,34 @@ impl App {
         }
     }
 
+    /// Explain what a project's config wants to switch on, then ask yes/no.
+    fn ask_trust(&mut self, root: &str, keys: &[String], files: &[String]) {
+        self.push(format!("项目配置 · {root}"), Tone::Selected);
+        for f in files {
+            self.push(format!("  {f}"), Tone::Muted);
+        }
+        self.push(
+            format!(
+                "  含 {}：会执行命令或放宽权限，信任前不生效（其他配置已生效）",
+                keys.join(", ")
+            ),
+            Tone::Muted,
+        );
+        let item = |id: &str, label: &str, note: &str| PickItem {
+            group: String::new(),
+            id: id.into(),
+            label: label.into(),
+            note: note.into(),
+            warn: false,
+            current: false,
+        };
+        let items = vec![
+            item("yes", "信任", "启用这些配置并重启 serve（会话保留）"),
+            item("no", "不信任", "记住选择，以后不再询问"),
+        ];
+        self.picker = Some(Picker::new(PickerKind::Trust, items));
+    }
+
     fn run_slash(&mut self, text: &str, serve: &mut Serve) {
         let trimmed = text.trim();
         let (head, rest) = match trimmed.split_once(' ') {
@@ -3732,6 +3768,18 @@ impl App {
                     self.pending.push((id, Pending::Model));
                 }
             }
+            "/trust" => match rest {
+                "" => {
+                    let id = serve.command("trust_status", vec![]);
+                    self.pending.push((id, Pending::TrustStatus));
+                }
+                "yes" | "no" => {
+                    let id =
+                        serve.command("set_trust", vec![("trusted", Value::Bool(rest == "yes"))]);
+                    self.pending.push((id, Pending::Trust));
+                }
+                _ => self.push("usage: /trust [yes|no]", Tone::Muted),
+            },
             "/theme" => {
                 if rest.is_empty() {
                     let items = ["dark", "light", "auto"]
@@ -4786,6 +4834,7 @@ impl App {
                 }
                 PickerKind::Command => self.run_slash(&item.id, serve),
                 PickerKind::Theme => self.run_slash(&format!("/theme {}", item.id), serve),
+                PickerKind::Trust => self.run_slash(&format!("/trust {}", item.id), serve),
                 PickerKind::History => {
                     if let Ok(index) = item.id.parse::<usize>()
                         && let Some(text) = self.prompt_history.get(index).cloned()
@@ -5724,6 +5773,27 @@ impl App {
             }
             "message" => self.commit_stream(),
             // chat-line notices from serve (warnings, goal/subtask status) — never part of a stream
+            // serve found trust-gated keys in an undecided project: ask once
+            "trust_request" => {
+                let strs = |k: &str| -> Vec<String> {
+                    v[k].as_array()
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|x| x.as_str().map(String::from))
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                };
+                let root = v["root"].as_str().unwrap_or("?").to_string();
+                if self.picker.is_none() {
+                    self.ask_trust(&root, &strs("keys"), &strs("files"));
+                } else {
+                    self.push(
+                        format!("项目 {root} 的配置待信任 · /trust 处理"),
+                        Tone::Muted,
+                    );
+                }
+            }
             "notice" => {
                 if let Some(text) = v["text"].as_str() {
                     let from = self.lines.len();
@@ -6104,6 +6174,9 @@ impl App {
                                 ),
                                 Tone::Muted,
                             );
+                            if let Some(line) = d["configSources"].as_str() {
+                                self.push(line, Tone::Muted);
+                            }
                         }
                         (Pending::Skill, true) => {
                             if let Some(f) = d["draft"].as_str() {
@@ -6677,8 +6750,9 @@ impl App {
                         (Pending::PermissionsAdd, true) => {
                             self.push(
                                 format!(
-                                    "规则已添加并生效：{}",
-                                    d["allow"].as_array().map(|a| a.len()).unwrap_or(0)
+                                    "规则已添加并生效（共 {} 条）→ {}",
+                                    d["allow"].as_array().map(|a| a.len()).unwrap_or(0),
+                                    d["path"].as_str().unwrap_or("config.json")
                                 ),
                                 Tone::Success,
                             );
@@ -6713,14 +6787,83 @@ impl App {
                         (Pending::PermissionsRemove, true) => {
                             self.push("规则已移除", Tone::Muted);
                         }
+                        (Pending::Trust, true) => {
+                            let yes = d["trusted"].as_bool().unwrap_or(false);
+                            let root = d["root"].as_str().unwrap_or("?");
+                            self.push(
+                                format!(
+                                    "{} {root}",
+                                    if yes {
+                                        "✓ 已信任"
+                                    } else {
+                                        "✗ 不信任"
+                                    }
+                                ),
+                                Tone::Success,
+                            );
+                            if d["reload"].as_bool().unwrap_or(false) {
+                                // hooks / MCP / rules are wired at startup: respawn serve, same session
+                                if self.busy || self.session_full.is_empty() {
+                                    self.push("回合结束后 /restart 生效", Tone::Muted);
+                                } else {
+                                    self.restart =
+                                        Some((self.session_full.clone(), self.mode.clone()));
+                                    self.quit = true;
+                                }
+                            }
+                        }
+                        (Pending::TrustStatus, true) => {
+                            self.push(d["line"].as_str().unwrap_or("配置：?"), Tone::Muted);
+                            let gated: Vec<String> = d["gated"]
+                                .as_array()
+                                .map(|a| {
+                                    a.iter()
+                                        .filter_map(|x| x.as_str().map(String::from))
+                                        .collect()
+                                })
+                                .unwrap_or_default();
+                            match d["root"].as_str() {
+                                None => self.push("当前目录没有项目配置层", Tone::Muted),
+                                Some(_) if gated.is_empty() => {
+                                    self.push("项目配置里没有需要信任的项（hooks/permissions/mcpServers/extraDirs）", Tone::Muted)
+                                }
+                                Some(root) => {
+                                    let root = root.to_string();
+                                    self.ask_trust(&root, &gated, &[]);
+                                }
+                            }
+                        }
                         (Pending::ConfigShow, true) => {
                             let path = d["path"].as_str().unwrap_or("?").to_string();
                             let cfg =
                                 serde_json::to_string_pretty(&d["config"]).unwrap_or_default();
+                            // layered: list every file that fed the merged view
+                            let mut head = String::new();
+                            if let Some(line) = d["line"].as_str() {
+                                head.push_str(line);
+                                head.push('\n');
+                            }
+                            for src in d["sources"].as_array().into_iter().flatten() {
+                                let mark = if src["error"].is_string() {
+                                    "✗"
+                                } else if src["exists"].as_bool().unwrap_or(false) {
+                                    "✓"
+                                } else {
+                                    "—"
+                                };
+                                head.push_str(&format!(
+                                    "  {mark} {:<7} {}\n",
+                                    src["scope"].as_str().unwrap_or("?"),
+                                    src["path"].as_str().unwrap_or("?")
+                                ));
+                            }
+                            if head.is_empty() {
+                                head = format!("{path}\n");
+                            }
                             self.viewer = Some(Viewer::read_only(
                                 "配置",
                                 format!(
-                                    "{path}\n\n{cfg}\n\n（直接编辑此文件；多数配置 /theme /mouse /statusline 等命令可代改）"
+                                    "{head}\n合并结果：\n{cfg}\n\n（全局 {path}；项目共享 .tango/config.json 随仓库提交，个人 .tango/config.local.json 不进 git）"
                                 ),
                             ));
                         }
@@ -6735,7 +6878,11 @@ impl App {
                         }
                         (Pending::AddDir, true) => {
                             let n = d["extraDirs"].as_array().map(|a| a.len()).unwrap_or(0);
-                            self.push(format!("额外可写目录已保存（共 {n} 个）"), Tone::Success);
+                            let path = d["path"].as_str().unwrap_or("config.json");
+                            self.push(
+                                format!("额外可写目录已保存（共 {n} 个）→ {path}"),
+                                Tone::Success,
+                            );
                         }
                         (Pending::Init, true) => {
                             let path = d["path"].as_str().unwrap_or("AGENTS.md");
@@ -8141,6 +8288,7 @@ impl App {
                 PickerKind::Permissions => "允许规则 · /permissions rm <rule> 移除",
                 PickerKind::Skills => "技能列表 · global=全局 project=项目",
                 PickerKind::Worktree => "worktree · /worktree merge <名> 合并 · rm 删除",
+                PickerKind::Trust => "信任此项目的配置？（详情见上方）",
                 PickerKind::Command => "命令面板",
                 PickerKind::History => "搜索 prompt 历史",
                 PickerKind::Theme => "选择主题",
@@ -8153,6 +8301,7 @@ impl App {
                 match p.kind {
                     PickerKind::NvimBackend => "↑↓/滚轮 选择 · enter 确认 · esc 使用内置查看器",
                     PickerKind::EditResolution => "↑↓ 选择 · enter 提交 · esc 取消",
+                    PickerKind::Trust => "↑↓ 选择 · enter 确认 · esc 稍后（本次不生效，/trust 再选）",
                     _ => "↑↓ 选择 · enter 确认 · esc 取消",
                 }
             };
@@ -11685,6 +11834,51 @@ mod tests {
         );
         assert_eq!(serve.sent.len(), 1, "toggled: Enter does not send");
         assert_eq!(app2.input.iter().collect::<String>(), "hi\n");
+    }
+
+    #[test]
+    fn trust_request_asks_once_and_a_yes_restarts_serve() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.session_full = "sess-1".into();
+        app.frame(
+            json!({"type": "trust_request", "root": "/repo", "keys": ["hooks"],
+            "files": ["/repo/.tango/config.json"]}),
+            &mut serve,
+        );
+        assert!(app.picker.as_ref().unwrap().kind == PickerKind::Trust);
+        assert!(
+            app.lines
+                .iter()
+                .any(|l| l.text.contains("/repo/.tango/config.json"))
+        );
+        app.picker = None;
+        app.run_slash("/trust yes", &mut serve);
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        assert_eq!(sent["cmd"], "set_trust");
+        assert_eq!(sent["trusted"], true);
+        app.frame(
+            json!({"type": "result", "id": sent["id"], "ok": true,
+            "data": {"trusted": true, "root": "/repo", "gated": ["hooks"], "reload": true}}),
+            &mut serve,
+        );
+        assert_eq!(app.restart.as_ref().map(|r| r.0.as_str()), Some("sess-1"));
+        assert!(app.quit);
+    }
+
+    #[test]
+    fn trust_status_without_gated_keys_does_not_ask() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.run_slash("/trust", &mut serve);
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        assert_eq!(sent["cmd"], "trust_status");
+        app.frame(json!({"type": "result", "id": sent["id"], "ok": true,
+            "data": {"root": "/repo", "trusted": null, "gated": [], "line": "配置：全局 ✓ · 项目 ✓"}}), &mut serve);
+        assert!(app.picker.is_none());
+        assert!(app.lines.iter().any(|l| l.text.contains("全局 ✓")));
+        app.run_slash("/trust maybe", &mut serve);
+        assert_eq!(serve.sent.len(), 1, "bad argument: usage only");
     }
 
     #[test]
