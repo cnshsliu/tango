@@ -7,7 +7,7 @@ use crate::viewer::{PromptState, Viewer};
 use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Paragraph, Wrap};
 use serde_json::{Value, json};
@@ -8100,7 +8100,20 @@ impl App {
                 shown.push(Line::from(spans));
             } else if row.think {
                 let mut spans = pad;
-                spans.push(Span::styled(row.text.clone(), style));
+                // the 🤖 (or ASCII *) heading a block stays upright; only the reasoning is italic
+                let icon = [THINK_ICON, THINK_ICON_ASCII]
+                    .into_iter()
+                    .find(|i| row.text.starts_with(i));
+                match icon {
+                    Some(icon) => {
+                        spans.push(Span::styled(
+                            icon.to_string(),
+                            style.remove_modifier(Modifier::ITALIC),
+                        ));
+                        spans.push(Span::styled(row.text[icon.len()..].to_string(), style));
+                    }
+                    None => spans.push(Span::styled(row.text.clone(), style)),
+                }
                 shown.push(Line::from(spans));
             } else if gear_running.get(row.line).copied().unwrap_or(false)
                 && row.text.starts_with("⚙")
@@ -11669,6 +11682,11 @@ mod tests {
         assert!(tight.contains("这是思考"), "{row:?}");
         assert_eq!(b[(1, 0)].symbol(), " ", "one space gutter pad");
         assert!(app.chat_rows.iter().all(|r| r.think));
+        // the icon is upright, the reasoning italic
+        let icon_x = (0..30).find(|&x| b[(x, 0)].symbol() == THINK_ICON).unwrap();
+        assert!(!b[(icon_x, 0)].modifier.contains(Modifier::ITALIC), "🤖 not italic");
+        let text_x = (0..30).find(|&x| b[(x, 0)].symbol() == "这").unwrap();
+        assert!(b[(text_x, 0)].modifier.contains(Modifier::ITALIC), "reasoning stays italic");
     }
 
     #[test]

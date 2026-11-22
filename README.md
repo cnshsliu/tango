@@ -224,6 +224,7 @@ tools and checkpoints follow live); `/add_dir <dir>` registers an extra writable
 - `/timestamps` toggles `[HH:MM]` prefixes; `/density 0|1|2` sets tool-detail level (compact /
   default-errors-only / full) and applies to restored history too.
 - **Thinking blocks**: committed reasoning is kept whole (no truncation) as a block headed by `🤖`
+  (the icon upright, the reasoning in dim italics)
   (an emoji, 2 cells; terminals without an emoji font can switch to `/ascii`).
   Up to 3 lines / 240 chars show in full; longer blocks show a 3-line preview plus
   `双击展开思考（还有 N 字 · 共 M 行）`. A double-click on the block expands / collapses it
