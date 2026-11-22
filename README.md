@@ -111,7 +111,8 @@ TUI commands: `/model`, `/agents`, `/resume`, `/new`, `/restart`, `/rename`, `/m
 
 - **/worktree** — managed git worktrees (`~/.tango/worktrees/<name>`, branch `tango/<name>`):
   the isolation unit for anything that writes in parallel. Dirty worktrees refuse removal;
-  `/worktree merge <name>` merges back into the main workspace (which must be clean).
+  `/worktree merge <name>` merges back into the main workspace (which must be clean). A bare
+  subcommand (`/worktree new`) prints its usage; `/worktree` alone lists (or picks) worktrees.
 - **/bg <prompt>** — a background prompt: fresh worktree + independent serve child; the task
   runs to completion (detached), its session lands in the shared sessions dir (`/tasks` shows
   status + session, `/stop` kills the process group). `/bg --long` uses the longContext role.

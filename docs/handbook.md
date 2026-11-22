@@ -136,6 +136,10 @@ the same directory.
 | `/worktree merge <name>` | `git merge` its branch into your current branch |
 | `/worktree rm <name>` | Remove it. Refused while it has uncommitted changes |
 
+A subcommand without a name (`/worktree new`) prints its usage line instead of falling back to
+the list. Registrations can go stale if a worktree is deleted outside tango — `rm` cleans the
+entry (and `/worktree` then shows none).
+
 Merging requires a clean main workspace, so commit or stash first. If the merge conflicts,
 tango runs `git merge --abort` and your workspace is left as it was.
 

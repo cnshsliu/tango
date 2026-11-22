@@ -3654,7 +3654,19 @@ impl App {
             }
             "/worktree" => {
                 let arg = rest.trim();
-                if let Some(name) = arg.strip_prefix("new ") {
+                // a bare subcommand is a typo in progress, not "list everything":
+                // say what's missing instead of popping the worktree picker
+                if matches!(arg, "new" | "rm" | "remove" | "merge") {
+                    let what = match arg {
+                        "new" => "new <名字>",
+                        "merge" => "merge <名字>（主工作区需干净）",
+                        _ => "rm <名字>",
+                    };
+                    self.push(
+                        format!("usage: /worktree {what} · /worktree 看列表"),
+                        Tone::Muted,
+                    );
+                } else if let Some(name) = arg.strip_prefix("new ") {
                     let id = serve.command(
                         "worktree_create",
                         vec![("name", Value::String(name.trim().into()))],
@@ -12691,6 +12703,23 @@ mod tests {
         app.run_slash("/worktree rm exp1", &mut serve);
         let sent4: Value = serde_json::from_str(&serve.sent[3]).unwrap();
         assert_eq!(sent4["cmd"], "worktree_remove");
+        // bare subcommands print usage instead of silently listing worktrees
+        let sent_before = serve.sent.len();
+        app.run_slash("/worktree new", &mut serve);
+        assert_eq!(serve.sent.len(), sent_before, "bare new sends nothing");
+        assert!(
+            app.lines
+                .last()
+                .is_some_and(|l| l.text.contains("usage: /worktree new")),
+            "bare new prints its usage"
+        );
+        app.run_slash("/worktree rm", &mut serve);
+        app.run_slash("/worktree merge", &mut serve);
+        assert_eq!(serve.sent.len(), sent_before, "bare rm/merge send nothing");
+        assert!(app
+            .lines
+            .last()
+            .is_some_and(|l| l.text.contains("usage: /worktree merge")));
     }
 
     #[test]
