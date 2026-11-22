@@ -5,8 +5,8 @@
   "type": "module",
   "private": true,
   "bin": {
-    "tango": "./bin/tango.js",
-    "tang": "./bin/tango.js"
+    "tango": "./tui/target/release/tango-tui",
+    "tang": "./tui/target/release/tango-tui"
   },
   "scripts": {
     "dev": "tsx src/cli.ts",

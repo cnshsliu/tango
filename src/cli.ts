@@ -499,7 +499,8 @@ async function runTask(t: Task, args: Args): Promise<{ ok: boolean; output: stri
   return { ok: msg.stopReason !== 'error' && msg.stopReason !== 'aborted', output };
 }
 
-/** `tango tui`: hand the terminal to the Rust client, pointed back at this same tango build. */
+/** `node bin/tango.js tui` (dev / TANGO_TUI): hand the terminal to the Rust client. The installed
+ *  `tango` command is the Rust binary itself and never comes through here. */
 async function launchTui(args: Args): Promise<void> {
   const root = join(dirname(fileURLToPath(import.meta.url)), '..');
   const bin = process.env.TANGO_TUI ?? join(root, 'tui', 'target', 'release', 'tango-tui');
@@ -517,7 +518,9 @@ async function launchTui(args: Args): Promise<void> {
   if (args.model) env.TANGO_MODEL = args.model;
   if (args.yes) env.TANGO_MODE = 'auto';
   if (args.readonly) env.TANGO_MODE = 'readonly';
-  const r = spawnSync(bin, [], { stdio: 'inherit', env, cwd: args.cwd ?? process.cwd() });
+  // `tui`: the binary is also the `tango` entry and would hand a bare launch without a
+  // terminal straight back to this CLI
+  const r = spawnSync(bin, ['tui'], { stdio: 'inherit', env, cwd: args.cwd ?? process.cwd() });
   if (r.error) throw r.error;
   process.exitCode = r.status ?? 1;
 }

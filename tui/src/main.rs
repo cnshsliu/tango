@@ -3,6 +3,7 @@ mod child;
 mod clipboard;
 mod dialog;
 mod keys;
+mod launch;
 mod nvim;
 mod theme;
 mod viewer;
@@ -27,6 +28,7 @@ use std::thread;
 use std::time::Duration;
 
 fn main() -> Result<(), Box<dyn Error>> {
+    entry();
     enable_raw_mode()?;
     let mut stdout = std::io::stdout();
     execute!(
@@ -69,6 +71,31 @@ enum Exit {
     Restart(String, String),
 }
 
+/// `tango` on PATH is this binary: interactive launches fall through to the TUI,
+/// everything else is exec'd into the Node CLI (src/cli.ts) with the same args.
+fn entry() {
+    use std::io::IsTerminal;
+    let raw: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    let root = launch::repo_root();
+    let tty = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+    let utf8: Option<Vec<String>> = raw.iter().map(|a| a.to_str().map(String::from)).collect();
+    match utf8.and_then(|args| launch::parse(&args, tty)) {
+        Some(opts) => {
+            if let Err(e) = launch::apply(&opts, root.as_deref()) {
+                eprintln!("\x1b[31m{e}\x1b[0m");
+                std::process::exit(1);
+            }
+        }
+        None => match &root {
+            Some(root) => launch::exec_node(root, &raw),
+            None => {
+                eprintln!("tango: bin/tango.js not found next to this binary (expected <repo>/tui/target/release/)");
+                std::process::exit(1);
+            }
+        },
+    }
+}
+
 /// Replace this process with a fresh copy of the TUI binary (picks up a rebuilt
 /// executable; its serve child picks up a rebuilt dist/) resuming the same session.
 fn restart(session: &str, mode: &str) {
@@ -81,7 +108,9 @@ fn restart(session: &str, mode: &str) {
         Err(e) => return fail(&e),
     };
     let mut cmd = std::process::Command::new(exe);
-    cmd.args(std::env::args_os().skip(1))
+    // launch args were applied at startup (cwd, TANGO_* env); `tui` keeps the
+    // fresh copy in the TUI and the env below picks the session and mode
+    cmd.arg("tui")
         .env("TANGO_RESUME", session)
         .env("TANGO_MODE", mode)
         // a resumed session brings back its own model
