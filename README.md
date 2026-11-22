@@ -169,7 +169,7 @@ tools and checkpoints follow live); `/add_dir <dir>` registers an extra writable
 - **Running tools**: while a bash/other tool call is in flight its `⚙ …` line keeps the
   gear cycling through the same cyan wave (~2.5 steps/s); when the result lands, that same
   line freezes into `⚙ <tool> <summary> · <ms>` in place — one line per call, never a
-  duplicate. Needs a truecolor terminal (gray↔cyan blink otherwise).
+  duplicate. Without truecolor the same wave runs in xterm 256 colors.
 - **Input history**: Up/Down in the input box walk through sent prompts (empty input
   recalls the newest). The unsent draft is stashed aside and comes back when you press
   Down past the newest entry, or Esc — and after you edit a recalled entry and send it,

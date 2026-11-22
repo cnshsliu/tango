@@ -863,14 +863,11 @@ fn sweep_color(x: usize, head: u64, width: usize, stalled: bool) -> Option<Color
 }
 
 /// The running gear's color cycle: same cyan family as the thinking wave, one
-/// step every 2 frames (~240ms). Without truecolor it alternates dark-gray and
-/// cyan, which is the most any 256-color terminal can express.
+/// step every 2 frames (~240ms). Without truecolor the same four steps come
+/// from the xterm 256-color cube.
 fn gear_color(frame: u128, animate: bool) -> Color {
     if !animate {
         return Color::DarkGray;
-    }
-    if !supports_truecolor() {
-        return if (frame / 2) % 2 == 0 { Color::Cyan } else { Color::DarkGray };
     }
     const GEAR_WAVE: [Color; 4] = [
         Color::Rgb(120, 225, 240),
@@ -878,7 +875,11 @@ fn gear_color(frame: u128, animate: bool) -> Color {
         Color::Rgb(32, 130, 160),
         Color::Rgb(24, 84, 104),
     ];
-    GEAR_WAVE[(frame / 2 % 4) as usize]
+    // the same steps in the 256-color cube (the thinking wave's stand-ins)
+    const GEAR_WAVE_256: [Color; 4] =
+        [Color::Indexed(123), Color::Indexed(38), Color::Indexed(31), Color::Indexed(24)];
+    let wave = if supports_truecolor() { &GEAR_WAVE } else { &GEAR_WAVE_256 };
+    wave[(frame / 2 % 4) as usize]
 }
 
 /// 24-bit color support: COLORTERM=truecolor/24bit or a *-direct TERM. Cached:
@@ -10763,11 +10764,11 @@ mod tests {
             let mut t = Terminal::new(TestBackend::new(30, 8)).unwrap();
             t.draw(|f| app.draw(f)).unwrap();
             let b = t.backend().buffer();
-            // frame is frozen at 0 under test: truecolor gives GEAR_WAVE[0], a
-            // 256-color terminal gives the blink's first Cyan — both are "lit"
+            // frame is frozen at 0 under test: the wave's bright first step,
+            // in 24-bit or the 256-color cube
             let fg = b[(0, 0)].fg;
             assert!(
-                matches!(fg, Color::Cyan | Color::Rgb(120, 225, 240)),
+                matches!(fg, Color::Indexed(123) | Color::Rgb(120, 225, 240)),
                 "running gear is lit: {fg:?}"
             );
         }
