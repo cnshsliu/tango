@@ -1074,7 +1074,9 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
         cwd = target;
         agent.setCwd(target);
         await store.append({ kind: 'meta', id: store.id, createdAt: store.meta()?.createdAt ?? new Date().toISOString(), cwd: target, name: store.meta()?.name });
-        reply(cmd, true, { cwd: target });
+        // the TUI footer shows `dir:branch`: report the branch of the new cwd ('' outside git)
+        const branch = String(spawnSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: target, encoding: 'utf8' }).stdout ?? '').trim();
+        reply(cmd, true, { cwd: target, branch });
         return;
       }
       case 'pwd': {

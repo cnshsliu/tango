@@ -135,6 +135,8 @@ const THINK_PREVIEW_CHARS: usize = 240;
 /// The thinking icon: one robot emoji (2 cells; unicode-width agrees with the
 /// renderer). The live block's motion comes from the ▍ bar's color wave.
 const THINK_ICON: &str = "🤖";
+/// draft text column inside the input block: the mode-colored bar, then one gap
+const INPUT_X: u16 = 2;
 /// ASCII mode's thinking icon.
 const THINK_ICON_ASCII: &str = "*";
 
@@ -1328,6 +1330,8 @@ pub struct App {
     chat_area: Rect,
     /// input box rect, captured each draw so chip clicks map back to image ids
     input_area: Rect,
+    /// padding rows above and below the draft in the input block (tall terminals)
+    input_pad: u16,
     picker_area: Rect,
     /// visible picker window rows → item index (None = group header row)
     picker_rows: Vec<Option<usize>>,
@@ -1510,6 +1514,7 @@ impl App {
             viewer: None,
             chat_area: Rect::default(),
             input_area: Rect::default(),
+            input_pad: 0,
             picker_area: Rect::default(),
             picker_rows: Vec::new(),
             popup_area: Rect::default(),
@@ -1923,14 +1928,15 @@ impl App {
         if self.images.is_empty() || self.input_area.width == 0 {
             return None;
         }
-        let width = self.input_area.width as usize;
-        let layout = self.input_layout(self.input_area.width);
-        let visible = self.input_area.height.saturating_sub(1).max(1) as usize;
+        let width = Self::input_text_w(self.input_area.width) as usize;
+        let layout = self.input_layout(Self::input_text_w(self.input_area.width));
+        let visible = self.input_visible();
         let scroll = layout.cursor_row.saturating_sub(visible - 1);
-        let text_top = self.input_area.y + 1;
-        if row < text_top {
+        let text_top = self.input_text_top();
+        if row < text_top || column < INPUT_X {
             return None;
         }
+        let column = column - INPUT_X;
         let target_row = (row - text_top) as usize + scroll;
         let rendered = self.rendered_input();
         let mut r = 0usize;
@@ -2005,14 +2011,15 @@ impl App {
     /// draw pass's wrap and scroll. Rows above/below clamp to the first/last line;
     /// columns past a line's end land after its last char.
     fn input_index_at(&self, row: u16, column: u16) -> usize {
-        let layout = self.input_layout(self.input_area.width);
+        let layout = self.input_layout(Self::input_text_w(self.input_area.width));
         let total = self.rendered_input().text.chars().count();
-        let visible = self.input_area.height.saturating_sub(1).max(1) as usize;
+        let visible = self.input_visible();
         let scroll = layout.cursor_row.saturating_sub(visible - 1);
-        let text_top = self.input_area.y + 1;
+        let text_top = self.input_text_top();
         if row < text_top {
             return 0;
         }
+        let column = column.saturating_sub(INPUT_X);
         let r = (row - text_top) as usize + scroll;
         let (Some(line), Some(&start)) = (layout.lines.get(r), layout.starts.get(r)) else {
             return total;
@@ -5545,6 +5552,16 @@ impl App {
             self.open_command_palette();
             return;
         }
+        // Shift+Tab flips ask ↔ plan (auto stays an explicit `/mode auto`)
+        if k.code == KeyCode::BackTab
+            && self.picker.is_none()
+            && self.popup.is_none()
+            && self.viewer.is_none()
+        {
+            let id = serve.command("set_plan", vec![("on", Value::Bool(!self.plan_mode))]);
+            self.pending.push((id, Pending::Plan));
+            return;
+        }
         if ctrl && k.code == KeyCode::Char('r') && self.picker.is_none() && self.popup.is_none() {
             self.open_prompt_history();
             return;
@@ -7244,6 +7261,7 @@ impl App {
                         (Pending::Cd, true) => {
                             let cwd = d["cwd"].as_str().unwrap_or("?").to_string();
                             self.serve_cwd = Some(std::path::PathBuf::from(&cwd));
+                            self.serve_branch = d["branch"].as_str().unwrap_or("").to_string();
                             self.push(format!("cwd → {cwd}"), Tone::Success);
                         }
                         (Pending::AddDir, true) => {
@@ -7696,8 +7714,26 @@ impl App {
 
     // ---------- rendering ----------
 
+    /// Input box rows: the work rule, the tinted block (pad, text rows, pad, the
+    /// mode · model info row). Pads only on tall terminals (`input_pad`, set per draw).
     fn input_height(&self, width: u16) -> u16 {
-        (self.input_layout(width).lines.len().min(8)) as u16 + 1 // +1 for the rule above the input
+        let text = self.input_layout(Self::input_text_w(width)).lines.len().min(8) as u16;
+        text + 2 + 2 * self.input_pad
+    }
+
+    /// Width the draft wraps at: the block's left bar + gap take INPUT_X columns.
+    fn input_text_w(width: u16) -> u16 {
+        width.saturating_sub(INPUT_X).max(1)
+    }
+
+    /// First screen row of the draft text (under the rule and the top pad).
+    fn input_text_top(&self) -> u16 {
+        self.input_area.y + 1 + self.input_pad
+    }
+
+    /// Draft rows visible in the block.
+    fn input_visible(&self) -> usize {
+        self.input_area.height.saturating_sub(2 + 2 * self.input_pad).max(1) as usize
     }
 
     fn chat_height(&self, area: Rect, input_h: u16) -> usize {
@@ -7877,6 +7913,9 @@ impl App {
 
     pub fn draw(&mut self, f: &mut Frame) {
         let area = f.area();
+        // the OpenCode-style breathing room above/below the draft costs 2 chat rows:
+        // only on terminals tall enough to spare them
+        self.input_pad = u16::from(area.height >= 30);
         let input_h = self.input_height(area.width);
         // the choices panel takes a real layout row — the chat scrolls up to make
         // room instead of being covered (the text under it stays reachable)
@@ -7884,17 +7923,23 @@ impl App {
         // jump-to-bottom pill: its own row above the input, never over the chat or the
         // status bar; the chat shrinks by one so nothing gets covered
         let jump_h = u16::from(self.scroll_back > 0);
+        // `~/dir:branch` + key hints under the block, when the terminal can spare a row
+        let footer_h = u16::from(area.height >= 24);
         let chat_h = self
             .chat_height(area, input_h)
-            .saturating_sub(panel_h as usize + jump_h as usize);
-        let [chat_a, jump_a, panel_a, input_a, status_a] = Layout::vertical([
+            .saturating_sub(panel_h as usize + jump_h as usize + footer_h as usize);
+        let [chat_a, jump_a, panel_a, input_a, footer_a, status_a] = Layout::vertical([
             Constraint::Min(1),
             Constraint::Length(jump_h),
             Constraint::Length(panel_h),
             Constraint::Length(input_h),
+            Constraint::Length(footer_h),
             Constraint::Length(1),
         ])
         .areas(area);
+        if footer_h > 0 {
+            f.render_widget(Paragraph::new(self.footer_line(footer_a.width as usize)), footer_a);
+        }
 
         self.chat_area = chat_a;
         self.input_area = input_a;
@@ -8603,8 +8648,28 @@ impl App {
                 height: 1,
             },
         );
-        let layout = self.input_layout(area.width);
-        let visible = input_a.height.saturating_sub(1).max(1) as usize;
+        // the tinted block under the rule: mode bar | pad, draft, pad, info row
+        let block = Rect {
+            x: 0,
+            y: input_a.y + 1,
+            width: area.width,
+            height: input_a.height.saturating_sub(1),
+        };
+        let accent = self.mode_color();
+        f.render_widget(
+            Paragraph::new("").style(Style::default().bg(self.theme.input_bg())),
+            block,
+        );
+        let bar: Vec<Line> = (0..block.height)
+            .map(|_| Line::from(Span::styled("▌", Style::default().fg(accent))))
+            .collect();
+        f.render_widget(
+            Paragraph::new(bar),
+            Rect { width: 1, ..block },
+        );
+        let text_w = Self::input_text_w(area.width);
+        let layout = self.input_layout(text_w);
+        let visible = self.input_visible();
         let input_scroll = layout.cursor_row.saturating_sub(visible - 1);
         let input_lines: Vec<Line> = match self.input_sel {
             Some((a, b)) if a != b => {
@@ -8631,18 +8696,28 @@ impl App {
             }
             _ => layout.lines.into_iter().map(Line::from).collect(),
         };
+        let text_top = self.input_text_top();
         f.render_widget(
             Paragraph::new(input_lines).scroll((input_scroll as u16, 0)),
             Rect {
-                x: 0,
-                y: input_a.y + 1,
-                width: area.width,
-                height: input_a.height.saturating_sub(1),
+                x: INPUT_X,
+                y: text_top,
+                width: text_w,
+                height: visible as u16,
+            },
+        );
+        f.render_widget(
+            Paragraph::new(self.input_info_line(text_w as usize)),
+            Rect {
+                x: INPUT_X,
+                y: block.y + block.height.saturating_sub(1),
+                width: text_w,
+                height: 1,
             },
         );
         f.set_cursor_position(Position::new(
-            input_a.x + layout.cursor_col as u16,
-            input_a.y + 1 + (layout.cursor_row - input_scroll) as u16,
+            INPUT_X + layout.cursor_col as u16,
+            text_top + (layout.cursor_row - input_scroll) as u16,
         ));
 
         // model/session/command picker overlay
@@ -8978,15 +9053,8 @@ impl App {
             )];
         }
         // (segment, drop order: lower goes first)
+        // model and mode live in the input block's info row now
         let mut segs: Vec<(Span<'static>, u8)> = vec![
-            (
-                Span::styled(format!(" {} ", self.model), self.theme.style(Tone::Badge)),
-                5,
-            ),
-            (
-                Span::styled(format!(" {} ", self.mode), self.theme.style(Tone::Muted)),
-                6,
-            ),
             (
                 Span::styled(
                     format!(" ${:.4} ", self.cost),
@@ -9042,9 +9110,6 @@ impl App {
         if self.focus {
             segs.push((Span::styled(" focus ", self.theme.style(Tone::Badge)), 4));
         }
-        if self.plan_mode {
-            segs.push((Span::styled(" PLAN ", self.theme.style(Tone::Warning)), 7));
-        }
         if self.goal_text.is_some() {
             segs.push((Span::styled(" ●goal ", self.theme.style(Tone::Badge)), 4));
         }
@@ -9079,7 +9144,7 @@ impl App {
                 break;
             };
             let text = segs[i].0.content.trim().to_string();
-            // shrink before dropping: model name → 12 cols, pinned prompt → 16, ❓ badge → just the count
+            // shrink before dropping: pinned prompt → 16, ❓ badge → just the count
             let limit = if text.starts_with('▶') {
                 16
             } else if text.starts_with('❓') || text.starts_with('?') {
@@ -9099,8 +9164,6 @@ impl App {
                 } else {
                     1
                 }
-            } else if i == 0 {
-                12
             } else {
                 0
             };
@@ -9422,6 +9485,84 @@ impl App {
                 self.session_full, self.session_full
             ))
         }
+    }
+
+    fn mode_color(&self) -> Color {
+        self.theme.mode_color(&self.mode, self.plan_mode)
+    }
+
+    /// The label the input block shows for the current mode: `plan` overrides.
+    fn mode_label(&self) -> String {
+        if self.plan_mode { "plan".into() } else { self.mode.clone() }
+    }
+
+    /// `ask · claude-opus-5-5 apikeyfan` — mode in its accent, model bright, provider dim.
+    /// Narrow widths drop the provider, then clip the model.
+    fn input_info_line(&self, width: usize) -> Line<'static> {
+        let (provider, name) = match self.model.split_once('/') {
+            Some((p, n)) => (p.to_string(), n.to_string()),
+            None => (String::new(), self.model.clone()),
+        };
+        let mode = self.mode_label();
+        let mut spans = Vec::new();
+        // before `hello` arrives mode/model are empty: show only what is known
+        if !mode.is_empty() {
+            spans.push(Span::styled(mode.clone(), Style::default().fg(self.mode_color())));
+            if !name.is_empty() {
+                spans.push(Span::styled(" · ".to_string(), self.theme.style(Tone::Muted)));
+            }
+        }
+        if name.is_empty() {
+            return Line::from(spans);
+        }
+        let used = if mode.is_empty() { 0 } else { display_width(&mode) + 3 };
+        let room = width.saturating_sub(used);
+        let full = display_width(&name) + 1 + display_width(&provider);
+        if !provider.is_empty() && full <= room {
+            spans.push(Span::styled(name, self.theme.style(Tone::Text)));
+            spans.push(Span::styled(format!(" {provider}"), self.theme.style(Tone::Muted)));
+        } else {
+            spans.push(Span::styled(clip_to_width(&name, room), self.theme.style(Tone::Text)));
+        }
+        Line::from(spans)
+    }
+
+    /// Footer under the input block: `~/dir:branch` on the left (dim), key hints on the right.
+    fn footer_line(&self, width: usize) -> Line<'static> {
+        let home = std::env::var("HOME").unwrap_or_default();
+        let dir = self
+            .serve_cwd
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default();
+        let dir = match dir.strip_prefix(&home) {
+            Some(rest) if !home.is_empty() => format!("~{rest}"),
+            _ => dir,
+        };
+        let place = if self.serve_branch.is_empty() {
+            dir
+        } else {
+            format!("{dir}:{}", self.serve_branch)
+        };
+        let hints: [(&str, &str); 2] = [("shift+tab", "plan"), ("ctrl+p", "commands")];
+        let hint_w: usize = hints.iter().map(|(k, d)| display_width(k) + 1 + display_width(d) + 2).sum();
+        let key = self.theme.style(Tone::Text);
+        let muted = self.theme.style(Tone::Muted);
+        let mut spans = Vec::new();
+        // the place keeps priority; hints only when they fit beside it
+        let show_hints = width >= display_width(&place) + 1 + hint_w;
+        let place_room = if show_hints { width - hint_w } else { width };
+        let place = clip_to_width(&place, place_room);
+        let pad = place_room.saturating_sub(display_width(&place));
+        spans.push(Span::styled(place, muted));
+        spans.push(Span::raw(" ".repeat(pad)));
+        if show_hints {
+            for (k, d) in hints {
+                spans.push(Span::styled(format!("  {k}"), key));
+                spans.push(Span::styled(format!(" {d}"), muted));
+            }
+        }
+        Line::from(spans)
     }
 
     /// plain text of the status bar (tests and /statusline preview)
@@ -9867,18 +10008,20 @@ mod tests {
         let mut app = App::new();
         app.input = "one two three four five".chars().collect();
         app.cursor = app.input.len();
-        let mut terminal = Terminal::new(TestBackend::new(12, 10)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(14, 10)).unwrap();
         terminal.draw(|f| app.draw(f)).unwrap();
 
-        assert_eq!(app.input_height(12), 3);
+        // rule + 2 text rows + info row; no pad/footer on a 10-row terminal
+        assert_eq!(app.input_height(14), 4);
+        assert_eq!(app.input_area.y, 5);
         assert_eq!(
             terminal.backend_mut().get_cursor_position().unwrap(),
-            Position::new(11, 8)
+            Position::new(INPUT_X + 11, 7)
         );
         let buffer = terminal.backend().buffer();
-        let row = |y| (0..12).map(|x| buffer[(x, y)].symbol()).collect::<String>();
-        assert_eq!(row(7), "one two thre");
-        assert_eq!(row(8), "e four five ");
+        let row = |y| (0..14).map(|x| buffer[(x, y)].symbol()).collect::<String>();
+        assert_eq!(row(6), "▌ one two thre");
+        assert_eq!(row(7), "▌ e four five ");
     }
 
     #[test]
@@ -9908,6 +10051,8 @@ mod tests {
         };
 
         let mut app = App::new();
+        app.mode = "ask".into();
+        app.model = "fan/opus".into();
         app.input = (1..=10)
             .map(|n| format!("line-{n}"))
             .collect::<Vec<_>>()
@@ -9919,12 +10064,13 @@ mod tests {
         terminal.draw(|f| app.draw(f)).unwrap();
         assert_eq!(
             terminal.backend_mut().get_cursor_position().unwrap(),
-            Position::new(7, 12)
+            Position::new(INPUT_X + 7, 11)
         );
         let buffer = terminal.backend().buffer();
         let row = |y| (0..20).map(|x| buffer[(x, y)].symbol()).collect::<String>();
-        assert!(row(5).starts_with("line-3"));
-        assert!(row(12).starts_with("line-10"));
+        assert!(row(4).starts_with("▌ line-3"));
+        assert!(row(11).starts_with("▌ line-10"));
+        assert!(row(12).starts_with("▌ ask · opus fan"), "info row: {}", row(12));
     }
 
     #[test]
@@ -10276,8 +10422,9 @@ mod tests {
             (0..40).map(|x| buffer[(x, y)].symbol()).collect::<String>()
         };
         // scrolling up shows the pill row, shrinking the chat by one row
+        // (the input block's info row costs one more than the old bare input)
         assert!(
-            row(&terminal, 0).starts_with("line-07"),
+            row(&terminal, 0).starts_with("line-08"),
             "unexpected first row: {:?}",
             row(&terminal, 0)
         );
@@ -10286,7 +10433,7 @@ mod tests {
         app.push("line-21", Tone::Text);
         app.push("line-22", Tone::Text);
         terminal.draw(|f| app.draw(f)).unwrap();
-        assert!(row(&terminal, 0).starts_with("line-07"));
+        assert!(row(&terminal, 0).starts_with("line-08"));
         // fresh backend: TestBackend's cell diff mangles wide chars when a label grows in place
         let mut terminal = Terminal::new(TestBackend::new(40, 12)).unwrap();
         terminal.draw(|f| app.draw(f)).unwrap();
@@ -11267,26 +11414,27 @@ mod tests {
         app.input = "hello brave world".chars().collect();
         app.cursor = app.input.len();
         input_screen(&mut app, 40, 12);
-        let y = app.input_area.y + 1; // first text row under the input rule
+        let y = app.input_text_top(); // first draft row inside the block
+        let x0 = INPUT_X;
         mouse(
             &mut app,
             &mut serve,
             MouseEventKind::Down(MouseButton::Left),
-            6,
+            x0 + 6,
             y,
         );
         mouse(
             &mut app,
             &mut serve,
             MouseEventKind::Drag(MouseButton::Left),
-            11,
+            x0 + 11,
             y,
         );
         mouse(
             &mut app,
             &mut serve,
             MouseEventKind::Up(MouseButton::Left),
-            11,
+            x0 + 11,
             y,
         );
         assert_eq!(app.input_sel, Some((6, 11)));
@@ -11304,7 +11452,7 @@ mod tests {
             t.backend().buffer().clone()
         };
         use ratatui::style::Modifier;
-        let rev = |x: u16| b[(x, y)].modifier.contains(Modifier::REVERSED);
+        let rev = |x: u16| b[(x0 + x, y)].modifier.contains(Modifier::REVERSED);
         assert!(!rev(5) && rev(6) && rev(10) && !rev(11));
         app.key(KeyCode::Char('x').into(), &mut serve);
         assert_eq!(app.input_sel, None);
@@ -11317,17 +11465,17 @@ mod tests {
         app.input = "第一行\nabc 中文".chars().collect();
         app.cursor = app.input.len();
         input_screen(&mut app, 40, 12);
-        let y = app.input_area.y + 1;
+        let y = app.input_text_top();
         let click = |app: &mut App, serve: &mut Serve, x: u16, y: u16| {
             app.input_last_click = None; // separate clicks, never a double-click
             mouse(app, serve, MouseEventKind::Down(MouseButton::Left), x, y);
             mouse(app, serve, MouseEventKind::Up(MouseButton::Left), x, y);
         };
-        click(&mut app, &mut serve, 3, y); // right half of 一 (columns 2-3)
+        click(&mut app, &mut serve, INPUT_X + 3, y); // right half of 一 (columns 2-3)
         assert_eq!(app.cursor, 1);
-        click(&mut app, &mut serve, 5, y + 1); // the 中 after "abc "
+        click(&mut app, &mut serve, INPUT_X + 5, y + 1); // the 中 after "abc "
         assert_eq!(app.cursor, 8);
-        click(&mut app, &mut serve, 30, y); // past the end of row 1
+        click(&mut app, &mut serve, INPUT_X + 30, y); // past the end of row 1
         assert_eq!(app.cursor, 3, "before the newline");
         assert_eq!(app.input_sel, None);
         assert!(
@@ -11344,7 +11492,7 @@ mod tests {
         app.cursor = app.input.len();
         app.insert_paste("line one\nline two\nline three");
         let screen = input_screen(&mut app, 60, 12);
-        let y = app.input_area.y + 1;
+        let y = app.input_text_top();
         assert!(screen[y as usize].contains("[Pasted text #"), "{screen:#?}");
         for _ in 0..2 {
             mouse(
@@ -12185,7 +12333,8 @@ mod tests {
         app.context_window = 4000;
         app.cost = 0.5;
         let default = app.status_segments_text();
-        assert!(default.contains("m1"), "no template: default status");
+        assert!(default.contains("sess9"), "no template: default status");
+        assert!(!default.contains("m1"), "model moved to the input block: {default}");
 
         app.statusline = Some("{model}|{mode}|{pct}%|{unknown}".into());
         let text = app.status_segments_text();
@@ -12722,6 +12871,83 @@ mod tests {
     }
 
     #[test]
+    fn shift_tab_toggles_plan_and_the_block_recolors() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.mode = "ask".into();
+        let ask = app.mode_color();
+        app.key(
+            crossterm::event::KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT),
+            &mut serve,
+        );
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        assert_eq!(sent["cmd"], "set_plan");
+        assert_eq!(sent["on"], true);
+        app.frame(
+            json!({"type": "result", "id": sent["id"], "ok": true, "data": {"plan": true}}),
+            &mut serve,
+        );
+        assert!(app.plan_mode);
+        assert_ne!(app.mode_color(), ask, "plan has its own accent");
+        assert_eq!(app.mode, "ask", "shift+tab never touches the permission mode");
+        app.key(
+            crossterm::event::KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT),
+            &mut serve,
+        );
+        let sent2: Value = serde_json::from_str(&serve.sent[1]).unwrap();
+        assert_eq!(sent2["on"], false);
+    }
+
+    #[test]
+    fn mode_accents_are_distinct_and_plan_wins() {
+        for theme in [Theme::dark(), Theme::light()] {
+            let c = |m: &str, p| theme.mode_color(m, p);
+            let all = [c("ask", false), c("auto", false), c("readonly", false), c("ask", true)];
+            for (i, a) in all.iter().enumerate() {
+                for b in &all[i + 1..] {
+                    assert_ne!(a, b);
+                }
+            }
+            assert_eq!(c("auto", true), c("ask", true));
+        }
+        assert_ne!(Theme::dark().input_bg(), Theme::light().input_bg());
+    }
+
+    #[test]
+    fn input_block_pads_and_shows_the_footer_only_on_tall_terminals() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let mut app = App::new();
+        app.mode = "auto".into();
+        app.model = "apikeyfan/claude-opus-5-5".into();
+        app.serve_cwd = Some("/work/x".into());
+        app.serve_branch = "tango/x".into();
+        let text = |t: &Terminal<TestBackend>, y: u16| {
+            let b = t.backend().buffer();
+            (0..80).map(|x| b[(x, y)].symbol()).collect::<String>()
+        };
+
+        let mut tall = Terminal::new(TestBackend::new(80, 40)).unwrap();
+        tall.draw(|f| app.draw(f)).unwrap();
+        // rule, pad, 1 text row, pad, info row
+        assert_eq!(app.input_area.height, 5);
+        let top = app.input_area.y;
+        assert_eq!(app.input_text_top(), top + 2);
+        assert!(text(&tall, top + 4).starts_with("▌ auto · claude-opus-5-5 apikeyfan"));
+        let footer = text(&tall, top + 5);
+        assert!(footer.starts_with("/work/x:tango/x"), "footer: {footer}");
+        assert!(footer.contains("shift+tab plan"), "footer: {footer}");
+        let b = tall.backend().buffer();
+        assert_eq!(b[(0, top + 1)].fg, app.theme.mode_color("auto", false));
+        assert_eq!(b[(40, top + 1)].bg, app.theme.input_bg());
+
+        let mut short = Terminal::new(TestBackend::new(80, 20)).unwrap();
+        short.draw(|f| app.draw(f)).unwrap();
+        assert_eq!(app.input_area.height, 3, "no pads under 30 rows");
+        assert_eq!(app.input_area.y + 3 + 1, 20, "no footer under 24 rows");
+    }
+
+    #[test]
     fn plan_command_toggles_and_shows_badge() {
         let mut app = App::new();
         let mut serve = Serve::mock();
@@ -12734,9 +12960,13 @@ mod tests {
             &mut serve,
         );
         assert!(app.plan_mode);
-        let spans = app.status_spans(200);
-        let text: String = spans.iter().map(|s| s.content.to_string()).collect();
-        assert!(text.contains("PLAN"), "status bar shows PLAN badge: {text}");
+        let text: String = app
+            .input_info_line(80)
+            .spans
+            .iter()
+            .map(|s| s.content.to_string())
+            .collect();
+        assert!(text.starts_with("plan · "), "input block shows plan mode: {text}");
         app.run_slash("/plan", &mut serve);
         let sent2: Value = serde_json::from_str(&serve.sent[1]).unwrap();
         assert_eq!(sent2["on"], false);

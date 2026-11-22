@@ -137,7 +137,8 @@ isolation), MCP server→client capabilities (sampling/roots), plugin marketplac
 
 - `/plan` — research-only mode: every write-effect tool call is vetoed (even allow rules
   can't widen it) and the model is instructed to produce an execution plan; `/plan` again to
-  execute. PLAN badge in the status bar.
+  execute. Shift+Tab in the TUI toggles it too (ask ↔ plan only; `auto` stays an explicit
+  `/mode auto`). The input block's bar and info row turn orange while plan is on.
 - `/goal <text>` — keep working toward a goal: after each turn tango asks (tool-free) whether
   the goal is done; NO → one auto-continuation, YES → cleared with a notice. Hard cap
   (`/goal max N`, default 5), interrupt stops it, ●goal badge while active.
@@ -408,7 +409,7 @@ reply data. Most of these also skip the prompt queue.
 | settings | `set_effort` (`level`), `set_plan` (`on`), `set_autocompact` (`value`, 0 = off), `set_statusline` (`template`, null clears), `set_bubble` (`bubble`), `set_animations` (`animations`), `set_ascii` (`ascii`), `set_clipboard` (`clipboard`: auto, osc52 or native) |
 | config and trust | `config_show` (→ merged `config`, `sources`, `line`), `trust_status` (→ `root`, `trusted`, `gated`, `line`), `set_trust` (`trusted` → `reload`: restart serve to apply) |
 | permissions | `permissions_list` (→ `allow` with each rule's layer), `permissions_add` / `permissions_remove` (`rule` → `allow`, `path` of the file written), `import` (`source`: claude-code, grok or codex; `path` → `imported`, `skipped`) |
-| directories | `cd` (`dir` → `cwd`), `pwd` (→ `cwd`), `add_dir` (`dir` → `extraDirs`, `path`) |
+| directories | `cd` (`dir` → `cwd`, `branch`), `pwd` (→ `cwd`), `add_dir` (`dir` → `extraDirs`, `path`) |
 | background work | `bg` (`prompt`, `name`, `long`), `subtask` (`prompt`, `name`; runs in its own worktree), `tasks` (→ `tasks`), `stop_task` (task `id`) |
 | worktrees | `worktree_create` (`name`, `base`), `worktree_list`, `worktree_merge` (`name`), `worktree_remove` (`name`, `force`) |
 | goals | `goal` (`op`, `text`; → `goal`, `paused`, `maxRounds`), `loop` (`prompt`, `everySec`, or `off`) |
@@ -432,9 +433,15 @@ runs, `blocked:kind=permission` while the y/n/a dialog is open, `blocked:kind=qu
 `?choice` panel is open, and `clear` while Neovim owns the terminal and on exit. Orca uses this to
 recognize a tango pane and to type `orca orchestration check` mail notes only when tango is at its
 prompt; terminals that don't know the sequence ignore it. Also: mouse wheel scrolling, streaming answers, thinking lines, tool status lines with
-durations, a centered permission modal (y/n/a), a bottom status bar below the input (model · mode ·
-cost · session, fitted to the terminal width — on a narrow screen ctx and sess go first, then the
-pinned ▶, and the model name shortens, while cost and the ❓ badge stay). The rule above the input
+durations, a centered permission modal (y/n/a), and an input block: a tinted background (its own
+shade in the light theme) with a left bar colored by risk — plan orange, auto red, readonly gray,
+ask blue (plan wins) — the draft, and an info row `mode · model provider` (e.g.
+`ask · claude-opus-5-5 apikeyfan`; a narrow screen drops the provider, then clips the model).
+Terminals of 30+ rows get one blank row of padding above and below the draft. Under the block, on
+terminals of 24+ rows, a footer shows `~/dir:branch` on the left (refreshed by `/cd`) and key hints
+(`shift+tab plan`, `ctrl+p commands`) on the right when they fit. The bottom status bar (cost ·
+session · ctx, fitted to the terminal width — on a narrow screen ctx and sess go first, then the
+pinned ▶, while cost and the ❓ badge stay) no longer repeats the model and mode. The rule above the input
 carries the work state on its left end — `idle`, or the elapsed time and
 received characters behind a steady `●` — and
 a rotating tip on its right end during long turns; on a narrow terminal the tip goes first, then the
@@ -493,7 +500,7 @@ transcript come back. `/new` starts fresh while keeping the current model and pe
 `/restart` quits and re-execs the TUI (and with it a fresh serve), so a rebuilt `tango-tui` or
 `dist/` takes effect; it resumes the current session with the same permission mode. It refuses
 while a turn is running.
-Ctrl+P opens a filterable command palette; model/session pickers use the same filtering and mouse
+Shift+Tab toggles plan mode (ask ↔ plan). Ctrl+P opens a filterable command palette; model/session pickers use the same filtering and mouse
 routing. Ctrl+R searches original prompt history, and Alt+S stashes/restores the complete draft
 (including collapsed paste metadata) without submitting it. File references accept inclusive line
 ranges: `@path#20-45`, `@path#L20-L45`, or `@path#20`. Scrolling up pauses auto-follow and keeps the
