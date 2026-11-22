@@ -57,8 +57,8 @@ A tool call in flight shows as `⚙ bash …` with the gear color cycling; when 
 the same line becomes `⚙ bash <command> · <ms>` (click it or press ctrl+o for the output).
 
 Reasoning the model streamed shows as `✻ …` lines with a `┃` bar on their left. While the
-turn runs, that bar's color scrolls down the newest thinking block (needs a truecolor
-terminal; otherwise, and once idle, it is a flat dim bar).
+turn runs, that bar's color scrolls down the newest thinking block (in 256 colors on
+terminals without 24-bit color; once idle, or with `/animations off`, it is a flat dim bar).
 
 While a turn runs, Enter queues your next prompt instead of interrupting. Queued prompts
 are sent in order when the turn ends. `/queue` shows them, and its `[并入当前]` button merges

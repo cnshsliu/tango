@@ -164,12 +164,12 @@ tools and checkpoints follow live); `/add_dir <dir>` registers an extra writable
   default-errors-only / full) and applies to restored history too.
 - **Thinking bar**: committed reasoning (`✻ …` lines) carries a `┃` gutter on its left;
   while the turn runs, the newest thinking block's bar color scrolls down (a dim→bright
-  cyan wave, ~8fps, only with truecolor terminals — `$COLORTERM=truecolor` — and only the
-  block that belongs to the running turn; older blocks and idle chats show a flat dim bar).
+  cyan wave, ~8fps, in 24-bit color with `$COLORTERM=truecolor` and xterm 256 colors otherwise,
+  and only the block that belongs to the running turn; older blocks and idle chats show a flat dim bar).
 - **Running tools**: while a bash/other tool call is in flight its `⚙ …` line keeps the
   gear cycling through the same cyan wave (~2.5 steps/s); when the result lands, that same
   line freezes into `⚙ <tool> <summary> · <ms>` in place — one line per call, never a
-  duplicate. Same truecolor requirement as the thinking bar (gray↔cyan blink otherwise).
+  duplicate. Needs a truecolor terminal (gray↔cyan blink otherwise).
 - **Input history**: Up/Down in the input box walk through sent prompts (empty input
   recalls the newest). The unsent draft is stashed aside and comes back when you press
   Down past the newest entry, or Esc — and after you edit a recalled entry and send it,
@@ -318,7 +318,7 @@ received characters behind a steady `●` — and
 a rotating tip on its right end during long turns; on a narrow terminal the tip goes first, then the
 counter, then the timer. While a turn runs, a cyan band of light flows along the rule's dashes: fast
 while text streams, a slow drift while waiting on tools; after 10s with no output it stops and dims.
-Terminals without 24-bit color get the same band in xterm 256 colors. `/animations off` (saved as
+Terminals without 24-bit color get the same band (and the thinking bar's wave) in xterm 256 colors. `/animations off` (saved as
 `"animations": false` in config) keeps the text and drops the motion: steady dot, no band, static
 thinking bar and splash.
 A custom `/statusline` template can still place `{work}` in the status bar. The input is multi-line with Tab-completed `/` commands and `@file` inlining (contents ride along in the

@@ -794,17 +794,33 @@ const THINK_WAVE: [Color; 8] = [
     Color::Rgb(32, 130, 160),
     Color::Rgb(24, 84, 104),
 ];
+/// The same wave in xterm 256-color cube stand-ins (the rule sweep's palette).
+const THINK_WAVE_256: [Color; 8] = [
+    Color::Indexed(23),
+    Color::Indexed(24),
+    Color::Indexed(31),
+    Color::Indexed(38),
+    Color::Indexed(123),
+    Color::Indexed(38),
+    Color::Indexed(31),
+    Color::Indexed(24),
+];
 const THINK_FRAME_MS: u128 = 120;
 
+/// The thinking wave this terminal can show: 24-bit, or the 256-color cube.
+fn think_wave() -> &'static [Color; 8] {
+    if supports_truecolor() { &THINK_WAVE } else { &THINK_WAVE_256 }
+}
+
 /// Color of the thinking bar cell at global row `g` on animation frame `frame`
-/// (~120ms apart). `animate` false (idle, or no truecolor) → flat dim gray.
+/// (~120ms apart). `animate` false (idle, or animations off) → flat dim gray.
 fn thinking_bar_color(frame: u128, local_row: usize, animate: bool) -> Color {
     if !animate {
         return Color::DarkGray;
     }
-    let phase = (frame + THINK_WAVE.len() as u128).wrapping_sub(local_row as u128)
-        % THINK_WAVE.len() as u128;
-    THINK_WAVE[phase as usize]
+    let wave = think_wave();
+    let phase = (frame + wave.len() as u128).wrapping_sub(local_row as u128) % wave.len() as u128;
+    wave[phase as usize]
 }
 
 /// How quickly output is arriving, as the rule sweep's speed in cells per
@@ -7512,7 +7528,6 @@ impl App {
                 let local = live_think_block.map_or(g, |b| g.saturating_sub(b));
                 let live = self.busy
                     && self.animations
-                    && supports_truecolor()
                     && live_think_block.is_some_and(|b| g >= b);
                 let color = thinking_bar_color(self.think_frame, local, live);
                 pad.push(Span::styled("┃".to_string(), Style::default().fg(color)));
@@ -10809,8 +10824,14 @@ mod tests {
         }
         // the wave is periodic in rows and covers the bright head
         let wave: Vec<Color> = (0..8).map(|r| thinking_bar_color(0, r, true)).collect();
-        assert_eq!(wave[0], THINK_WAVE[0]);
-        assert!(wave.iter().any(|c| matches!(c, Color::Rgb(120, 225, 240))));
+        assert_eq!(wave[0], think_wave()[0]);
+        assert!(wave.contains(&think_wave()[4]), "the bright head is in the wave");
+        // both palettes share the shape: dim ends, one bright peak, mirrored
+        for w in [&THINK_WAVE, &THINK_WAVE_256] {
+            assert_eq!(w[3], w[5]);
+            assert_eq!(w[1], w[7]);
+            assert_ne!(w[4], w[3]);
+        }
         assert_eq!(thinking_bar_color(8, 0, true), thinking_bar_color(0, 0, true));
     }
 
