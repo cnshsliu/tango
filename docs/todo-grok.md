@@ -19,7 +19,7 @@
 - [x] **2. 后台 shell 进程**
   - grok：`bash` 有 `background: true`，立即返回进程 ID。另有 `process_logs`（看最后 N 行）、`process_stop`（先 SIGTERM，3 秒后 SIGKILL）、`process_list`，最多 8 个。见 `src/tools/bash.ts:177`、`src/grok/tools.ts:142`。
   - tango：`bash` 只能前台跑，最长 120 秒。启动开发服务器、跑 watch 时会卡住整个回合。
-- [ ] **3. 压缩（compact）升级**
+- [x] **3. 压缩（compact）升级**
   - grok：保留最近约 2 万 token 原文，只总结更早的部分。总结用固定格式（Goal / Constraints / Progress / Key Decisions / Next Steps / Critical Context）。再次压缩时在旧总结上增量更新。送去总结的工具结果截到 2000 字符。单个回合太大时，把这一回合的前半段单独总结。见 `src/agent/compaction.ts`。
   - tango：`Agent.compact()` 把全部消息压成一段总结，最近的原文也不保留，总结输出上限 1200 token（`src/core/agent.ts:230`）。
 - [ ] **4. Hooks 第二期：stdout JSON 和更多事件**

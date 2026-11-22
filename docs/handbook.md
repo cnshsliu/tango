@@ -94,6 +94,10 @@ Every conversation is a session, stored as an append-only JSONL file in
 Long sessions fill the context window. The status bar shows usage and turns yellow at 60%
 and red at 80%. Tango compacts older history automatically at 75% (change it with
 `/autocompact`), or you can run `/compact` yourself. `/context` shows what takes up the space.
+Compaction keeps your most recent turns word for word (about 20 000 tokens' worth) and turns only
+the older part into a structured summary: goal, constraints, progress, key decisions, next steps
+and critical details such as paths and error messages. Compacting again updates that summary, so
+early decisions are not lost after several compactions.
 
 To move work between sessions, use `/handoff <session>` to send a brief of this session to
 another one, or `/takeover <session>` to pull another session's work into this one. Neither

@@ -1,7 +1,7 @@
 import { buildContext } from './context.js';
 import { EventBus } from './events.js';
 import { adapterFor, costUsd } from './models/registry.js';
-import type { SessionStore } from './session.js';
+import { SUMMARY_OPEN, type SessionStore } from './session.js';
 import type { ToolRegistry } from './tools/registry.js';
 import type {
   CompletionRequest,
@@ -26,10 +26,22 @@ export interface AgentOptions {
   compactAt?: number;
 }
 
-const COMPACT_INSTRUCTION =
-  'Summarize everything above for a successor model that will NOT see the original messages. ' +
-  'Keep: the user goals and constraints, decisions made and why, file paths touched, current state, ' +
-  'open questions. Be dense and factual. This is data for another model, not a reply to a human.';
+/** verbatim tail kept after compaction, in estimated tokens */
+export const COMPACT_KEEP_TOKENS = 20_000;
+/** tool results are cut to this many chars in the summarizer transcript */
+const COMPACT_TOOL_CHARS = 2000;
+
+const COMPACT_FORMAT =
+  'Use exactly these markdown sections: ## Goal, ## Constraints, ## Progress, ## Key Decisions (with reasons), ' +
+  '## Next Steps, ## Critical Context (exact paths, commands, ids, error messages, numbers). Omit a section only ' +
+  'when it is empty. Be dense and factual. This is data for a successor model that will NOT see the original ' +
+  'messages, not a reply to a human. Write in the language the user used. The most recent messages stay in ' +
+  'context verbatim after this summary, so focus on what came before them.';
+const COMPACT_INSTRUCTION = 'Summarize the conversation above. ' + COMPACT_FORMAT;
+const COMPACT_UPDATE_INSTRUCTION =
+  'Above is the summary from the previous compaction, followed by the conversation since then. Write an ' +
+  'updated summary: keep everything from the previous one that still matters, fold in the new messages, ' +
+  'drop what is obsolete. ' + COMPACT_FORMAT;
 
 const HANDOFF_INSTRUCTION =
   'Write a handoff brief for ANOTHER session that will continue this work without seeing the messages above. ' +
@@ -226,23 +238,51 @@ export class Agent {
     }
   }
 
-  /** Ask the model to summarize the conversation, then drop everything before the summary. */
+  /**
+   * Summarize older context and keep the latest ~COMPACT_KEEP_TOKENS verbatim.
+   * A previous summary is updated incrementally instead of re-summarized from scratch.
+   * The kept tail starts at a user message, so no tool_result is cut from its tool_call.
+   */
   async compact(): Promise<boolean> {
     const messages = this.store.messages();
     if (messages.length < 4) return false;
-
-    const transcript = this.transcript(messages);
+    const hasPrev = messages[0]?.role === 'user' && textOf(messages[0]).startsWith(SUMMARY_OPEN);
+    const body = hasPrev ? messages.slice(1) : messages;
+    // small windows keep less, or the kept tail alone would re-trigger auto-compaction
+    const budget = Math.min(COMPACT_KEEP_TOKENS, Math.round((this.model.contextWindow ?? 128_000) * 0.25));
+    let keep = keptTail(body, budget);
+    let older = body.slice(0, body.length - keep);
+    if (older.length === 0) {
+      // everything fits the tail budget (a manual /compact): keep just the latest turn
+      const last = lastTurnStart(body);
+      if (last > 0) {
+        older = body.slice(0, last);
+        keep = body.length - last;
+      }
+    }
+    if (keep === 0 || older.length === 0) {
+      // one huge turn: summarize the first half of the last turn instead
+      const half = splitPoint(body);
+      if (half > 0) {
+        older = body.slice(0, half);
+        keep = body.length - half;
+      } else {
+        // no safe split point: summarize everything, as before
+        older = body;
+        keep = 0;
+      }
+    }
+    const prev = hasPrev ? this.store.lastSummary() : undefined;
+    const transcript = this.transcript(older, COMPACT_TOOL_CHARS);
+    const text = prev
+      ? `<previous summary>\n${prev}\n</previous summary>\n\n${transcript}\n\n${COMPACT_UPDATE_INSTRUCTION}`
+      : `${transcript}\n\n${COMPACT_INSTRUCTION}`;
     let summary = '';
     const req: CompletionRequest = {
       system: 'You summarize conversations for other models.',
-      messages: [
-        {
-          role: 'user',
-          content: [{ type: 'text', text: transcript + '\n\n' + COMPACT_INSTRUCTION }]
-        }
-      ],
+      messages: [{ role: 'user', content: [{ type: 'text', text }] }],
       tools: [],
-      maxTokens: 1200,
+      maxTokens: 4000,
       signal: this.controller?.signal
     };
     for await (const ev of adapterFor(this.model).stream(this.model, req)) {
@@ -254,7 +294,7 @@ export class Agent {
       }
     }
     if (!summary.trim()) return false;
-    await this.store.compact(summary.trim());
+    await this.store.compact(summary.trim(), keep);
     return true;
   }
 
@@ -311,17 +351,7 @@ export class Agent {
 
   /** Cheap char-based token estimate of what the next request would carry. */
   private estimateTokens(): number {
-    let chars = 0;
-    for (const m of this.store.messages()) {
-      for (const b of m.content) {
-        if (b.type === 'text' || b.type === 'thinking') chars += b.text.length;
-        else if (b.type === 'tool_call') chars += JSON.stringify(b.input ?? {}).length + b.name.length;
-        else if (b.type === 'tool_result')
-          chars += b.content.reduce((n, c) => n + (c.type === 'text' ? c.text.length : 4000), 0);
-        else if (b.type === 'image') chars += 4000;
-      }
-    }
-    return Math.round(chars / 3.5);
+    return this.store.messages().reduce((n, m) => n + messageTokens(m), 0);
   }
 
   private async compactIfNeeded(): Promise<void> {
@@ -357,7 +387,7 @@ export class Agent {
   }
 
   /** Flatten the conversation to plain text for the summarizer call. */
-  private transcript(messages: Message[]): string {
+  private transcript(messages: Message[], toolChars = 600): string {
     const lines: string[] = [];
     for (const m of messages) {
       for (const b of m.content) {
@@ -368,11 +398,72 @@ export class Agent {
           const body = b.content
             .map((c) => (c.type === 'text' ? c.text : '[image]'))
             .join('\n')
-            .slice(0, 600);
+            .slice(0, toolChars);
           lines.push(`tool result${b.isError ? ' (error)' : ''}: ${body}`);
         }
       }
     }
-    return lines.join('\n').slice(-60_000);
+    // the summarizer request must fit the window: keep the newest part when it would not
+    const cap = Math.round((this.model.contextWindow ?? 128_000) * 0.6 * 3.5);
+    return lines.join('\n').slice(-Math.max(60_000, cap));
   }
+}
+
+/** Cheap char-based token estimate of one message (≈3.5 chars per token, images 4000 chars). */
+export function messageTokens(m: Message): number {
+  let chars = 0;
+  for (const b of m.content) {
+    if (b.type === 'text' || b.type === 'thinking') chars += b.text.length;
+    else if (b.type === 'tool_call') chars += JSON.stringify(b.input ?? {}).length + b.name.length;
+    else if (b.type === 'tool_result')
+      chars += b.content.reduce((n, c) => n + (c.type === 'text' ? c.text.length : 4000), 0);
+    else if (b.type === 'image') chars += 4000;
+  }
+  return Math.round(chars / 3.5);
+}
+
+function textOf(m: Message): string {
+  return m.content.map((b) => (b.type === 'text' ? b.text : '')).join('');
+}
+
+/** A user message that is a real prompt (not only tool results): a safe place to cut. */
+function isTurnStart(m: Message): boolean {
+  return m.role === 'user' && !m.content.some((b) => b.type === 'tool_result');
+}
+
+/**
+ * How many trailing messages to keep verbatim: the newest whole turns that fit in
+ * `budget` tokens. The cut always lands on a turn start, so tool calls keep their results.
+ * 0 when even the last turn alone is over budget.
+ */
+export function keptTail(messages: Message[], budget: number): number {
+  let used = 0;
+  let keep = 0;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    used += messageTokens(messages[i]);
+    if (used > budget) break;
+    if (isTurnStart(messages[i])) keep = messages.length - i;
+  }
+  return keep;
+}
+
+/**
+ * For a last turn too big to keep: index splitting it in half (by tokens) at an
+ * assistant message boundary, so [0, i) is summarized and [i, end) stays. The kept
+ * part then opens with an assistant message whose tool calls are all answered after it.
+ */
+function lastTurnStart(messages: Message[]): number {
+  for (let i = messages.length - 1; i >= 0; i--) if (isTurnStart(messages[i])) return i;
+  return 0;
+}
+
+export function splitPoint(messages: Message[]): number {
+  const start = lastTurnStart(messages);
+  const total = messages.slice(start).reduce((n, m) => n + messageTokens(m), 0);
+  let used = 0;
+  for (let i = start; i < messages.length; i++) {
+    if (i > start && messages[i].role === 'assistant' && used >= total / 2) return i;
+    used += messageTokens(messages[i]);
+  }
+  return -1;
 }

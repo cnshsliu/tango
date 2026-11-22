@@ -38,6 +38,9 @@ export function relativeTime(iso: string, now: Date = new Date()): string {
  * Compaction appends a summary entry; messages before it are dropped from model context.
  * Layout: <dir>/<id>.jsonl
  */
+/** opening tag of the injected compaction summary (agent.compact skips it in transcripts) */
+export const SUMMARY_OPEN = '<summary of earlier conversation>';
+
 export class SessionStore {
   private entries: SessionEntry[] = [];
   /** all timestamps come from here; scheduled runs inject the daemon's notion of "now" */
@@ -197,9 +200,20 @@ export class SessionStore {
     return this.messages().length;
   }
 
-  async compact(summary: string): Promise<void> {
-    const droppedCount = this.messageCount();
-    await this.append({ kind: 'compaction', ts: this.now(), summary, droppedCount });
+  /** Replace the context with `summary` plus the latest `keep` context messages verbatim. */
+  async compact(summary: string, keep = 0): Promise<void> {
+    const total = this.messageCount();
+    const k = Math.max(0, Math.min(keep, total));
+    await this.append({ kind: 'compaction', ts: this.now(), summary, droppedCount: total - k, ...(k ? { keep: k } : {}) });
+  }
+
+  /** Summary of the latest compaction in the current projection (rewind respected). */
+  lastSummary(): string | undefined {
+    const visible = this.visibleEntries();
+    for (let i = visible.length - 1; i >= 0; i--) {
+      const e = visible[i];
+      if (e.kind === 'compaction') return e.summary;
+    }
   }
 
   /** All messages of a given entry kind (e.g. task_run records). */
@@ -254,24 +268,43 @@ export class SessionStore {
         break;
       }
     }
+    const asMessage = (e: SessionEntry): Message | undefined => {
+      if (e.kind === 'message') return e.message;
+      if (e.kind === 'handoff')
+        return { role: 'user', content: [{ type: 'text', text: `<handoff from session ${e.from}>\n${e.summary}\n</handoff>` }] };
+    };
     const out: Message[] = [];
     if (start >= 0) {
       const e = visible[start];
       if (e.kind === 'compaction') {
         out.push({
           role: 'user',
-          content: [{ type: 'text', text: `<summary of earlier conversation>\n${e.summary}\n</summary>` }]
+          content: [{ type: 'text', text: `${SUMMARY_OPEN}\n${e.summary}\n</summary>` }]
         });
+        // the verbatim tail: the last `keep` context messages before the compaction
+        // (they may reach back past an earlier compaction into ITS kept tail)
+        const kept: Message[] = [];
+        let want = e.keep ?? 0;
+        let budget = Infinity; // messages still visible below an earlier compaction we crossed
+        for (let i = start - 1; i >= 0 && want > 0 && budget > 0; i--) {
+          const prev = visible[i];
+          if (prev.kind === 'compaction') {
+            // only that compaction's own verbatim tail was in context; the rest is summarized
+            budget = Math.min(budget, prev.keep ?? 0);
+            continue;
+          }
+          const m = asMessage(prev);
+          if (!m) continue;
+          kept.unshift(m);
+          want--;
+          if (budget !== Infinity) budget--;
+        }
+        out.push(...kept);
       }
     }
     for (let i = start + 1; i < visible.length; i++) {
-      const e = visible[i];
-      if (e.kind === 'message') out.push(e.message);
-      else if (e.kind === 'handoff')
-        out.push({
-          role: 'user',
-          content: [{ type: 'text', text: `<handoff from session ${e.from}>\n${e.summary}\n</handoff>` }]
-        });
+      const m = asMessage(visible[i]);
+      if (m) out.push(m);
     }
     return out;
   }

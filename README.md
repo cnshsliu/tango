@@ -275,6 +275,15 @@ tools and checkpoints follow live); `/add_dir <dir>` registers an extra writable
   finished turn leaves a `✓ 本轮：…` recap line.
 - `/autocompact [N%|0.N|off]` shows or sets the auto-compaction threshold (default 75% of the
   window); persisted in config.
+- **Compaction** (`/compact` or auto): the newest whole turns, up to ~20 000 estimated tokens
+  (at most 25% of the window), stay in context verbatim; only the older part is summarized into
+  fixed sections (`## Goal`, `## Constraints`, `## Progress`, `## Key Decisions`, `## Next Steps`,
+  `## Critical Context`). A later compaction updates the previous summary instead of
+  re-summarizing it. Tool results going into the summarizer are cut to 2000 characters. The
+  kept tail always starts at a prompt, so tool calls keep their results; when the last turn
+  alone is over budget, its first half (cut before an assistant message) is summarized and the
+  second half stays. A small conversation keeps just its latest turn. The summary may use up to
+  4000 output tokens. Sessions compacted before this keep their old meaning (nothing verbatim).
 - `/statusline '<tpl>'` customizes the bottom bar with `{model} {mode} {cost} {ctx} {pct} {session}
 {tokens} {work}`; unknown placeholders pass through; `off` restores the default.
 - `/preset save <name>` stores the current draft as a reusable template (`~/.tango/presets.json`);
@@ -673,7 +682,7 @@ src/core/
   types.ts      shared message/model/tool/session types (imports nothing)
   events.ts     typed bus; before_tool can veto, before_request can mutate
   agent.ts      the loop: model → tools → model, persist + emit each step
-  session.ts    append-only JSONL store, compaction = summary entry
+  session.ts    append-only JSONL store, compaction = summary entry + kept verbatim tail (keep)
   context.ts    system prompt = base + AGENTS.md (upward + global) + skills + env
   skills.ts     /save-as-skill drafts → SKILL.md
   diagnostics.ts after write/edit → project checker (tsc/pyright/ruff/go vet/cargo) → tool result
