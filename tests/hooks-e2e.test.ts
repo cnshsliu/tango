@@ -348,10 +348,20 @@ test('legacy beforeTool/afterTool keys still notify and never block', async () =
   try {
     await t.agent.prompt('go');
     assert.ok(existsSync(join(t.work, 'ran.txt')), 'exit 2 from a legacy hook does not block');
-    // legacy hooks are fire-and-forget: give them a moment to land
-    for (let i = 0; i < 50 && !existsSync(join(t.work, 'legacy-after.json')); i++) await new Promise((r) => setTimeout(r, 20));
-    assert.equal(JSON.parse(await readFile(join(t.work, 'legacy-before.json'), 'utf8')).phase, 'before');
-    assert.equal(JSON.parse(await readFile(join(t.work, 'legacy-after.json'), 'utf8')).phase, 'after');
+    // legacy hooks are fire-and-forget, and `cat >` creates the file before it writes the payload:
+    // wait until each file holds complete JSON, not just until it exists
+    const landed = async (name: string): Promise<{ phase?: string } | undefined> => {
+      for (let i = 0; i < 100; i++) {
+        try {
+          return JSON.parse(await readFile(join(t.work, name), 'utf8'));
+        } catch {
+          await new Promise((r) => setTimeout(r, 20));
+        }
+      }
+      return undefined;
+    };
+    assert.equal((await landed('legacy-before.json'))?.phase, 'before');
+    assert.equal((await landed('legacy-after.json'))?.phase, 'after');
   } finally {
     delete process.env.TANGO_LEGACY_DIR;
     await t.done();
