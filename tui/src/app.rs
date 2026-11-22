@@ -649,6 +649,10 @@ const SLASH: &[(&str, &str)] = &[
     ("/remember <text>", "记住一条偏好 → 全局记忆，所有会话生效"),
     ("/mouse", "切换鼠标捕获 · /mouse on|off"),
     ("/animations", "动画开关 · /animations on|off（off：静态颜色，文字不变）"),
+    (
+        "/clipboard [auto|osc52|native]",
+        "复制方式：auto（SSH 下 OSC 52）· osc52 经终端转义（SSH/tmux 可用）· native 系统命令",
+    ),
     ("/ascii", "ASCII 模式 · /ascii on|off（emoji 显示成 * ? + 等，适合没有 emoji 字体的终端）"),
     (
         "/bubble",
@@ -3966,7 +3970,8 @@ impl App {
                     .filter(|left| *left > 0)
                     .and_then(|left| self.assistant_replies.get(left - 1));
                 if let Some(text) = pick {
-                    match crate::clipboard::copy(text) {
+                    let text = text.clone();
+                    match self.copy_to_clipboard(&text) {
                         Ok(()) => self.push(format!("已复制助手回复（{n}）",), Tone::Success),
                         Err(error) => self.push(format!("复制失败：{error}"), Tone::Error),
                     }
@@ -4110,6 +4115,26 @@ impl App {
                     if enabled { "动画：开" } else { "动画：关（静态颜色）" }.to_string(),
                     Tone::Muted,
                 );
+            }
+            "/clipboard" => {
+                use crate::clipboard::{Mode, mode, set_mode};
+                if rest.is_empty() {
+                    self.push(
+                        format!(
+                            "剪贴板：{}（auto：SSH 下走 OSC 52，本机用系统命令，失败再退到 OSC 52）· /clipboard auto|osc52|native",
+                            mode().name()
+                        ),
+                        Tone::Muted,
+                    );
+                    return;
+                }
+                let Some(m) = Mode::parse(rest) else {
+                    self.push("usage: /clipboard [auto|osc52|native]", Tone::Muted);
+                    return;
+                };
+                set_mode(m);
+                let _ = serve.command("set_clipboard", vec![("clipboard", Value::String(m.name().into()))]);
+                self.push(format!("剪贴板：{}", m.name()), Tone::Muted);
             }
             "/ascii" => {
                 let enabled = match rest {
@@ -5344,7 +5369,8 @@ impl App {
                 return;
             }
             if !ctrl && k.code == KeyCode::Char('c') {
-                let result = crate::clipboard::copy(&self.viewer.as_ref().unwrap().text);
+                let text = self.viewer.as_ref().unwrap().text.clone();
+                let result = self.copy_to_clipboard(&text);
                 match result {
                     Ok(()) => self.push("已复制查看器全文", Tone::Success),
                     Err(error) => self.push(format!("复制失败：{error}"), Tone::Error),
@@ -6071,6 +6097,12 @@ impl App {
                 self.user_bubble = v["bubble"].as_bool().unwrap_or(true);
                 self.animations = v["animations"].as_bool().unwrap_or(true);
                 self.ascii = v["ascii"].as_bool().unwrap_or(false);
+                crate::clipboard::set_mode(
+                    v["clipboard"]
+                        .as_str()
+                        .and_then(crate::clipboard::Mode::parse)
+                        .unwrap_or(crate::clipboard::Mode::Auto),
+                );
                 self.cost = v["totalCostUsd"].as_f64().unwrap_or(0.0);
                 self.context_tokens = v["contextTokens"].as_u64().unwrap_or(0);
                 self.context_window = v["contextWindow"].as_u64().unwrap_or(0);
@@ -11582,6 +11614,23 @@ mod tests {
         assert_eq!(display_width(THINK_ICON), 2, "one emoji, two cells");
         app.ascii = true;
         assert_eq!(app.chat_lines().last().unwrap().text, "* 想一下");
+    }
+
+    #[test]
+    fn clipboard_command_sets_and_persists_the_copy_path() {
+        use crate::clipboard::{Mode, mode, set_mode};
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.run_slash("/clipboard osc52", &mut serve);
+        assert_eq!(mode(), Mode::Osc52);
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        assert_eq!((sent["cmd"].as_str(), sent["clipboard"].as_str()), (Some("set_clipboard"), Some("osc52")));
+        app.run_slash("/clipboard bogus", &mut serve);
+        assert_eq!(mode(), Mode::Osc52, "bad arg changes nothing");
+        assert_eq!(serve.sent.len(), 1);
+        app.run_slash("/clipboard", &mut serve);
+        assert!(app.lines.last().unwrap().text.contains("剪贴板：osc52"));
+        set_mode(Mode::Auto);
     }
 
     #[test]

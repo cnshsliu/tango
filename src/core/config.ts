@@ -26,6 +26,8 @@ export interface Config {
   animations?: boolean;
   /** TUI ASCII mode: emoji and the thinking icon drawn as plain ASCII. Missing means false. */
   ascii?: boolean;
+  /** TUI copy path: auto (OSC 52 over SSH, else native, then OSC 52), osc52 or native. Missing means auto. */
+  clipboard?: 'auto' | 'osc52' | 'native';
   /** User-message style: true = right-positioned bubble (default), false = full-width left. */
   bubble?: boolean;
   /** Input editing mode; missing/unknown values use the default Emacs-like editing */

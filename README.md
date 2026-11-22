@@ -101,7 +101,7 @@ tango task run [--loop]  run due tasks once, or keep running as a daemon
 TUI commands: `/model`, `/agents`, `/resume`, `/new`, `/restart`, `/rename`, `/mode`, `/plan`, `/goal`,
 `/loop`, `/effort`, `/review`, `/security-review`, `/bg`, `/tasks`, `/stop`, `/subtask`,
 `/worktree`, `/mcp`, `/plugins`, `/vim`, `/nvim`, `/editor`, `/multiline`, `/btw`, `/diff`,
-`/focus`, `/density`, `/mouse`, `/animations`, `/ascii`, `/theme`, `/compact`, `/autocompact`, `/skill`, `/skills`,
+`/focus`, `/density`, `/mouse`, `/animations`, `/ascii`, `/clipboard`, `/theme`, `/compact`, `/autocompact`, `/skill`, `/skills`,
 `/memory`, `/remember`, `/cost`, `/usage`, `/stats`, `/insights`, `/context`, `/queue`,
 `/timestamps`, `/statusline`, `/preset`, `/permissions`, `/import`, `/cd`, `/pwd`, `/add_dir`,
 `/config`, `/trust`, `/keymap`, `/init`, `/doctor`, `/debug-zip`, `/status`, `/clear`, `/rewind`, `/undo`,
@@ -252,6 +252,14 @@ tools and checkpoints follow live); `/add_dir <dir>` registers an extra writable
   double-click selects the whole prompt and copies it (paste chips expand to the full pasted
   text), the highlight clearing on the next key; the permission modal takes `c` to copy the pending command before
   answering y/n/a. `/mouse off` still hands selection back to the terminal natively.
+- **Clipboard** (`/clipboard auto|osc52|native`, config `clipboard`): every copy (selection,
+  `/copy`, viewer `c`, prompt menu, session id) goes through one path. `auto` (default) sends an
+  OSC 52 escape (`ESC ]52;c;<base64> BEL`) when `$SSH_TTY`/`$SSH_CONNECTION` is set, so text lands in
+  the clipboard of the machine you're sitting at; locally it runs `pbcopy` (or `wl-copy`/`xclip`/`xsel`)
+  and falls back to OSC 52 if none works. Inside tmux the sequence is wrapped in tmux's DCS
+  passthrough (needs `set -g set-clipboard on` or `allow-passthrough on`), inside GNU screen in
+  screen's DCS. `osc52` / `native` force one path. The terminal must allow OSC 52 writes (iTerm2:
+  "Applications in terminal may access clipboard"; most others on by default).
 - **IME auto-switch (macOS)**: single-key dialogs (y/n/a) are unreachable through a CJK
   input method. When `macism` is on PATH, a permission dialog switches to ABC automatically
   and restores your previous input method when you answer; already-roman keyboards and a
@@ -386,7 +394,7 @@ reply data. Most of these also skip the prompt queue.
 
 | group | commands |
 | --- | --- |
-| settings | `set_effort` (`level`), `set_plan` (`on`), `set_autocompact` (`value`, 0 = off), `set_statusline` (`template`, null clears), `set_bubble` (`bubble`), `set_animations` (`animations`), `set_ascii` (`ascii`) |
+| settings | `set_effort` (`level`), `set_plan` (`on`), `set_autocompact` (`value`, 0 = off), `set_statusline` (`template`, null clears), `set_bubble` (`bubble`), `set_animations` (`animations`), `set_ascii` (`ascii`), `set_clipboard` (`clipboard`: auto, osc52 or native) |
 | config and trust | `config_show` (→ merged `config`, `sources`, `line`), `trust_status` (→ `root`, `trusted`, `gated`, `line`), `set_trust` (`trusted` → `reload`: restart serve to apply) |
 | permissions | `permissions_list` (→ `allow` with each rule's layer), `permissions_add` / `permissions_remove` (`rule` → `allow`, `path` of the file written), `import` (`source`: claude-code, grok or codex; `path` → `imported`, `skipped`) |
 | directories | `cd` (`dir` → `cwd`), `pwd` (→ `cwd`), `add_dir` (`dir` → `extraDirs`, `path`) |
@@ -583,6 +591,7 @@ used as the literal key. Nothing is inferred. `tango --models` shows which varia
 | `theme` | `dark`, `light` or `auto` (from `COLORFGBG`) | `/theme` |
 | `mouse` | mouse capture; `false` keeps native selection (default `true`) | `/mouse` |
 | `animations` | busy-rule, thinking and splash motion (default `true`) | `/animations` |
+| `clipboard` | copy path: `auto` (OSC 52 over SSH, else native command, then OSC 52), `osc52` or `native` (default `auto`) | `/clipboard` |
 | `ascii` | draw emoji (❓ ➕ 📋 📂 💡 …) and the thinking robot as ASCII (`?` `+` `#` `>` `*`) for terminals without an emoji font (default `false`) | `/ascii` |
 | `bubble` | user messages as right-aligned bubbles (default `true`) or full width | `/bubble` |
 | `editor` | `default` or `vim` input editing | `/vim` |
@@ -605,7 +614,7 @@ A session merges up to three config files, lowest first:
 
 | layer | file | notes |
 | --- | --- | --- |
-| global | `~/.tango/config.json` | `/theme`, `/mouse`, `/animations`, `/ascii`, `/model` write here |
+| global | `~/.tango/config.json` | `/theme`, `/mouse`, `/animations`, `/ascii`, `/clipboard`, `/model` write here |
 | project shared | `<git toplevel>/.tango/config.json` | committed with the repo |
 | project personal | `<main checkout>/.tango/config.local.json` | `/permissions add`, `/import`, `/add_dir` write here; tango adds it to `.git/info/exclude` |
 

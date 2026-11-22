@@ -79,7 +79,7 @@
 - [ ] **19. 主题自动检测：用 OSC 11 查询背景色，监听 997 主题变化通知**
   - OpenTUI：向终端查询背景色，系统切换深浅色时能收到通知并跟着变。见 `packages/core/src/renderer-theme-mode.ts`。
   - tango：`auto` 只看 `COLORFGBG` 环境变量，很多终端不设这个变量，运行中也不会跟着变。
-- [ ] **20. OSC 52 剪贴板**
+- [x] **20. OSC 52 剪贴板**（已完成：`tui/src/clipboard.rs`，`/clipboard`，配置 `clipboard`）
   - OpenTUI：通过终端转义序列复制，SSH 和 tmux 里也能用。见 `packages/core/src/lib/clipboard-service.ts`。
   - tango：`tui/src/clipboard.rs` 调用本机剪贴板命令，远程登录时复制不到本地。
 - [ ] **21. Kitty 键盘协议**

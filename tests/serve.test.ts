@@ -404,6 +404,14 @@ test('serve: theme and mouse settings persist without dropping other config', as
     s.send({ id: 8, cmd: 'set_ascii', ascii: 1 });
     const badAsc = await s.until((f) => f.type === 'result' && f.id === 8, 'bad ascii result');
     assert.equal(badAsc.ok, false);
+    assert.equal(hello.clipboard, 'auto');
+    s.send({ id: 9, cmd: 'set_clipboard', clipboard: 'osc52' });
+    const clip = await s.until((f) => f.type === 'result' && f.id === 9, 'set_clipboard result');
+    assert.equal(clip.data.clipboard, 'osc52');
+    assert.equal(JSON.parse(await readFile(join(home, 'config.json'), 'utf8')).clipboard, 'osc52');
+    s.send({ id: 10, cmd: 'set_clipboard', clipboard: 'x11' });
+    const badClip = await s.until((f) => f.type === 'result' && f.id === 10, 'bad clipboard result');
+    assert.equal(badClip.ok, false);
   } finally {
     s.child.kill();
     mock.server.close();

@@ -47,6 +47,7 @@ git diff | tango "review this patch"
 | Edit a draft in Neovim | Ctrl+E, or `/nvim` |
 | See a full tool output | Ctrl+O, or double-click the tool line |
 | Read the model's full reasoning | Alt+T expands / collapses the newest thinking block, or double-click a block |
+| Copy over SSH or inside tmux | Works by default: over SSH tango copies through the terminal (OSC 52). In tmux set `set -g set-clipboard on`; if it still fails, try `/clipboard osc52` |
 | Emoji show as boxes or misalign | `/ascii on` draws them (and the thinking robot) as plain ASCII |
 | Screen tears or flickers while streaming | Use a terminal with synchronized output (iTerm2, Kitty, WezTerm, Ghostty, Alacritty, Windows Terminal, recent tmux); tango sends each frame as one update |
 | Check whether it's still working | The rule above the input: `idle`, or a `●` with the elapsed time and received characters; a band of light flows along the rule while output arrives, and stops and dims after 10s of silence |
@@ -365,6 +366,7 @@ while a turn is running unless noted. `/help` prints a short list inside the TUI
 | `/statusline [tpl\|off]` | Custom status bar, e.g. `/statusline '{model} {pct} {cost}'` |
 | `/theme [dark\|light\|auto]` | Switch theme (saved). Bare: picker |
 | `/mouse [on\|off]` | Mouse capture. Off gives native terminal selection |
+| `/clipboard [auto\|osc52\|native]` | How copies reach a clipboard (saved). `auto`: OSC 52 over SSH so text lands on your local machine, the system command locally; `osc52` forces the terminal escape (SSH, tmux), `native` the system command. Bare `/clipboard` shows the current mode |
 | `/ascii [on\|off]` | ASCII mode (saved): emoji (including the 🤖 thinking icon) drawn as `?` `+` `#` `*`, for terminals without an emoji font |
 | `/animations [on\|off]` | Motion on the busy rule, thinking bar and splash (saved). Off keeps the text, static colors |
 | `/clear` | Clear the screen. The model's context is kept |
