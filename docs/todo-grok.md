@@ -3,6 +3,8 @@
 来源：`~/dev/github/src/grok-cli`（superagent-ai/grok-cli，提交 `fb97af8`）和
 `~/dev/github/src/opentui`。这次对照的是源码和 CHANGELOG，不只是 README。
 做完一项就勾上，并写上提交号。
+每一项都要在同一个提交里更新文档：README（参考手册）和 docs/handbook.md（用户指南）。
+`node scripts/docs-check.mjs` 必须没有缺口，docs-guard hook 会在回合结束时检查。
 
 ## 已完成
 
