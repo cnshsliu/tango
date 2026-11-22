@@ -46,7 +46,8 @@ git diff | tango "review this patch"
 | Park a half-written draft | Alt+S (press again to restore) |
 | Edit a draft in Neovim | Ctrl+E, or `/nvim` |
 | See a full tool output | Ctrl+O, or click the tool line |
-| Read the model's full reasoning | Alt+T expands / collapses the newest 🧠 block, or click a block |
+| Read the model's full reasoning | Alt+T expands / collapses the newest thinking block, or click a block |
+| Emoji show as boxes or misalign | `/ascii on` draws them (and the thinking robot) as plain ASCII |
 | Check whether it's still working | The rule above the input: `idle`, or a `●` with the elapsed time and received characters; a band of light flows along the rule while output arrives, and stops and dims after 10s of silence |
 | Find the logo | An empty session shows the centered TANGO wordmark (block letters, cyan gradient + twinkle) with the dancer and a hint; the first message replaces it |
 | Get back to the prompt you're reading about | Scrolled up, the dim top row shows that prompt; click it to jump there |
@@ -58,7 +59,8 @@ git diff | tango "review this patch"
 A tool call in flight shows as `⚙ bash …` with the gear color cycling; when it finishes
 the same line becomes `⚙ bash <command> · <ms>` (click it or press ctrl+o for the output).
 
-Reasoning the model streamed shows as a `🧠 …` block with a `┃` bar on its left. The whole
+Reasoning the model streamed shows as a block headed by a small robot girl `ʚ[◕ᴗ◕]ɞ✧`, with
+a `┃` bar on its left. While the turn runs she blinks and her sparkle flickers. The whole
 text is kept: short reasoning shows in full, a long block collapses to its first 3 lines plus
 `alt+t 展开思考（还有 N 字 · 共 M 行）`. Press Alt+T to expand or collapse the newest block, or
 click any block to toggle it; Ctrl+T's transcript always shows thinking in full. While the
@@ -356,6 +358,7 @@ while a turn is running unless noted. `/help` prints a short list inside the TUI
 | `/statusline [tpl\|off]` | Custom status bar, e.g. `/statusline '{model} {pct} {cost}'` |
 | `/theme [dark\|light\|auto]` | Switch theme (saved). Bare: picker |
 | `/mouse [on\|off]` | Mouse capture. Off gives native terminal selection |
+| `/ascii [on\|off]` | ASCII mode (saved): emoji and the thinking robot drawn as `?` `+` `#` `*`, for terminals without an emoji font |
 | `/animations [on\|off]` | Motion on the busy rule, thinking bar and splash (saved). Off keeps the text, static colors |
 | `/clear` | Clear the screen. The model's context is kept |
 | `/help` | Short command list |

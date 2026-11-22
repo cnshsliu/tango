@@ -132,7 +132,53 @@ pub fn display_width(s: &str) -> usize {
 const THINK_PREVIEW_LINES: usize = 3;
 const THINK_PREVIEW_CHARS: usize = 240;
 
-/// What a 🧠 thinking line shows: short blocks in full; long ones as a preview
+/// The thinking icon: a little robot girl (ribbons ʚ ɞ, square robot face). Every
+/// glyph is East-Asian-width N, so it is 8 cells everywhere — no emoji-width drift.
+const THINK_ICON: &str = "ʚ[◕ᴗ◕]ɞ✧";
+/// Live frames (same width as THINK_ICON): sparkle flicker, glance up, blink.
+const THINK_FRAMES: [&str; 8] = [
+    "ʚ[◕ᴗ◕]ɞ✧",
+    "ʚ[◕ᴗ◕]ɞ✦",
+    "ʚ[◔ᴗ◔]ɞ⋆",
+    "ʚ[◔ᴗ◔]ɞ✧",
+    "ʚ[◕ᴗ◕]ɞ✦",
+    "ʚ[-ᴗ-]ɞ⋆",
+    "ʚ[◕ᴗ◕]ɞ✧",
+    "ʚ[◕ᴗ◕]ɞ ",
+];
+/// ASCII mode's thinking icon.
+const THINK_ICON_ASCII: &str = "*";
+
+/// The robot frame for animation frame `frame` (~120ms each; one pose per ~360ms).
+fn think_icon_frame(frame: u128) -> &'static str {
+    THINK_FRAMES[(frame / 3 % THINK_FRAMES.len() as u128) as usize]
+}
+
+/// ASCII mode: emoji become plain ASCII stand-ins (known ones by meaning, any
+/// other wide emoji as `*`); variation selectors and ZWJ vanish.
+fn asciify(s: &str) -> String {
+    use unicode_width::UnicodeWidthChar;
+    s.chars()
+        .filter(|c| !matches!(c, '\u{FE0F}' | '\u{200D}'))
+        .map(|c| match c {
+            '❓' | '❔' => '?',
+            '➕' => '+',
+            '📂' | '📁' => '>',
+            '📋' => '#',
+            '✅' | '✔' => 'v',
+            '❌' => 'x',
+            '⚠' => '!',
+            c if (c as u32 >= 0x1F000 || (0x2600..0x27C0).contains(&(c as u32)))
+                && c.width() == Some(2) =>
+            {
+                '*'
+            }
+            c => c,
+        })
+        .collect()
+}
+
+/// What a thinking line shows: short blocks in full; long ones as a preview
 /// plus a hint while collapsed, or in full plus a collapse hint when expanded.
 fn thinking_view(text: &str, expanded: bool, keys: &Keymap) -> String {
     let key = keys.label(Action::ToggleThinking);
@@ -195,7 +241,7 @@ struct ChatLine {
     /// pushed from a serve `notice` frame (system status, not conversation): the
     /// empty-session splash keeps showing and lists these under the wordmark
     notice: bool,
-    /// a 🧠 thinking block shown in full instead of its collapsed preview
+    /// a thinking block shown in full instead of its collapsed preview
     expanded: bool,
 }
 
@@ -619,6 +665,7 @@ const SLASH: &[(&str, &str)] = &[
     ("/remember <text>", "记住一条偏好 → 全局记忆，所有会话生效"),
     ("/mouse", "切换鼠标捕获 · /mouse on|off"),
     ("/animations", "动画开关 · /animations on|off（off：静态颜色，文字不变）"),
+    ("/ascii", "ASCII 模式 · /ascii on|off（emoji 显示成 * ? + 等，适合没有 emoji 字体的终端）"),
     (
         "/bubble",
         "用户消息样式：on 靠右气泡（默认）· off 全宽靠左（Claude Code 式）",
@@ -1393,6 +1440,9 @@ pub struct App {
     /// motion on (default): rule sweep, thinking wave, gear, splash
     /// twinkle. Off keeps the same text with static colors — /animations
     pub animations: bool,
+    /// ASCII mode: emoji and the robot icon become plain ASCII (`*`, `?`, …) for
+    /// terminals without an emoji font — /ascii, config `ascii`
+    pub ascii: bool,
     /// scroll offset of the permission dialog's command preview (↑↓/wheel)
     perm_scroll: usize,
     /// the preview's wrap width, captured each draw so key/wheel scrolling
@@ -1522,6 +1572,7 @@ impl App {
             session_id_area: Rect::default(),
             user_bubble: true,
             animations: true,
+            ascii: false,
             perm_scroll: 0,
             perm_wrap_w: 76,
             editlast_armed: false,
@@ -2617,7 +2668,7 @@ impl App {
         }
     }
 
-    /// Expand or collapse the newest 🧠 thinking block (alt+t by default).
+    /// Expand or collapse the newest thinking block (alt+t by default).
     fn toggle_latest_thinking(&mut self) {
         if let Some(line) = self.lines.iter_mut().rev().find(|l| l.tone == Tone::Thinking) {
             line.expanded = !line.expanded;
@@ -2701,7 +2752,7 @@ impl App {
             // the whole block is kept; chat_lines shows a collapsed preview until
             // alt+t (or a click) expands it
             let t = std::mem::take(&mut self.thinking);
-            self.push_tool(format!("🧠 {}", t.trim_end()), Tone::Thinking, None);
+            self.push_tool(format!("{THINK_ICON} {}", t.trim_end()), Tone::Thinking, None);
         }
         if self.stream.is_empty() {
             return;
@@ -4044,6 +4095,29 @@ impl App {
                 let _ = serve.command("set_animations", vec![("animations", Value::Bool(enabled))]);
                 self.push(
                     if enabled { "动画：开" } else { "动画：关（静态颜色）" }.to_string(),
+                    Tone::Muted,
+                );
+            }
+            "/ascii" => {
+                let enabled = match rest {
+                    "" => !self.ascii,
+                    "on" => true,
+                    "off" => false,
+                    _ => {
+                        self.push("usage: /ascii [on|off]", Tone::Muted);
+                        return;
+                    }
+                };
+                self.ascii = enabled;
+                // serve persists it, like /animations
+                let _ = serve.command("set_ascii", vec![("ascii", Value::Bool(enabled))]);
+                self.push(
+                    if enabled {
+                        "ASCII 模式：开（emoji 与思考图标用 * ? + 等代替）"
+                    } else {
+                        "ASCII 模式：关"
+                    }
+                    .to_string(),
                     Tone::Muted,
                 );
             }
@@ -5929,6 +6003,7 @@ impl App {
                 self.session_name = v["sessionName"].as_str().unwrap_or("").to_string();
                 self.user_bubble = v["bubble"].as_bool().unwrap_or(true);
                 self.animations = v["animations"].as_bool().unwrap_or(true);
+                self.ascii = v["ascii"].as_bool().unwrap_or(false);
                 self.cost = v["totalCostUsd"].as_f64().unwrap_or(0.0);
                 self.context_tokens = v["contextTokens"].as_u64().unwrap_or(0);
                 self.context_window = v["contextWindow"].as_u64().unwrap_or(0);
@@ -7581,6 +7656,14 @@ impl App {
                         );
                     }
                 }
+                if self.ascii {
+                    if line.tone == Tone::Thinking
+                        && let Some(rest) = text.strip_prefix(THINK_ICON)
+                    {
+                        text = format!("{THINK_ICON_ASCII}{rest}");
+                    }
+                    text = asciify(&text);
+                }
                 if self.timestamps
                     && let Some(ts) = &line.ts
                     && !text.starts_with('[')
@@ -7929,7 +8012,19 @@ impl App {
                 shown.push(Line::from(spans));
             } else if row.think {
                 let mut spans = pad;
-                spans.push(Span::styled(row.text.clone(), style));
+                let live = self.busy
+                    && self.animations
+                    && live_think_block.is_some_and(|b| g >= b);
+                match row.text.strip_prefix(THINK_ICON) {
+                    // the robot girl blinks and sparkles while the live block runs
+                    Some(rest) if row.cs == 0 => {
+                        let icon = if live { think_icon_frame(self.think_frame) } else { THINK_ICON };
+                        let color = if live { gear_color(self.think_frame, true) } else { Color::Magenta };
+                        spans.push(Span::styled(icon.to_string(), Style::default().fg(color)));
+                        spans.push(Span::styled(rest.to_string(), style));
+                    }
+                    _ => spans.push(Span::styled(row.text.clone(), style)),
+                }
                 shown.push(Line::from(spans));
             } else if gear_running.get(row.line).copied().unwrap_or(false)
                 && row.text.starts_with("⚙")
@@ -8128,9 +8223,10 @@ impl App {
                 if i >= 10 || y >= inner.y + inner.height {
                     break;
                 }
+                let ascii = self.ascii;
                 let (badge, head, b1_label, b2_label, act1, act2) = match &item.kind {
                     TodoKind::Choice { question, .. } => (
-                        "❓",
+                        if ascii { "?" } else { "❓" },
                         question.clone(),
                         "[展开]",
                         "[忽略]",
@@ -8138,7 +8234,7 @@ impl App {
                         TodoAction::Drop(i),
                     ),
                     TodoKind::Suggest { text } => (
-                        "💡",
+                        if ascii { "*" } else { "💡" },
                         text.clone(),
                         "[执行]",
                         "[丢弃]",
@@ -8235,7 +8331,7 @@ impl App {
             let inner = render_dialog(
                 f,
                 pop,
-                "❓ 模型在等你选择",
+                if self.ascii { "? 模型在等你选择" } else { "❓ 模型在等你选择" },
                 "↑↓/点击 选择 · enter 确认（或输编号+enter）· tab 改写自答 · esc 收起",
                 self.theme,
             );
@@ -8332,7 +8428,12 @@ impl App {
                 self.theme.style(Tone::Muted)
             };
             f.render_widget(
-                Paragraph::new(format!("{}. {emarker} ❓ 详细解释各选项", n + 1)).style(estyle),
+                Paragraph::new(format!(
+                    "{}. {emarker} {} 详细解释各选项",
+                    n + 1,
+                    if self.ascii { "?" } else { "❓" }
+                ))
+                .style(estyle),
                 erow,
             );
             self.choice_rows.push((erow, n));
@@ -8843,7 +8944,7 @@ impl App {
         if !self.todos.is_empty() {
             segs.push((
                 Span::styled(
-                    format!(" ❓{}待 /todo ", self.todos.len()),
+                    format!(" {}{}待 /todo ", if self.ascii { "?" } else { "❓" }, self.todos.len()),
                     self.theme.style(Tone::Warning),
                 ),
                 8,
@@ -8892,7 +8993,7 @@ impl App {
             // shrink before dropping: model name → 12 cols, pinned prompt → 16, ❓ badge → just the count
             let limit = if text.starts_with('▶') {
                 16
-            } else if text.starts_with('❓') {
+            } else if text.starts_with('❓') || text.starts_with('?') {
                 4
             } else if text
                 .chars()
@@ -11160,7 +11261,7 @@ mod tests {
     fn thinking_lines_get_a_two_column_gutter_and_wrap_narrower() {
         let texts = vec![
             "普通一行".to_string(),
-            "🧠 思考内容比较长需要折行思考内容比较长需要折行".to_string(),
+            format!("{THINK_ICON} 思考内容比较长需要折行思考内容比较长需要折行"),
         ];
         let flags = vec![false, true];
         let rows = wrap_chat_rows_flagged(&texts, 12, &flags);
@@ -11286,7 +11387,7 @@ mod tests {
         app.thinking = body.clone();
         app.commit_stream();
         let line = app.lines.last().unwrap();
-        assert_eq!(line.text, format!("🧠 {body}"), "no 400-char truncation");
+        assert_eq!(line.text, format!("{THINK_ICON} {body}"), "no 400-char truncation");
         let shown = app.chat_lines().last().unwrap().text.clone();
         assert_eq!(shown.lines().count(), 4, "3 preview lines + hint: {shown}");
         assert!(shown.contains("alt+t 展开思考"), "{shown}");
@@ -11307,8 +11408,35 @@ mod tests {
         let mut app = App::new();
         app.thinking = "想一下".into();
         app.commit_stream();
-        assert_eq!(app.chat_lines().last().unwrap().text, "🧠 想一下");
-        assert_eq!(display_width("🧠"), 2, "brain emoji takes two cells");
+        assert_eq!(app.chat_lines().last().unwrap().text, format!("{THINK_ICON} 想一下"));
+        // the robot icon and every animation frame have one fixed width (no emoji)
+        assert_eq!(display_width(THINK_ICON), 8);
+        for f in THINK_FRAMES {
+            assert_eq!(display_width(f), 8, "{f}");
+        }
+        app.ascii = true;
+        assert_eq!(app.chat_lines().last().unwrap().text, "* 想一下");
+    }
+
+    #[test]
+    fn robot_icon_animates_only_while_live_and_ascii_mode_plainifies_emoji() {
+        let poses: BTreeSet<&str> = (0..24).map(think_icon_frame).collect();
+        assert!(poses.len() >= 4, "blinks and sparkles: {poses:?}");
+        assert_eq!(think_icon_frame(0), THINK_ICON);
+        assert_eq!(asciify("❓ 选 · ➕ 并入 · 📋 排队 · 📂 目录 · 🎉✅"), "? 选 · + 并入 · # 排队 · > 目录 · *v");
+        assert_eq!(asciify("中文 ⚙ ❯ ▍"), "中文 ⚙ ❯ ▍", "non-emoji symbols stay");
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.run_slash("/ascii", &mut serve);
+        assert!(app.ascii);
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        assert_eq!((sent["cmd"].as_str(), sent["ascii"].as_bool()), (Some("set_ascii"), Some(true)));
+        app.push("➕ 已并入", Tone::Success);
+        assert_eq!(app.chat_lines().last().unwrap().text, "+ 已并入");
+        app.run_slash("/ascii off", &mut serve);
+        assert!(!app.ascii);
+        app.run_slash("/ascii maybe", &mut serve);
+        assert!(!app.ascii, "bad arg changes nothing");
     }
 
     #[test]
@@ -11316,7 +11444,7 @@ mod tests {
         use ratatui::{Terminal, backend::TestBackend};
         let mut app = App::new();
         let mut serve = Serve::mock();
-        app.push("🧠 这是思考".to_string(), Tone::Thinking);
+        app.push(format!("{THINK_ICON} 这是思考"), Tone::Thinking);
         app.busy = true;
         let mut t = Terminal::new(TestBackend::new(30, 10)).unwrap();
         t.draw(|f| app.draw(f)).unwrap();
@@ -11324,7 +11452,8 @@ mod tests {
         let row: String = (0..30).map(|x| b[(x, 0)].symbol().to_string()).collect();
         // wide chars leave blank continuation cells — compare with spaces removed
         let tight = row.replace(' ', "");
-        assert!(tight.starts_with("▍🧠这是思考"), "{row:?}");
+        assert!(tight.starts_with("▍ʚ[◕ᴗ◕]ɞ"), "{row:?}");
+        assert!(tight.contains("这是思考"), "{row:?}");
         assert_eq!(b[(1, 0)].symbol(), " ", "one space gutter pad");
         assert!(app.chat_rows.iter().all(|r| r.think));
     }

@@ -24,6 +24,8 @@ export interface Config {
   mouse?: boolean;
   /** TUI motion (pulse, rule sweep, thinking wave). Missing means true. */
   animations?: boolean;
+  /** TUI ASCII mode: emoji and the thinking icon drawn as plain ASCII. Missing means false. */
+  ascii?: boolean;
   /** User-message style: true = right-positioned bubble (default), false = full-width left. */
   bubble?: boolean;
   /** Input editing mode; missing/unknown values use the default Emacs-like editing */

@@ -100,7 +100,7 @@ tango task run [--loop]  run due tasks once, or keep running as a daemon
 TUI commands: `/model`, `/agents`, `/resume`, `/new`, `/restart`, `/rename`, `/mode`, `/plan`, `/goal`,
 `/loop`, `/effort`, `/review`, `/security-review`, `/bg`, `/tasks`, `/stop`, `/subtask`,
 `/worktree`, `/mcp`, `/plugins`, `/vim`, `/nvim`, `/editor`, `/multiline`, `/btw`, `/diff`,
-`/focus`, `/density`, `/mouse`, `/animations`, `/theme`, `/compact`, `/autocompact`, `/skill`, `/skills`,
+`/focus`, `/density`, `/mouse`, `/animations`, `/ascii`, `/theme`, `/compact`, `/autocompact`, `/skill`, `/skills`,
 `/memory`, `/remember`, `/cost`, `/usage`, `/stats`, `/insights`, `/context`, `/queue`,
 `/timestamps`, `/statusline`, `/preset`, `/permissions`, `/import`, `/cd`, `/pwd`, `/add_dir`,
 `/config`, `/trust`, `/keymap`, `/init`, `/doctor`, `/debug-zip`, `/status`, `/clear`, `/rewind`, `/undo`,
@@ -217,12 +217,17 @@ tools and checkpoints follow live); `/add_dir <dir>` registers an extra writable
   `/insights` writes the same data as an offline single-file HTML report.
 - `/timestamps` toggles `[HH:MM]` prefixes; `/density 0|1|2` sets tool-detail level (compact /
   default-errors-only / full) and applies to restored history too.
-- **Thinking blocks**: committed reasoning is kept whole (no truncation) as a `🧠 …` block. Up to
-  3 lines / 240 chars show in full; longer blocks show a 3-line preview plus
+- **Thinking blocks**: committed reasoning is kept whole (no truncation) as a block headed by a
+  small robot girl, `ʚ[◕ᴗ◕]ɞ✧` (8 cells; all glyphs are narrow non-emoji, so width is the same in
+  every terminal). While the turn runs, the newest block's robot blinks and glances, its sparkle
+  flickers and its color cycles (~360ms per pose; still with `/animations off` or when idle).
+  Up to 3 lines / 240 chars show in full; longer blocks show a 3-line preview plus
   `alt+t 展开思考（还有 N 字 · 共 M 行）`. Alt+T (keymap action `toggleThinking`) or a click on the
   block expands / collapses it in place; Ctrl+T's transcript always has the full text.
-  🧠 is an emoji (2 cells); terminals without an emoji font may show a box or misalign it.
-- **Thinking bar**: committed reasoning (`🧠 …` blocks) carries a `┃` gutter on its left;
+- **ASCII mode** (`/ascii`, config `ascii`): the robot becomes `*` and emoji in chat, the ❓ panel,
+  `/todo` and the status bar become ASCII (`❓`→`?`, `➕`→`+`, `📋`→`#`, `📂`→`>`, other emoji →`*`),
+  for terminals that show tofu boxes or misalign emoji.
+- **Thinking bar**: committed reasoning (robot-headed blocks) carries a `┃` gutter on its left;
   while the turn runs, the newest thinking block's bar color scrolls down (a dim→bright
   cyan wave, ~8fps, in 24-bit color with `$COLORTERM=truecolor` and xterm 256 colors otherwise,
   and only the block that belongs to the running turn; older blocks and idle chats show a flat dim bar).
@@ -376,7 +381,7 @@ reply data. Most of these also skip the prompt queue.
 
 | group | commands |
 | --- | --- |
-| settings | `set_effort` (`level`), `set_plan` (`on`), `set_autocompact` (`value`, 0 = off), `set_statusline` (`template`, null clears), `set_bubble` (`bubble`), `set_animations` (`animations`) |
+| settings | `set_effort` (`level`), `set_plan` (`on`), `set_autocompact` (`value`, 0 = off), `set_statusline` (`template`, null clears), `set_bubble` (`bubble`), `set_animations` (`animations`), `set_ascii` (`ascii`) |
 | config and trust | `config_show` (→ merged `config`, `sources`, `line`), `trust_status` (→ `root`, `trusted`, `gated`, `line`), `set_trust` (`trusted` → `reload`: restart serve to apply) |
 | permissions | `permissions_list` (→ `allow` with each rule's layer), `permissions_add` / `permissions_remove` (`rule` → `allow`, `path` of the file written), `import` (`source`: claude-code, grok or codex; `path` → `imported`, `skipped`) |
 | directories | `cd` (`dir` → `cwd`), `pwd` (→ `cwd`), `add_dir` (`dir` → `extraDirs`, `path`) |
@@ -569,6 +574,7 @@ used as the literal key. Nothing is inferred. `tango --models` shows which varia
 | `theme` | `dark`, `light` or `auto` (from `COLORFGBG`) | `/theme` |
 | `mouse` | mouse capture; `false` keeps native selection (default `true`) | `/mouse` |
 | `animations` | busy-rule, thinking and splash motion (default `true`) | `/animations` |
+| `ascii` | draw emoji (❓ ➕ 📋 📂 💡 …) and the thinking robot as ASCII (`?` `+` `#` `>` `*`) for terminals without an emoji font (default `false`) | `/ascii` |
 | `bubble` | user messages as right-aligned bubbles (default `true`) or full width | `/bubble` |
 | `editor` | `default` or `vim` input editing | `/vim` |
 | `keys` | remap TUI actions, e.g. `{ "expandTools": "ctrl+u" }` (see "TUI") | edit |
@@ -590,7 +596,7 @@ A session merges up to three config files, lowest first:
 
 | layer | file | notes |
 | --- | --- | --- |
-| global | `~/.tango/config.json` | `/theme`, `/mouse`, `/animations`, `/model` write here |
+| global | `~/.tango/config.json` | `/theme`, `/mouse`, `/animations`, `/ascii`, `/model` write here |
 | project shared | `<git toplevel>/.tango/config.json` | committed with the repo |
 | project personal | `<main checkout>/.tango/config.local.json` | `/permissions add`, `/import`, `/add_dir` write here; tango adds it to `.git/info/exclude` |
 
