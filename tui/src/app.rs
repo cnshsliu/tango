@@ -8455,12 +8455,18 @@ impl App {
             } else if text
                 .chars()
                 .next()
-                .is_some_and(|c| matches!(c, '\u{2800}'..='\u{28FF}' | '■'))
+                .is_some_and(|c| matches!(c, '⬒' | '⬔' | '⬓' | '⬕' | '■'))
                 || text == "idle"
             {
-                // the work segment (braille dancer/spinner, or idle):
-                // counter first, then the timer — the figure stays to the last
-                if display_width(&text) > 9 { 9 } else { 3 }
+                // the work segment (spinner, or idle):
+                // counter first, then the timer — the spinner stays to the last
+                if text == "idle" {
+                    4 // never clipped to a stub; dropped whole when out of room
+                } else if display_width(&text) > 9 {
+                    9
+                } else {
+                    1
+                }
             } else if i == 0 {
                 12
             } else {
@@ -8493,7 +8499,7 @@ impl App {
         }
     }
 
-    /// "⣋ 12s · ↓14.0k" (braille dancer) while a turn runs, "idle" otherwise.
+    /// "⬒ 12s · ↓14.0k" (grok's quad spinner) while a turn runs, "idle" otherwise.
     /// Lives on the input rule's
     /// left end (and in a custom statusline's {work}); the default status bar no longer carries it.
     fn work_text(&self) -> String {
@@ -8505,17 +8511,20 @@ impl App {
                 let ms = t0.elapsed().as_millis();
                 format!(
                     "{} {} · ↓{}",
-                    Self::tango_frame(ms),
+                    Self::spinner_frame(ms / 120),
                     Self::fmt_elapsed(ms as u64 / 1000),
                     Self::fmt_tokens(self.turn_chars)
                 )
             }
-            None => {
-                // braille spinner (grok's ⬒ quads, upgraded): one dot orbit
-                const SPINNER: [&str; 8] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"];
-                format!("{} working", SPINNER[(self.think_frame % 8) as usize])
-            }
+            None => format!("{} working", Self::spinner_frame(self.think_frame)),
         }
+    }
+
+    /// grok-cli's busy spinner: a square whose filled half turns ⬒ ⬔ ⬓ ⬕,
+    /// one step per ~120ms animation frame, always 1 column wide.
+    fn spinner_frame(frame: u128) -> &'static str {
+        const FRAMES: [&str; 4] = ["⬒", "⬔", "⬓", "⬕"];
+        FRAMES[(frame % 4) as usize]
     }
 
     /// The input rule: work state on the left, a rotating tip on the right, dashes between.
@@ -13771,11 +13780,24 @@ mod tests {
         app.turn_chars = 14_000;
         let s = app.work_text();
         assert!(
-            s.contains("↓14.0k") && s.chars().next().is_some_and(|c| ('\u{2800}'..='\u{28FF}').contains(&c)),
-            "the braille dancer leads the work text: {s}"
+            s.contains("↓14.0k") && s.starts_with(App::spinner_frame(0)),
+            "the quad spinner leads the work text: {s}"
         );
         app.busy = false;
         assert_eq!(app.work_text(), "idle");
+    }
+
+    #[test]
+    fn busy_spinner_turns_grok_quads_one_column_wide() {
+        let frames: Vec<&str> = (0..4).map(App::spinner_frame).collect();
+        assert_eq!(frames, vec!["⬒", "⬔", "⬓", "⬕"]);
+        assert!(frames.iter().all(|f| display_width(f) == 1));
+        assert_eq!(App::spinner_frame(4), "⬒", "loops");
+        let mut app = App::new();
+        app.busy = true;
+        app.turn_started = None;
+        app.think_frame = 2;
+        assert_eq!(app.work_text(), "⬓ working");
     }
 
     #[test]
