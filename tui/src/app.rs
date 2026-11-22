@@ -1605,6 +1605,21 @@ impl App {
         self.mouse
     }
 
+    /// What to report to the terminal over OSC 7501 (see status.rs). A permission dialog
+    /// opens mid-turn, so it outranks busy; a collapsed ?choice panel leaves a plain input box.
+    pub fn program_status(&self) -> crate::status::ProgramStatus {
+        use crate::status::ProgramStatus;
+        if self.permission.is_some() {
+            ProgramStatus::BlockedPermission
+        } else if self.busy {
+            ProgramStatus::Working
+        } else if self.choices.is_some() && !self.choices_collapsed {
+            ProgramStatus::BlockedQuestion
+        } else {
+            ProgramStatus::Idle
+        }
+    }
+
     fn context_tone(&self) -> Tone {
         if self.context_window == 0 {
             return Tone::Muted;
@@ -13525,6 +13540,38 @@ mod tests {
             "dragged text was copied"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn program_status_reports_prompt_work_and_waits() {
+        use crate::status::ProgramStatus;
+        let mut app = App::new();
+        assert_eq!(app.program_status(), ProgramStatus::Idle);
+        app.busy = true;
+        assert_eq!(app.program_status(), ProgramStatus::Working);
+        app.permission = Some(Permission {
+            request: 1,
+            name: "bash".into(),
+            detail: String::new(),
+            reason: String::new(),
+            brief: String::new(),
+        });
+        assert_eq!(
+            app.program_status(),
+            ProgramStatus::BlockedPermission,
+            "a mid-turn permission dialog outranks busy"
+        );
+        app.permission = None;
+        app.busy = false;
+        app.stream = "?choice\n1. a\n2. b".into();
+        app.commit_stream();
+        assert_eq!(app.program_status(), ProgramStatus::BlockedQuestion);
+        app.choices_collapsed = true;
+        assert_eq!(
+            app.program_status(),
+            ProgramStatus::Idle,
+            "a collapsed panel leaves a plain input box"
+        );
     }
 
     #[test]

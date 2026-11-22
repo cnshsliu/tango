@@ -5,6 +5,7 @@ mod dialog;
 mod keys;
 mod launch;
 mod nvim;
+mod status;
 mod termbg;
 mod theme;
 mod viewer;
@@ -44,6 +45,20 @@ fn draw_synced<W: std::io::Write>(
     drawn
 }
 
+/// Write an OSC 7501 report when the status changed. Best effort: a failed write only
+/// means the terminal keeps the previous state until the next change.
+fn report<W: std::io::Write>(
+    terminal: &mut Terminal<CrosstermBackend<W>>,
+    reporter: &mut status::Reporter,
+    now: status::ProgramStatus,
+) {
+    use std::io::Write;
+    if let Some(seq) = reporter.update(now) {
+        let out = terminal.backend_mut();
+        let _ = out.write_all(seq.as_bytes()).and_then(|_| out.flush());
+    }
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     entry();
     enable_raw_mode()?;
@@ -61,6 +76,12 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let result = run(&mut terminal);
 
+    // drop tango's status record so the pane doesn't keep claiming an agent at rest
+    report(
+        &mut terminal,
+        &mut status::Reporter::default(),
+        status::ProgramStatus::Clear,
+    );
     disable_raw_mode()?;
     execute!(
         terminal.backend_mut(),
@@ -212,8 +233,10 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<Exit, Box<dy
 
     let mut app = App::new();
     animating.store(app.busy && app.animations, Ordering::Relaxed);
+    let mut reporter = status::Reporter::default();
     loop {
         draw_synced(terminal, &mut app)?;
+        report(terminal, &mut reporter, app.program_status());
         match rx.recv()? {
             // stale frames from a killed serve child (session switch): drop by epoch
             Event::Server(epoch, _) if epoch != serve.epoch => {}
@@ -241,6 +264,8 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<Exit, Box<dy
             }
         }
         if let Some(request) = app.nvim_request.take() {
+            // Neovim owns the tty: no mail note may be typed into it
+            report(terminal, &mut reporter, status::ProgramStatus::Clear);
             input_enabled.store(false, Ordering::Relaxed);
             // let the input thread finish its current poll before Neovim takes the tty
             thread::sleep(Duration::from_millis(220));

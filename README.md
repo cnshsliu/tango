@@ -415,7 +415,13 @@ reply data. Most of these also skip the prompt queue.
 `tango` (`tango -c` / `tango -r <id>` open a previous session). It spawns `tango serve` and speaks the protocol above — fullscreen
 alternate screen (every frame is sent as one DEC 2026 synchronized update, `CSI ?2026h … ?2026l`,
 so supporting terminals swap whole frames and streaming or animation never flickers; others ignore
-it), mouse wheel scrolling, streaming answers, thinking lines, tool status lines with
+it). The TUI also reports its state to the terminal with OSC 7501 ([Program Status
+Protocol](https://www.superlogical.com/rex/docs/build/program-status), `app=tango`), sent only on
+change: `idle` at the input box (including a collapsed `?choice` panel), `working` while a turn
+runs, `blocked:kind=permission` while the y/n/a dialog is open, `blocked:kind=question` while a
+`?choice` panel is open, and `clear` while Neovim owns the terminal and on exit. Orca uses this to
+recognize a tango pane and to type `orca orchestration check` mail notes only when tango is at its
+prompt; terminals that don't know the sequence ignore it. Also: mouse wheel scrolling, streaming answers, thinking lines, tool status lines with
 durations, a centered permission modal (y/n/a), a bottom status bar below the input (model · mode ·
 cost · session, fitted to the terminal width — on a narrow screen ctx and sess go first, then the
 pinned ▶, and the model name shortens, while cost and the ❓ badge stay). The rule above the input
