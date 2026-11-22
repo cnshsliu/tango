@@ -60,8 +60,7 @@ git diff | tango "review this patch"
 A tool call in flight shows as `⚙ bash …` with the gear color cycling; when it finishes
 the same line becomes `⚙ bash <command> · <ms>` (double-click it or press ctrl+o for the output).
 
-Reasoning the model streamed shows as a block headed by a small robot girl `ʚ[◕ᴗ◕]ɞ✧`, with
-a `┃` bar on its left. While the turn runs she blinks and her sparkle flickers. The whole
+Reasoning the model streamed shows as a block headed by `🤖`, with a `┃` bar on its left. The whole
 text is kept: short reasoning shows in full, a long block collapses to its first 3 lines plus
 `alt+t 展开思考（还有 N 字 · 共 M 行）`. Press Alt+T to expand or collapse the newest block, or
 double-click any block to toggle it; Ctrl+T's transcript always shows thinking in full. While the
@@ -363,7 +362,7 @@ while a turn is running unless noted. `/help` prints a short list inside the TUI
 | `/statusline [tpl\|off]` | Custom status bar, e.g. `/statusline '{model} {pct} {cost}'` |
 | `/theme [dark\|light\|auto]` | Switch theme (saved). Bare: picker |
 | `/mouse [on\|off]` | Mouse capture. Off gives native terminal selection |
-| `/ascii [on\|off]` | ASCII mode (saved): emoji and the thinking robot drawn as `?` `+` `#` `*`, for terminals without an emoji font |
+| `/ascii [on\|off]` | ASCII mode (saved): emoji (including the 🤖 thinking icon) drawn as `?` `+` `#` `*`, for terminals without an emoji font |
 | `/animations [on\|off]` | Motion on the busy rule, thinking bar and splash (saved). Off keeps the text, static colors |
 | `/clear` | Clear the screen. The model's context is kept |
 | `/help` | Short command list |

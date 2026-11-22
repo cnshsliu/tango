@@ -218,14 +218,12 @@ tools and checkpoints follow live); `/add_dir <dir>` registers an extra writable
   `/insights` writes the same data as an offline single-file HTML report.
 - `/timestamps` toggles `[HH:MM]` prefixes; `/density 0|1|2` sets tool-detail level (compact /
   default-errors-only / full) and applies to restored history too.
-- **Thinking blocks**: committed reasoning is kept whole (no truncation) as a block headed by a
-  small robot girl, `ʚ[◕ᴗ◕]ɞ✧` (8 cells; all glyphs are narrow non-emoji, so width is the same in
-  every terminal). While the turn runs, the newest block's robot blinks and glances, its sparkle
-  flickers and its color cycles (~360ms per pose; still with `/animations off` or when idle).
+- **Thinking blocks**: committed reasoning is kept whole (no truncation) as a block headed by `🤖`
+  (an emoji, 2 cells; terminals without an emoji font can switch to `/ascii`).
   Up to 3 lines / 240 chars show in full; longer blocks show a 3-line preview plus
   `alt+t 展开思考（还有 N 字 · 共 M 行）`. Alt+T (keymap action `toggleThinking`) or a double-click
   on the block expands / collapses it in place; Ctrl+T's transcript always has the full text.
-- **ASCII mode** (`/ascii`, config `ascii`): the robot becomes `*` and emoji in chat, the ❓ panel,
+- **ASCII mode** (`/ascii`, config `ascii`): 🤖 becomes `*` and emoji in chat, the ❓ panel,
   `/todo` and the status bar become ASCII (`❓`→`?`, `➕`→`+`, `📋`→`#`, `📂`→`>`, other emoji →`*`),
   for terminals that show tofu boxes or misalign emoji.
 - **Thinking bar**: committed reasoning (robot-headed blocks) carries a `┃` gutter on its left;

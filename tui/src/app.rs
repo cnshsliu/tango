@@ -132,27 +132,11 @@ pub fn display_width(s: &str) -> usize {
 const THINK_PREVIEW_LINES: usize = 3;
 const THINK_PREVIEW_CHARS: usize = 240;
 
-/// The thinking icon: a little robot girl (ribbons ʚ ɞ, square robot face). Every
-/// glyph is East-Asian-width N, so it is 8 cells everywhere — no emoji-width drift.
-const THINK_ICON: &str = "ʚ[◕ᴗ◕]ɞ✧";
-/// Live frames (same width as THINK_ICON): sparkle flicker, glance up, blink.
-const THINK_FRAMES: [&str; 8] = [
-    "ʚ[◕ᴗ◕]ɞ✧",
-    "ʚ[◕ᴗ◕]ɞ✦",
-    "ʚ[◔ᴗ◔]ɞ⋆",
-    "ʚ[◔ᴗ◔]ɞ✧",
-    "ʚ[◕ᴗ◕]ɞ✦",
-    "ʚ[-ᴗ-]ɞ⋆",
-    "ʚ[◕ᴗ◕]ɞ✧",
-    "ʚ[◕ᴗ◕]ɞ ",
-];
+/// The thinking icon: one robot emoji (2 cells; unicode-width agrees with the
+/// renderer). The live block's motion comes from the ▍ bar's color wave.
+const THINK_ICON: &str = "🤖";
 /// ASCII mode's thinking icon.
 const THINK_ICON_ASCII: &str = "*";
-
-/// The robot frame for animation frame `frame` (~120ms each; one pose per ~360ms).
-fn think_icon_frame(frame: u128) -> &'static str {
-    THINK_FRAMES[(frame / 3 % THINK_FRAMES.len() as u128) as usize]
-}
 
 /// ASCII mode: emoji become plain ASCII stand-ins (known ones by meaning, any
 /// other wide emoji as `*`); variation selectors and ZWJ vanish.
@@ -8030,19 +8014,7 @@ impl App {
                 shown.push(Line::from(spans));
             } else if row.think {
                 let mut spans = pad;
-                let live = self.busy
-                    && self.animations
-                    && live_think_block.is_some_and(|b| g >= b);
-                match row.text.strip_prefix(THINK_ICON) {
-                    // the robot girl blinks and sparkles while the live block runs
-                    Some(rest) if row.cs == 0 => {
-                        let icon = if live { think_icon_frame(self.think_frame) } else { THINK_ICON };
-                        let color = if live { gear_color(self.think_frame, true) } else { Color::Magenta };
-                        spans.push(Span::styled(icon.to_string(), Style::default().fg(color)));
-                        spans.push(Span::styled(rest.to_string(), style));
-                    }
-                    _ => spans.push(Span::styled(row.text.clone(), style)),
-                }
+                spans.push(Span::styled(row.text.clone(), style));
                 shown.push(Line::from(spans));
             } else if gear_running.get(row.line).copied().unwrap_or(false)
                 && row.text.starts_with("⚙")
@@ -11494,20 +11466,13 @@ mod tests {
         app.thinking = "想一下".into();
         app.commit_stream();
         assert_eq!(app.chat_lines().last().unwrap().text, format!("{THINK_ICON} 想一下"));
-        // the robot icon and every animation frame have one fixed width (no emoji)
-        assert_eq!(display_width(THINK_ICON), 8);
-        for f in THINK_FRAMES {
-            assert_eq!(display_width(f), 8, "{f}");
-        }
+        assert_eq!(display_width(THINK_ICON), 2, "one emoji, two cells");
         app.ascii = true;
         assert_eq!(app.chat_lines().last().unwrap().text, "* 想一下");
     }
 
     #[test]
-    fn robot_icon_animates_only_while_live_and_ascii_mode_plainifies_emoji() {
-        let poses: BTreeSet<&str> = (0..24).map(think_icon_frame).collect();
-        assert!(poses.len() >= 4, "blinks and sparkles: {poses:?}");
-        assert_eq!(think_icon_frame(0), THINK_ICON);
+    fn ascii_mode_plainifies_emoji() {
         assert_eq!(asciify("❓ 选 · ➕ 并入 · 📋 排队 · 📂 目录 · 🎉✅"), "? 选 · + 并入 · # 排队 · > 目录 · *v");
         assert_eq!(asciify("中文 ⚙ ❯ ▍"), "中文 ⚙ ❯ ▍", "non-emoji symbols stay");
         let mut app = App::new();
@@ -11537,7 +11502,7 @@ mod tests {
         let row: String = (0..30).map(|x| b[(x, 0)].symbol().to_string()).collect();
         // wide chars leave blank continuation cells — compare with spaces removed
         let tight = row.replace(' ', "");
-        assert!(tight.starts_with("▍ʚ[◕ᴗ◕]ɞ"), "{row:?}");
+        assert!(tight.starts_with("▍🤖"), "{row:?}");
         assert!(tight.contains("这是思考"), "{row:?}");
         assert_eq!(b[(1, 0)].symbol(), " ", "one space gutter pad");
         assert!(app.chat_rows.iter().all(|r| r.think));
