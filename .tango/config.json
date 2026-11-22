@@ -1,0 +1,10 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      { "matcher": "edit|write", "command": "node \"$TANGO_PROJECT_DIR/scripts/hooks/hook-guard.mjs\"", "timeout": 10 }
+    ],
+    "Stop": [
+      { "command": "node \"$TANGO_PROJECT_DIR/scripts/hooks/hook-guard.mjs\"", "timeout": 120 }
+    ]
+  }
+}

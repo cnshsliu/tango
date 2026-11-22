@@ -580,13 +580,14 @@ Every event in `HOOK_EVENTS` (`src/core/hooks.ts`) needs at least one end-to-end
 (exit 2) and one payload case using `tests/fixtures/hooks/record.sh`. `npm run test:hooks` checks
 the coverage and then runs every hook test (`hooks`, `hooks-e2e`, `hook-guard`).
 
-The repo can enforce this on tango itself with `scripts/hooks/hook-guard.mjs` as hooks in
-`~/.tango/config.json`. It does nothing outside a tango checkout:
+The repo enforces this on itself: `.tango/config.json` runs `scripts/hooks/hook-guard.mjs` as
+project hooks. They apply once you trust the tango checkout (the TUI asks on first start, or
+`/trust yes`):
 
 ```json
 { "hooks": {
-  "PostToolUse": [{ "matcher": "edit|write", "command": "node <repo>/scripts/hooks/hook-guard.mjs", "timeout": 10 }],
-  "Stop":        [{ "command": "node <repo>/scripts/hooks/hook-guard.mjs", "timeout": 120 }]
+  "PostToolUse": [{ "matcher": "edit|write", "command": "node \"$TANGO_PROJECT_DIR/scripts/hooks/hook-guard.mjs\"", "timeout": 10 }],
+  "Stop":        [{ "command": "node \"$TANGO_PROJECT_DIR/scripts/hooks/hook-guard.mjs\"", "timeout": 120 }]
 } }
 ```
 
