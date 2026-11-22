@@ -62,7 +62,12 @@ npm run dev -- "list the files here and summarize the project"   # one-shot
 npm run build && (cd tui && cargo build --release) && tango          # TUI
 ```
 
-Install globally after `npm run build`; `tango` / `tang` are the bin names.
+Install globally (`npm link`) after `npm run build` and `cargo build --release` in `tui/`;
+`tango` / `tang` are the bin names. Both point at the Rust binary `tui/target/release/tango-tui`:
+an interactive launch (`tango`, `-c`, `-r`, `-m`, `-y`, `--readonly`, `--cwd`, `tango tui`)
+opens the TUI in that process, and everything else (prompts, `task`, `serve`, `repl`,
+`--help`, pipes) is exec'd into `node bin/tango.js` with the same arguments, so no idle
+launcher process stays around.
 
 ## CLI
 
