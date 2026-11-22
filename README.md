@@ -541,3 +541,25 @@ npm test            # test:ts (node) + test:tui (cargo test in tui/)
 `npm test` needs a Rust toolchain because `test:tui` runs `cargo test` in `tui/`. Among those
 tests is the slash-command sync check: TUI handlers, `/help`, `docs/handbook.md` and the command
 list above must agree. Use `npm run test:ts` for the TypeScript tests alone.
+
+### Adding a hook event
+
+Every event in `HOOK_EVENTS` (`src/core/hooks.ts`) needs at least one end-to-end test in
+`tests/hooks-e2e.test.ts` whose title starts with `<Event>:`. Ideally that means one blocking case
+(exit 2) and one payload case using `tests/fixtures/hooks/record.sh`. `npm run test:hooks` checks
+the coverage and then runs every hook test (`hooks`, `hooks-e2e`, `hook-guard`).
+
+The repo can enforce this on tango itself with `scripts/hooks/hook-guard.mjs` as hooks in
+`~/.tango/config.json`. It does nothing outside a tango checkout:
+
+```json
+{ "hooks": {
+  "PostToolUse": [{ "matcher": "edit|write", "command": "node <repo>/scripts/hooks/hook-guard.mjs", "timeout": 10 }],
+  "Stop":        [{ "command": "node <repo>/scripts/hooks/hook-guard.mjs", "timeout": 120 }]
+} }
+```
+
+After an edit to hook code, `PostToolUse` tells the model which events still lack a test. At the
+end of a turn with unpushed hook changes, `Stop` runs the coverage check and all hook tests and
+sends the model back while either fails. A passing run is cached by content hash in
+`.git/hook-guard-ok`, so unchanged code is not retested.

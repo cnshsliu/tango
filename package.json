@@ -14,7 +14,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "npm run test:ts && npm run test:tui",
     "test:ts": "node --import tsx --test tests/**/*.test.ts",
-    "test:tui": "cd tui && cargo test -q"
+    "test:tui": "cd tui && cargo test -q",
+    "test:hooks": "node scripts/hooks/hook-guard.mjs --check"
   },
   "engines": {
     "node": ">=20"
