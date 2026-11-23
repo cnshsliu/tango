@@ -197,6 +197,21 @@ export const presets: ModelSpec[] = [
     reasoning: true
   },
   {
+    // not yet on the docs (model overview / release notes list 5.3 as newest, 2026-11-23), but the
+    // plan endpoint serves it: a probe answers with "model":"glm-5.4", not a fallback to 5.3.
+    // Window/output copied from glm-5.3 until Zhipu publishes the spec.
+    id: 'zhipu-plan/glm-5.4',
+    region: 'cn',
+    provider: 'zhipu-plan',
+    model: 'glm-5.4',
+    api: 'anthropic-messages',
+    baseUrl: 'https://open.bigmodel.cn/api/anthropic/v1',
+    apiKey: 'ZHIPU_CODING_PLAN_API_KEY',
+    contextWindow: 1000000,
+    maxTokens: 32768,
+    reasoning: true
+  },
+  {
     id: 'zhipu-plan/glm-5.3-flash',
     region: 'cn',
     provider: 'zhipu-plan',

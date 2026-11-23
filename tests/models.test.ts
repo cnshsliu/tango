@@ -14,6 +14,9 @@ test('zhipu coding-plan presets ride the anthropic-compatible endpoint', async (
   assert.equal(plan.api, 'anthropic-messages');
   assert.equal(plan.baseUrl, 'https://open.bigmodel.cn/api/anthropic/v1');
   assert.equal(plan.apiKey, 'ZHIPU_CODING_PLAN_API_KEY');
+  const next = models.find((m) => m.id === 'zhipu-plan/glm-5.4');
+  assert.ok(next, 'coding-plan glm-5.4 preset registered');
+  assert.deepEqual([next.api, next.baseUrl, next.apiKey, next.model], [plan.api, plan.baseUrl, plan.apiKey, 'glm-5.4']);
   const flash = models.find((m) => m.id === 'zhipu-plan/glm-5.3-flash');
   assert.ok(flash, 'flash variant registered');
   // the pay-as-you-go presets stay untouched
