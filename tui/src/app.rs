@@ -1624,6 +1624,9 @@ pub struct App {
     /// the model name (+ provider) in the input block's info row: a click opens
     /// the model picker
     model_area: Rect,
+    /// the mode label (`auto`, `plan` …) at the start of that row: a click opens
+    /// the mode picker
+    mode_area: Rect,
     /// user-message style: true = right-positioned bubble (default),
     /// false = Claude Code style (same theme, left, full-width bg) — /bubble
     user_bubble: bool,
@@ -1767,6 +1770,7 @@ impl App {
             session_name: String::new(),
             session_id_area: Rect::default(),
             model_area: Rect::default(),
+            mode_area: Rect::default(),
             user_bubble: true,
             animations: true,
             ascii: false,
@@ -5493,6 +5497,11 @@ impl App {
                             // picker, the current model preselected
                             if self.model_area.width > 0 && self.model_area.contains(pos) {
                                 self.run_slash("/model", serve);
+                                return false;
+                            }
+                            // …and the mode label opens the mode picker on the current mode
+                            if self.mode_area.width > 0 && self.mode_area.contains(pos) {
+                                self.open_mode_picker();
                                 return false;
                             }
                             // a click on an input-box image chip opens the image
@@ -9668,7 +9677,14 @@ impl App {
         );
         let info = self.input_info_line(text_w as usize);
         let info_y = block.y + block.height.saturating_sub(1);
-        // the model part (everything after "mode · ") is a click target
+        // the mode label and the model part (everything after "mode · ") are click targets
+        let mode_w = display_width(&self.mode_label()) as u16;
+        self.mode_area = Rect {
+            x: INPUT_X,
+            y: info_y,
+            width: mode_w.min(text_w),
+            height: 1,
+        };
         self.model_area = Rect::default();
         if !self.model.is_empty() {
             let skip = usize::from(!self.mode_label().is_empty()) * 2;
@@ -13204,9 +13220,17 @@ mod tests {
                 serve,
             );
         };
-        // the mode label beside it is not the model
-        click(&mut app, &mut serve, area.x - 3);
+        // the mode label beside it opens the mode picker instead, on the current mode
+        let mode = app.mode_area;
+        assert_eq!((mode.x, mode.y, mode.width), (INPUT_X, area.y, 4), "covers `auto`");
+        click(&mut app, &mut serve, mode.x + 1);
         assert!(serve.sent.iter().all(|s| !s.contains("\"models\"")));
+        let p = app.picker.take().expect("mode picker opens");
+        assert!(p.kind == PickerKind::Mode);
+        assert_eq!(p.items[p.sel].id, "auto", "current mode is selected");
+        // the " · " between them is neither
+        click(&mut app, &mut serve, mode.x + mode.width + 1);
+        assert!(app.picker.is_none() && serve.sent.is_empty());
         click(&mut app, &mut serve, area.x + 3);
         let sent: Value = serde_json::from_str(serve.sent.last().unwrap()).unwrap();
         assert_eq!(sent["cmd"], "models");
