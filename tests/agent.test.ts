@@ -433,6 +433,8 @@ test('bash abort and timeout kill the whole process group, not just the shell wr
   const ms = Date.now() - t0;
   assert.ok(ms < 5000, `abort must kill the group quickly, took ${ms}ms`);
   assert.ok(r.isError);
+  const body = String((r.content[0] as any).text);
+  assert.ok(body.endsWith('[interrupted]'), `an abort says so, not [exit null]: ${body}`);
   // timeout: same story, the child group dies at the deadline
   const t1 = Date.now();
   const r2 = await bashTool.execute({ command: 'sleep 30 && echo done', timeout: 1 }, { cwd: '/tmp', signal: new AbortController().signal });

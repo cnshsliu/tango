@@ -128,6 +128,9 @@ pub fn display_width(s: &str) -> usize {
     s.width()
 }
 
+/// A ⚙ line shows at most this many chars of its call (bash command) on one line.
+const BRIEF_CHARS: usize = 160;
+
 /// Collapsed thinking shows this many lines / chars before the expand hint.
 const THINK_PREVIEW_LINES: usize = 3;
 const THINK_PREVIEW_CHARS: usize = 240;
@@ -309,6 +312,9 @@ struct ChatLine {
     notice: bool,
     /// a thinking block shown in full instead of its collapsed preview
     expanded: bool,
+    /// a ⚙ line's full call detail (e.g. the whole bash command) when the line
+    /// itself only shows a one-line brief; the viewer and transcript show it
+    call: Option<String>,
     /// the splash wordmark kept in the chat once the conversation starts: its 5 rows,
     /// drawn with the gradient instead of the wrapped text; never persisted
     wordmark: bool,
@@ -1990,7 +1996,7 @@ impl App {
             // re-walked the rows with a naive wrap that ignored bubble borders, drifted
             // several lines below the click, and opened whatever output-bearing line
             // happened to sit there; plain prose and notices must do nothing.)
-            if let Some(l) = self.chat_lines().get(li).filter(|l| l.output.is_some()) {
+            if let Some(l) = self.chat_lines().get(li).filter(|l| l.output.is_some() || l.call.is_some()) {
                 self.open_line_viewer_quiet(l.source_index);
             }
         }
@@ -2650,6 +2656,7 @@ impl App {
                 source_index: usize::MAX,
                 notice: false,
                 expanded: false,
+                call: None,
                 wordmark: false,
             });
         }
@@ -2666,6 +2673,7 @@ impl App {
             source_index: usize::MAX,
             notice: false,
             expanded: false,
+            call: None,
             wordmark: false,
         });
     }
@@ -2866,10 +2874,10 @@ impl App {
             .enumerate()
             .rev()
             .find_map(|(index, line)| {
-                line.output.as_ref().map(|output| {
+                Self::line_viewer_text(line).map(|output| {
                     (
                         Self::viewer_title(line),
-                        output.clone(),
+                        output,
                         index,
                         line.prompt_state,
                     )
@@ -2889,10 +2897,17 @@ impl App {
                 continue; // decoration, not transcript
             }
             // the transcript is for reading/searching: thinking always in full
-            let full = (line.tone == Tone::Thinking)
+            let mut full = (line.tone == Tone::Thinking)
                 .then(|| self.lines.get(line.source_index).map(|l| l.text.clone()))
                 .flatten()
                 .unwrap_or_else(|| line.text.clone());
+            // a ⚙ line cut to a brief: the transcript carries the whole call
+            if let Some(call) = &line.call {
+                for part in call.lines() {
+                    full.push_str("\n  $ ");
+                    full.push_str(part);
+                }
+            }
             for (index, part) in full.split('\n').enumerate() {
                 if index == 0 && line.prompt_state.is_some() {
                     prompt_rows.push(row);
@@ -2916,9 +2931,8 @@ impl App {
     /// to path-click / selection instead of silently doing nothing
     fn open_line_viewer_quiet(&mut self, index: usize) -> bool {
         let found = self.lines.get(index).and_then(|line| {
-            line.output
-                .as_ref()
-                .map(|output| (Self::viewer_title(line), output.clone(), line.prompt_state))
+            Self::line_viewer_text(line)
+                .map(|output| (Self::viewer_title(line), output, line.prompt_state))
         });
         match found {
             Some((title, text, state)) => {
@@ -2931,9 +2945,8 @@ impl App {
 
     fn open_line_viewer(&mut self, index: usize) {
         let found = self.lines.get(index).and_then(|line| {
-            line.output
-                .as_ref()
-                .map(|output| (Self::viewer_title(line), output.clone(), line.prompt_state))
+            Self::line_viewer_text(line)
+                .map(|output| (Self::viewer_title(line), output, line.prompt_state))
         });
         if let Some((title, text, state)) = found {
             self.request_viewer(Viewer::with_source(title, text, index, state));
@@ -2941,6 +2954,42 @@ impl App {
     }
 
     /// One-dimension summary of a tool call for its status line.
+    /// The ⚙ line's text for a call, plus the full detail when the line had to cut
+    /// it: a bash command longer than one line or BRIEF_CHARS shows its first line
+    /// and how much was left out; the rest lives in the viewer and transcript.
+    fn call_brief(input: &Value) -> (String, Option<String>) {
+        let full = Self::call_summary(input);
+        let n = full.lines().count();
+        let first = full.lines().next().unwrap_or("").trim_end();
+        if n <= 1 && first.chars().count() <= BRIEF_CHARS {
+            return (full, None);
+        }
+        let mut brief: String = first.chars().take(BRIEF_CHARS).collect();
+        brief.push('…');
+        if n > 1 {
+            brief.push_str(&format!("（共 {n} 行）"));
+        }
+        (brief, Some(full))
+    }
+
+    /// What a ⚙ line's viewer shows: the full call (as `$ command`) above its output.
+    fn line_viewer_text(line: &ChatLine) -> Option<String> {
+        match (&line.call, &line.output) {
+            (Some(call), Some(out)) if !out.trim().is_empty() => Some(format!("$ {call}\n\n{out}")),
+            (Some(call), _) => Some(format!("$ {call}")),
+            (None, out) => out.clone(),
+        }
+    }
+
+    /// A tool result that only says the user's interrupt killed it — shown as a
+    /// warning, not an error (`[exit null]` is what older sessions recorded).
+    fn interrupted_output(output: Option<&str>) -> bool {
+        output.is_some_and(|o| {
+            let last = o.trim_end().lines().last().unwrap_or("");
+            last == "[interrupted]" || last == "[exit null]"
+        })
+    }
+
     fn call_summary(input: &Value) -> String {
         let m = input.as_object();
         let detail = ["command", "path", "url", "query", "pattern"]
@@ -6830,10 +6879,17 @@ impl App {
                     self.running_tools.remove(&id);
                 }
                 let name = v["call"]["name"].as_str().unwrap_or("?");
-                let summary = Self::call_summary(&v["call"]["input"]);
+                let (summary, call) = Self::call_brief(&v["call"]["input"]);
                 let ms = v["ms"].as_u64().unwrap_or(0);
                 let ok = !v["isError"].as_bool().unwrap_or(false);
-                let style = if ok { Tone::Muted } else { Tone::Error };
+                let interrupted = !ok && Self::interrupted_output(v["output"].as_str());
+                let style = if ok {
+                    Tone::Muted
+                } else if interrupted {
+                    Tone::Warning
+                } else {
+                    Tone::Error
+                };
                 let full = v["output"].as_str().map(|s| {
                     let mut out = String::new();
                     for line in s.lines().take(200) {
@@ -6843,7 +6899,13 @@ impl App {
                     out.truncate(out.trim_end().len());
                     out
                 });
-                let note = if ok { "" } else { " · error (ctrl+o)" };
+                let note = if ok {
+                    ""
+                } else if interrupted {
+                    " · 已中断"
+                } else {
+                    " · error (ctrl+o)"
+                };
                 let text = format!("⚙ {name} {summary} · {ms}ms{note}");
                 // freeze the RUNNING line into its summary in place: one line per call,
                 // and the animation settles exactly where it played. A result without
@@ -6858,8 +6920,12 @@ impl App {
                     line.tone = style;
                     line.output = full;
                     line.tool_id = None;
+                    line.call = call;
                 } else {
                     self.push_tool(text, style, full);
+                    if let Some(line) = self.lines.last_mut() {
+                        line.call = call;
+                    }
                 }
             }
             "permission_request" => {
@@ -8401,15 +8467,21 @@ impl App {
                 Some("tool") => {
                     let name = it["name"].as_str().unwrap_or("?");
                     let ok = !it["isError"].as_bool().unwrap_or(false);
-                    let style = if ok { Tone::Muted } else { Tone::Error };
+                    let style = if ok {
+                        Tone::Muted
+                    } else if Self::interrupted_output(it["output"].as_str()) {
+                        Tone::Warning
+                    } else {
+                        Tone::Error
+                    };
                     let out = it["output"]
                         .as_str()
                         .map(|s| s.lines().take(200).collect::<Vec<_>>().join("\n"));
-                    self.push_tool(
-                        format!("⚙ {name} {}", Self::call_summary(&it["input"])),
-                        style,
-                        out,
-                    );
+                    let (brief, call) = Self::call_brief(&it["input"]);
+                    self.push_tool(format!("⚙ {name} {brief}"), style, out);
+                    if let Some(line) = self.lines.last_mut() {
+                        line.call = call;
+                    }
                 }
                 _ => {}
             }
@@ -8557,6 +8629,7 @@ impl App {
                     source_index,
                     notice: line.notice,
                     expanded: line.expanded,
+                    call: line.call.clone(),
                     wordmark: false,
                 }
             })
@@ -8575,6 +8648,7 @@ impl App {
                     source_index: usize::MAX,
                     notice: false,
                     expanded: false,
+                    call: None,
                     wordmark: true,
                 },
             );
@@ -12762,6 +12836,41 @@ mod tests {
         assert_eq!(app.chat_line_hit(0, 1, 0).map(|(_, _, i)| i), Some(0), "gutter clamps to 0");
         assert_eq!(app.chat_line_hit(0, 2, 0).map(|(_, _, i)| i), Some(0), "text starts at col 2");
         assert_eq!(app.chat_line_hit(0, 4, 0).map(|(_, _, i)| i), Some(1), "汉 spans 2-3");
+    }
+
+    #[test]
+    fn long_bash_commands_show_a_one_line_brief_and_interrupts_are_warnings() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        let long = format!("for p in a b; do\n  curl {}\ndone", "x".repeat(300));
+        app.handle(
+            Event::Server(
+                0,
+                serde_json::json!({"type":"tool_result","call":{"id":"t9","name":"bash","input":{"command":long}},"ms":7,"isError":true,"output":"/a\n[interrupted]"}),
+            ),
+            &mut serve,
+        );
+        let line = app.lines.last().unwrap();
+        assert_eq!(line.text, "⚙ bash for p in a b; do…（共 3 行） · 7ms · 已中断");
+        assert!(line.tone == Tone::Warning, "an interrupt is not an error");
+        assert_eq!(line.call.as_deref(), Some(long.as_str()));
+        // the viewer shows the whole command above the output
+        let text = App::line_viewer_text(line).unwrap();
+        assert!(text.starts_with("$ for p in a b; do\n  curl xxx"), "{text}");
+        assert!(text.ends_with("/a\n[interrupted]"), "{text}");
+        // one long line: cut at BRIEF_CHARS
+        let (brief, call) = App::call_brief(&serde_json::json!({"command": "y".repeat(200)}));
+        assert_eq!(brief.chars().count(), BRIEF_CHARS + 1);
+        assert!(brief.ends_with('…') && call.is_some());
+        // short commands stay whole, with nothing extra kept
+        assert_eq!(App::call_brief(&serde_json::json!({"command":"ls"})), ("ls".into(), None));
+        // a real failure stays red; old sessions' [exit null] reads as interrupted
+        assert!(!App::interrupted_output(Some("boom\n[exit 1]")));
+        assert!(App::interrupted_output(Some("[exit null]")));
+        // the transcript keeps the full command
+        app.open_transcript();
+        let t = &app.viewer.as_ref().unwrap().text;
+        assert!(t.contains("  $   curl xxx"), "{t}");
     }
 
     #[test]

@@ -71,8 +71,10 @@ export const bashTool: Tool<{ command: string; timeout?: number; background?: bo
         clearTimeout(timer);
         ctx.signal.removeEventListener('abort', onAbort);
         const body = truncate(out.trimEnd());
+        // killed by the user's interrupt: say so instead of the meaningless `[exit null]`
+        const tailNote = code === 0 ? '' : ctx.signal.aborted ? '\n[interrupted]' : `\n[exit ${code}]`;
         resolvePromise({
-          content: [{ type: 'text', text: body + (code === 0 ? '' : `\n[exit ${code}]`) }],
+          content: [{ type: 'text', text: body + tailNote }],
           isError: code !== 0
         });
       });
