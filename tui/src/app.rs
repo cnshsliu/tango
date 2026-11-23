@@ -228,6 +228,9 @@ struct ChatLine {
     notice: bool,
     /// a thinking block shown in full instead of its collapsed preview
     expanded: bool,
+    /// the splash wordmark kept in the chat once the conversation starts: its 5 rows,
+    /// drawn with the gradient instead of the wrapped text; never persisted
+    wordmark: bool,
 }
 
 struct Permission {
@@ -921,6 +924,8 @@ struct ChatRow {
     think: bool,
     /// rounded top/bottom frame row of a user bubble — styled, never selectable
     border: bool,
+    /// one row of the wordmark: drawn from the gradient, never wrapped or selected
+    wordmark: bool,
 }
 
 /// Right-position the rows of user lines into one bg bubble per line: all rows of
@@ -1079,6 +1084,7 @@ fn layout_user_bubbles(rows: &mut Vec<ChatRow>, is_user: &[bool], width: usize, 
                     x,
                     user: true,
                     border: true,
+                    wordmark: false,
                 };
                 let bottom = ChatRow {
                     think: false,
@@ -1125,6 +1131,7 @@ fn wrap_chat_rows_mixed(
     width: usize,
     is_user: &[bool],
     think: &[bool],
+    wordmark: &[bool],
     bubble: bool,
 ) -> Vec<ChatRow> {
     let mut rows = Vec::new();
@@ -1139,12 +1146,14 @@ fn wrap_chat_rows_mixed(
             w
         };
         let is_think = think.get(line).copied().unwrap_or(false);
+        let is_wordmark = wordmark.get(line).copied().unwrap_or(false);
         let mut part = wrap_chat_rows_flagged(&[text.clone()], lw, &[is_think]);
         for r in &mut part {
             // wrap_chat_rows indexes within the single-line slice — restore the
             // real source-line index so grouping/mapping stay correct
             r.line = line;
             r.user = user;
+            r.wordmark = is_wordmark;
         }
         rows.extend(part);
     }
@@ -1174,6 +1183,7 @@ fn wrap_chat_rows_flagged(texts: &[String], width: usize, think: &[bool]) -> Vec
                 user: false,
                 think,
                 border: false,
+                wordmark: false,
             });
             continue;
         }
@@ -1213,6 +1223,7 @@ fn wrap_segment(
             user: false,
             think,
             border: false,
+            wordmark: false,
         });
         return;
     }
@@ -1264,6 +1275,7 @@ fn wrap_segment(
                 user: false,
                 think,
                 border: false,
+                wordmark: false,
             });
             cs = next;
             idx = next;
@@ -1367,6 +1379,8 @@ pub struct App {
     statusline: Option<String>,
     /// Enter inserts a newline instead of sending (/multiline)
     multiline_enter: bool,
+    /// the terminal is tall enough (>= 20 rows) to keep the wordmark in the chat
+    chat_roomy: bool,
     /// serve-side working directory (/cd moves it); @file resolves against it
     serve_cwd: Option<std::path::PathBuf>,
     /// in-chat mouse selection (terminal rows); release copies the covered lines
@@ -1533,6 +1547,7 @@ impl App {
             busy: false,
             running_tools: std::collections::HashSet::new(),
             think_frame: 0,
+            chat_roomy: false,
             prompt_id: 0,
             btw_id: None,
             btw_title: None,
@@ -1736,8 +1751,8 @@ impl App {
         let mut emitted = false;
         for g in ra..=rb.min(self.chat_rows.len().saturating_sub(1)) {
             let row = self.chat_rows.get(g)?;
-            if row.border {
-                continue; // frame rows are decoration, never copied
+            if row.border || row.wordmark {
+                continue; // frame rows and the wordmark are decoration, never copied
             }
             let chars: Vec<char> = row.text.chars().collect();
             let from = if g == ra { ca.min(chars.len()) } else { 0 };
@@ -1776,6 +1791,10 @@ impl App {
     /// keeps the index in sync with what is on screen.
     fn chat_line_hit(&self, row: u16, column: u16, chat_y: u16) -> Option<(usize, String, usize)> {
         let g = self.global_row(row, chat_y)?;
+        // the wordmark is decoration: a click or double-click on it does nothing
+        if self.chat_rows.get(g).is_some_and(|r| r.wordmark) {
+            return None;
+        }
         let li = self.chat_rows.get(g).map(|r| r.line)?;
         let mut full = String::new();
         let mut click_idx = 0usize;
@@ -2491,6 +2510,7 @@ impl App {
                 source_index: usize::MAX,
                 notice: false,
                 expanded: false,
+                wordmark: false,
             });
         }
     }
@@ -2506,6 +2526,7 @@ impl App {
             source_index: usize::MAX,
             notice: false,
             expanded: false,
+            wordmark: false,
         });
     }
 
@@ -2724,6 +2745,9 @@ impl App {
         let mut prompt_rows = Vec::new();
         let mut row = 0;
         for line in self.chat_lines() {
+            if line.wordmark {
+                continue; // decoration, not transcript
+            }
             // the transcript is for reading/searching: thinking always in full
             let full = (line.tone == Tone::Thinking)
                 .then(|| self.lines.get(line.source_index).map(|l| l.text.clone()))
@@ -7799,9 +7823,30 @@ impl App {
         (content + 2).min(term_h / 2).max(3)
     }
 
+    /// True once the conversation has content: anything besides the session banner
+    /// and serve notices. The empty-session splash ends here and the wordmark stays.
+    fn conversation_started(&self) -> bool {
+        self.lines.iter().any(|l| !l.notice && !l.text.starts_with("tango serve"))
+    }
+
+    /// The plain wordmark rows (newline-joined) that lead the chat once the
+    /// conversation has started, when the terminal is wide and tall enough for it.
+    /// The wordmark is a display-only line: never in `self.lines`, so it is not
+    /// saved, exported or replayed when the session is reopened.
+    fn kept_wordmark(&self) -> Option<String> {
+        if !self.conversation_started()
+            || (self.chat_inner_w as usize) < App::WORDMARK_W + 4
+            || !self.chat_roomy
+        {
+            return None;
+        }
+        Some(self.wordmark_lines(self.chat_inner_w as usize).1.join("\n"))
+    }
+
     /// the chat exactly as drawn — scroll math and mouse hit testing use the same lines
     fn chat_lines(&self) -> Vec<ChatLine> {
-        self.lines
+        let wordmark = self.kept_wordmark();
+        let mut lines: Vec<ChatLine> = self.lines
             .iter()
             .enumerate()
             .filter(|(_, line)| {
@@ -7863,9 +7908,29 @@ impl App {
                     source_index,
                     notice: line.notice,
                     expanded: line.expanded,
+                    wordmark: false,
                 }
             })
-            .collect()
+            .collect();
+        // the wordmark leads the chat
+        if let Some(text) = wordmark {
+            lines.insert(
+                0,
+                ChatLine {
+                    text,
+                    tone: Tone::Text,
+                    ts: None,
+                    output: None,
+                    prompt_state: None,
+                    tool_id: None,
+                    source_index: usize::MAX,
+                    notice: false,
+                    expanded: false,
+                    wordmark: true,
+                },
+            );
+        }
+        lines
     }
 
     /// The newest user prompt whose first row is above the view (global row `offset`),
@@ -7959,6 +8024,8 @@ impl App {
         // the OpenCode-style breathing room above/below the draft costs 2 chat rows:
         // only on terminals tall enough to spare them
         self.input_pad = u16::from(area.height >= 30);
+        // short terminals give the rows to the conversation: no wordmark in the chat
+        self.chat_roomy = area.height >= 20;
         let input_h = self.input_height(area.width);
         // the choices panel takes a real layout row — the chat scrolls up to make
         // room instead of being covered (the text under it stays reachable)
@@ -7985,6 +8052,8 @@ impl App {
         }
 
         self.chat_area = chat_a;
+        // set before the rows are built: chat_lines() sizes the kept wordmark with it
+        self.chat_inner_w = chat_a.width;
         self.input_area = input_a;
 
         // status bar
@@ -8025,22 +8094,45 @@ impl App {
         // We own the wrap (wrap_chat_rows) so every terminal row maps back to an exact
         // (source line, char range) — character-exact mouse selection and click targets.
         let inner_w = chat_a.width as usize;
-        let mut texts: Vec<String> = self.chat_lines().iter().map(|l| l.text.clone()).collect();
+        let chat_lines = self.chat_lines();
+        let mut texts: Vec<String> = chat_lines.iter().map(|l| l.text.clone()).collect();
         if !self.stream.is_empty() {
             // live assistant text (not committed yet) hangs off the last line, markdown stripped
             texts.push(self.stream.replace("**", "").replace('`', ""));
         }
-        let tones: Vec<Tone> = self.chat_lines().iter().map(|l| l.tone).collect();
+        let tones: Vec<Tone> = chat_lines.iter().map(|l| l.tone).collect();
         let user_flags: Vec<bool> = tones.iter().map(|t| *t == Tone::User).collect();
         let think_flags: Vec<bool> = tones.iter().map(|t| *t == Tone::Thinking).collect();
-        let gear_running: Vec<bool> = self
-            .chat_lines()
+        let wordmark_flags: Vec<bool> = chat_lines.iter().map(|l| l.wordmark).collect();
+        let gear_running: Vec<bool> = chat_lines
             .iter()
             .map(|l| l.tool_id.as_deref().is_some_and(|id| self.running_tools.contains(id)))
             .collect();
-        let mut all_rows =
-            wrap_chat_rows_mixed(&texts, inner_w, &user_flags, &think_flags, self.user_bubble);
+        let mut all_rows = wrap_chat_rows_mixed(
+            &texts,
+            inner_w,
+            &user_flags,
+            &think_flags,
+            &wordmark_flags,
+            self.user_bubble,
+        );
         layout_user_bubbles(&mut all_rows, &user_flags, inner_w, self.user_bubble);
+        // The chat is bottom-anchored: a short conversation sits at the bottom of the
+        // area. Pad under the wordmark instead, so it stays at the top with the first
+        // message right under it; the pad shrinks as the conversation grows and is gone
+        // once the chat scrolls. Pad rows reuse the wordmark flag (decoration: blank,
+        // not selected, not clicked).
+        if wordmark_flags.first().copied().unwrap_or(false) && self.scroll_back == 0 {
+            let wm_rows = all_rows.iter().filter(|r| r.wordmark).count();
+            let pad = chat_h.saturating_sub(all_rows.len());
+            for i in 0..pad {
+                let mut r = all_rows[wm_rows - 1].clone();
+                r.cs = 0;
+                r.ce = 0;
+                r.text = String::new();
+                all_rows.insert(wm_rows + i, r);
+            }
+        }
         let total = all_rows.len();
         if self.last_visual_total > 0 && total > self.last_visual_total && self.scroll_back > 0 {
             let added = total - self.last_visual_total;
@@ -8054,7 +8146,6 @@ impl App {
         let offset = total.saturating_sub(chat_h + self.scroll_back);
         self.chat_rows = all_rows;
         self.chat_scroll_offset = offset;
-        self.chat_inner_w = chat_a.width;
 
         // the LAST thinking block, but only if it belongs to the running turn
         // (its rows sit after the newest user prompt): older blocks stay dim.
@@ -8081,6 +8172,12 @@ impl App {
         };
         // render the visible window row by row with char-exact selection highlight
         let sel = self.selection_range(chat_a.y);
+        // the wordmark kept in the chat: same gradient rows the splash draws
+        let wordmark: Vec<Line> = if chat_lines.first().is_some_and(|l| l.wordmark) {
+            self.wordmark_lines(inner_w).0
+        } else {
+            Vec::new()
+        };
         let mut shown: Vec<Line> = Vec::new();
         if let Some(splash) = self.splash_lines(chat_a.width as usize, chat_h) {
             shown = splash;
@@ -8089,6 +8186,24 @@ impl App {
             let Some(row) = self.chat_rows.get(g) else {
                 continue;
             };
+            // a wordmark row draws its gradient line (the nth of the 5 rows of the
+            // wordmark line); it is decoration: not selected, not clicked
+            if row.wordmark {
+                // pad rows (blank text) fill the space under the wordmark
+                if row.text.is_empty() {
+                    shown.push(Line::from(""));
+                    continue;
+                }
+                let n = chat_lines
+                    .get(row.line)
+                    .map_or(0, |l| l.text.chars().take(row.cs).filter(|&c| c == '\n').count());
+                if let Some(line) = wordmark.get(n) {
+                    shown.push(line.clone());
+                } else {
+                    shown.push(Line::from(row.text.clone()));
+                }
+                continue;
+            }
             let tone = tones.get(row.line).copied().unwrap_or(Tone::Text);
             let style = self.theme.style(tone);
             let chars: Vec<char> = row.text.chars().collect();
@@ -9408,20 +9523,14 @@ impl App {
             .unwrap_or(0)
     }
 
-    /// The empty-session splash: a "tango" wordmark in 5×5 block letters —
-    /// per-row cyan gradient with grok's star twinkle on top (each cell steps
-    /// a 5-brightness palette by (i*7 + t*3 + i*t) % 5) — over a slowly posing
-    /// braille dancer and a hint line. None once any conversation content
-    /// exists, while a stream runs, or when the terminal is too narrow/short.
-    fn splash_lines(&self, chat_w: usize, chat_h: usize) -> Option<Vec<Line<'static>>> {
-        const W: usize = 26; // wordmark width
-        if chat_w < W + 4
-            || chat_h < 9
-            || !self.stream.is_empty()
-            || self.lines.iter().any(|l| !l.notice && !l.text.starts_with("tango serve"))
-        {
-            return None;
-        }
+    /// Width of the "tango" wordmark in block letters (letters + the spaces between them).
+    const WORDMARK_W: usize = 26;
+
+    /// The wordmark's 5 rows, centered in `chat_w`: styled lines for drawing, and
+    /// the same rows as plain text padded to the chat width (so the chat's wrapper
+    /// never re-wraps or re-centers them) for the row bookkeeping.
+    fn wordmark_lines(&self, chat_w: usize) -> (Vec<Line<'static>>, Vec<String>) {
+        const W: usize = App::WORDMARK_W;
         const FONT: [&[&str; 5]; 5] = [
             // t
             &["█████", "  █  ", "  █  ", "  █  ", "  █  "],
@@ -9447,7 +9556,6 @@ impl App {
         let tick = (t % 60) as u128;
         let truecolor = supports_truecolor();
         let theme_k = if self.theme.light { 0.8 } else { 1.0 };
-        let mut block_h = 5;
         let mut lines: Vec<Line> = Vec::new();
         for r in 0..5 {
             // centering margin first, then a single space between letters
@@ -9482,6 +9590,36 @@ impl App {
             }
             lines.push(Line::from(spans));
         }
+        let mut plain: Vec<String> = Vec::new();
+        for line in &lines {
+            let mut text = String::new();
+            for sp in &line.spans {
+                text.push_str(sp.content.as_ref());
+            }
+            plain.push(format!("{text}{}", " ".repeat(chat_w.saturating_sub(display_width(&text)))));
+        }
+        (lines, plain)
+    }
+
+    /// The empty-session splash: a "tango" wordmark in 5×5 block letters —
+    /// per-row cyan gradient with grok's star twinkle on top (each cell steps
+    /// a 5-brightness palette by (i*7 + t*3 + i*t) % 5) — over a slowly posing
+    /// braille dancer and a hint line. None once any conversation content
+    /// exists, while a stream runs, or when the terminal is too narrow/short.
+    fn splash_lines(&self, chat_w: usize, chat_h: usize) -> Option<Vec<Line<'static>>> {
+        const W: usize = App::WORDMARK_W;
+        if chat_w < W + 4
+            || chat_h < 9
+            || !self.stream.is_empty()
+            || self.lines.iter().any(|l| !l.notice && !l.text.starts_with("tango serve"))
+        {
+            return None;
+        }
+        let (lines, _) = self.wordmark_lines(chat_w);
+        let mut lines: Vec<Line> = lines;
+        let mut block_h = 5;
+        // the dancer's pose follows the same clock as the twinkle (still when animations are off)
+        let t = if self.animations { Self::now_secs() } else { 0 };
         block_h += 3; // dancer row + blank + hint
         let center = |w: usize, text: &str| {
             format!("{}{}", " ".repeat((w.saturating_sub(display_width(text))) / 2), text)
@@ -9768,7 +9906,7 @@ mod tests {
     #[test]
     fn user_prompt_newlines_become_real_rows_in_one_bubble() {
         let texts = vec!["❯ hello\nworld\n\nend".to_string()];
-        let mut rows = wrap_chat_rows_mixed(&texts, 40, &[true], &[], true);
+        let mut rows = wrap_chat_rows_mixed(&texts, 40, &[true], &[], &[], true);
         layout_user_bubbles(&mut rows, &[true], 40, true);
         let body: Vec<&str> = rows
             .iter()
@@ -9886,7 +10024,7 @@ mod tests {
         app.push_tool("second", Tone::Muted, Some("two".into()));
         app.push_tool("third", Tone::Muted, Some("three".into()));
         {
-            let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+            let mut terminal = Terminal::new(TestBackend::new(80, 19)).unwrap();
             terminal.draw(|f| app.draw(f)).unwrap();
         }
         // short lines: one display row each, top-anchored at chat y=0
@@ -9912,7 +10050,7 @@ mod tests {
         app.push("当前模型未标注视觉能力，图片仍会随消息发送", Tone::Muted);
         app.push_tool("⚙ bash", Tone::Muted, Some("popup.png: PNG image data".into()));
         {
-            let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+            let mut terminal = Terminal::new(TestBackend::new(80, 19)).unwrap();
             terminal.draw(|f| app.draw(f)).unwrap();
         }
         // the notice line: a plain line with no output. The old code walked a naive
@@ -11314,7 +11452,7 @@ mod tests {
         // width 40: the bubble wraps text at 36 (2 border/pad columns each side)
         let texts = vec!["一二三四五六七八九十壹贰".to_string()];
         let flags = vec![true];
-        let rows = wrap_chat_rows_mixed(&texts, 40, &flags, &[], true);
+        let rows = wrap_chat_rows_mixed(&texts, 40, &flags, &[], &[], true);
         assert!(
             rows.iter()
                 .filter(|r| r.user)
@@ -11364,7 +11502,7 @@ mod tests {
             "一二三四五六七八九十一二三四五六七八".to_string(),
         ];
         let flags = vec![true, true, true];
-        let mut rows = wrap_chat_rows_mixed(&texts, 24, &flags, &[], true);
+        let mut rows = wrap_chat_rows_mixed(&texts, 24, &flags, &[], &[], true);
         layout_user_bubbles(&mut rows, &flags, 24, true);
         let borders = rows.iter().filter(|r| r.border).count();
         let text_rows = rows.iter().filter(|r| r.user && !r.border).count();
@@ -11709,6 +11847,7 @@ mod tests {
             user: false,
             think: true,
             border: false,
+            wordmark: false,
         }];
         assert_eq!(app.chat_line_hit(0, 1, 0).map(|(_, _, i)| i), Some(0), "gutter clamps to 0");
         assert_eq!(app.chat_line_hit(0, 2, 0).map(|(_, _, i)| i), Some(0), "text starts at col 2");
@@ -13455,7 +13594,7 @@ mod tests {
         app.chat_scroll_offset = 0;
         app.chat_rows = wrap_chat_rows(&["❯ 帮我看看这个".to_string()], 80);
         {
-            let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+            let mut terminal = Terminal::new(TestBackend::new(80, 19)).unwrap();
             terminal.draw(|f| app.draw(f)).unwrap();
         }
         // click (press+release, no drag) inside the bubble
@@ -13471,7 +13610,7 @@ mod tests {
         dblclick(&mut app, 0, x + 3);
         assert_eq!(app.prompt_menu, Some(0), "menu opens anchored to the line");
         {
-            let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+            let mut terminal = Terminal::new(TestBackend::new(80, 19)).unwrap();
             terminal.draw(|f| app.draw(f)).unwrap();
         }
         assert_eq!(app.prompt_menu_buttons.len(), 4, "four clickable menu rows");
@@ -14095,7 +14234,7 @@ mod tests {
         let texts: Vec<String> = app.chat_lines().iter().map(|l| l.text.clone()).collect();
         let user_flags: Vec<bool> = app.tone_rows().iter().map(|t| *t == Tone::User).collect();
         let think_flags: Vec<bool> = app.tone_rows().iter().map(|t| *t == Tone::Thinking).collect();
-        app.chat_rows = wrap_chat_rows_mixed(&texts, 40, &user_flags, &think_flags, app.user_bubble);
+        app.chat_rows = wrap_chat_rows_mixed(&texts, 40, &user_flags, &think_flags, &[], app.user_bubble);
         // 12 rows: p1 g0, ans g1-3, p2 g4, ans g5-7, p3 g8, ans g9-11
         app.chat_area = Rect::new(0, 0, 40, 4);
         let alt_up =
@@ -14442,6 +14581,7 @@ mod tests {
             think: false,
             user: true,
             border: false,
+            wordmark: false,
         }];
         // bubble interior starts at x+2 (│ + pad); column 34 → char 2 ('c')
         assert_eq!(app.chat_line_hit(0, 34, 0).map(|(_, _, i)| i), Some(2));
@@ -14461,6 +14601,7 @@ mod tests {
             think: false,
             user: true,
             border: false,
+            wordmark: false,
         }];
         // interior starts at col 32 (x=30 + │ + pad); 汉 spans 32-33, 字 spans 34-35
         app.sel_anchor_pos = Some((0, 32));
@@ -14476,6 +14617,7 @@ mod tests {
             user: false,
             border: false,
                 think: false,
+                wordmark: false,
         };
         app.sel_anchor_pos = Some((0, 1));
         app.sel_end_pos = Some((0, 3));
@@ -15357,6 +15499,97 @@ mod tests {
         let flat2: String = s2.chars().filter(|c| !c.is_whitespace()).collect();
         assert!(!flat2.contains("输入问题开始"), "splash gone: {s2}");
         assert!(flat2.contains("开始干活"), "chat instead: {s2}");
+    }
+
+    /// The screen's rows as plain strings (wide chars occupy two cells; the
+    /// second is a blank, so text checks strip spaces).
+    fn screen_rows(t: &mut ratatui::Terminal<ratatui::backend::TestBackend>) -> Vec<String> {
+        let w = t.backend().buffer().area.width as usize;
+        let h = t.backend().buffer().area.height as usize;
+        (0..h)
+            .map(|y| {
+                (0..w)
+                    .map(|x| t.backend().buffer()[(x as u16, y as u16)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn wordmark_stays_at_the_top_of_the_chat_after_the_first_message() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut app = App::new();
+        app.push_user("演示一下这个功能");
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        let rows = screen_rows(&mut terminal);
+        let chat_y = app.chat_area.y as usize;
+        // the wordmark: 5 rows of block letters at the very top of the chat …
+        for r in 0..5 {
+            let row = &rows[chat_y + r];
+            assert!(row.contains('█'), "wordmark row {r}: {row:?}");
+            assert!(!row.contains("演示"), "the prompt comes after the wordmark: {row:?}");
+        }
+        // … centered like the splash, …
+        let top = &rows[chat_y];
+        assert_eq!(
+            top.chars().take_while(|c| *c == ' ').count(),
+            (80 - 26) / 2,
+            "centered: {top:?}"
+        );
+        // … then blank padding (the chat is bottom-anchored) …
+        assert!(rows[chat_y + 5].trim().is_empty(), "pad under the wordmark: {:?}", &rows[chat_y..chat_y + 8]);
+        // … and the first message on the chat's last row, so the two share the screen
+        let last = app.chat_area.bottom() as usize - 1;
+        let tail: String = rows[last - 2..=last].concat().chars().filter(|c| !c.is_whitespace()).collect();
+        assert!(tail.contains("演示一下这个功能"), "first message's bubble at the bottom: {:?}", &rows[last - 2..=last]);
+        // the splash's guide lines are gone; the chat is what scrolls
+        let flat: String = rows.concat().chars().filter(|c| !c.is_whitespace()).collect();
+        assert!(!flat.contains("输入问题开始"), "hint gone: {flat}");
+        // it is one chat line of 5 rows, first in the chat, and not a saved line
+        let lines = app.chat_lines();
+        assert!(lines[0].wordmark);
+        assert_eq!(lines[0].text.lines().count(), 5);
+        assert!(lines[1].text.contains("演示一下这个功能"));
+        assert!(app.lines.iter().all(|l| !l.wordmark), "never in the saved lines");
+
+        // clicking the wordmark does nothing (it is decoration)
+        app.chat_press(0, 40);
+        app.chat_release(0, 0, 40);
+        assert!(app.prompt_menu.is_none());
+        assert!(app.viewer.is_none());
+
+        // it scrolls away with the chat
+        app.push("回答".to_string(), Tone::Text);
+        terminal.draw(|f| app.draw(f)).unwrap();
+        assert!(app.chat_rows.iter().filter(|r| r.wordmark).count() >= 5);
+    }
+
+    #[test]
+    fn wordmark_leaves_the_chat_on_short_or_narrow_terminals_and_before_the_first_message() {
+        use ratatui::{Terminal, backend::TestBackend};
+        // short terminal (19 rows): the rows go to the conversation
+        let mut app = App::new();
+        app.push_user("你好");
+        let mut terminal = Terminal::new(TestBackend::new(80, 19)).unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        assert!(!app.chat_lines().iter().any(|l| l.wordmark), "too short");
+        let rows = screen_rows(&mut terminal);
+        assert!(!rows.concat().contains('█'), "no wordmark rows on a 19-row terminal");
+
+        // narrow terminal (29 columns): the wordmark would not fit
+        let mut app = App::new();
+        app.push_user("你好");
+        let mut terminal = Terminal::new(TestBackend::new(29, 24)).unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        assert!(!app.chat_lines().iter().any(|l| l.wordmark), "too narrow");
+
+        // before the first message the splash (not the chat) carries the wordmark
+        let mut app = App::new();
+        app.push("tango serve · session 1234abcd", Tone::Muted);
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        assert!(!app.chat_lines().iter().any(|l| l.wordmark), "splash, not chat");
     }
 
     #[test]

@@ -481,6 +481,12 @@ while text streams, a slow drift while waiting on tools; after 10s with no outpu
 Terminals without 24-bit color get the same band (and the thinking bar's wave) in xterm 256 colors. `/animations off` (saved as
 `"animations": false` in config) keeps the text and drops the motion: steady dot, no band, static
 thinking bar and splash.
+An empty session shows a splash: the centered `tango` wordmark in block letters (cyan gradient with
+a twinkle), a dancer and a hint line. The first message drops the dancer and hint but keeps the
+wordmark as the first line of the chat, pinned to the top with blank rows under it, so a screenshot
+holds both the logo and the first exchange; it scrolls away as the chat grows. It is display-only (not
+in the session file, transcript or exports), cannot be selected or clicked, and is skipped on terminals
+under 20 rows or 30 columns.
 A custom `/statusline` template can still place `{work}` in the status bar. A prompt that starts with an existing file or directory path is sent as `文件：<path>` (or `目录：`) plus the rest of the text, or a request to read it when nothing follows; known slash commands still win. The input is multi-line with Tab-completed `/` commands and `@file` inlining (contents ride along in the
 prompt, 6KB cap), fences render as indented gray blocks, and long pasted prompts collapse to a
 short summary (over 600 chars or 8 lines). Ctrl+O opens the latest full prompt/tool output in an

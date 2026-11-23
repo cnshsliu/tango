@@ -52,7 +52,7 @@ git diff | tango "review this patch"
 | Emoji show as boxes or misalign | `/ascii on` draws them (and the thinking robot) as plain ASCII |
 | Screen tears or flickers while streaming | Use a terminal with synchronized output (iTerm2, Kitty, WezTerm, Ghostty, Alacritty, Windows Terminal, recent tmux); tango sends each frame as one update |
 | Check whether it's still working | The rule above the input: `idle`, or a `●` with the elapsed time and received characters; a band of light flows along the rule while output arrives, and stops and dims after 10s of silence |
-| Find the logo | An empty session shows the centered TANGO wordmark (block letters, cyan gradient + twinkle) with the dancer and a hint; the first message replaces it |
+| Find the logo | An empty session shows the centered TANGO wordmark (block letters, cyan gradient + twinkle) with the dancer and a hint. Your first message ends the dancer and hint but keeps the wordmark at the top of the chat, with your first message at the bottom: screenshot-friendly. It scrolls away as the chat grows, is not saved with the session, and is skipped on terminals under 20 rows or 30 columns |
 | Get back to the prompt you're reading about | Scrolled up, the dim top row shows that prompt; click it to jump there |
 | Hop between your prompts | `alt+↑` / `alt+↓` walk to the previous / next prompt, landing it at the top of the view; the last `alt+↓` returns to the bottom |
 | Search the whole transcript | Ctrl+T, then `/` |
