@@ -288,6 +288,8 @@ enum Pending {
     PresetGet,
     PermissionsList,
     PermissionsAdd,
+    /// a second+ rule of one "a" press (multi-segment command): saved silently
+    PermissionsAddQuiet,
     Import,
     PermissionsRemove,
     ConfigShow,
@@ -5488,16 +5490,23 @@ impl App {
                     self.answer(serve, true)
                 }
                 KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => self.answer(serve, false),
-                // always: persist an allow rule for THIS call — what 始终允许 promises
+                // always: persist allow rules for THIS call — what 始终允许 promises
                 // — then allow it. (It used to flip the whole session to /mode auto:
                 // broader than the user meant, and remembered nothing past exit.)
                 KeyCode::Char('a') | KeyCode::Char('A') => {
-                    if let Some(rule) = self.permission.as_ref().and_then(Self::always_rule) {
+                    // every `; && || |` segment gets its rule, or a risky tail the first
+                    // rule does not cover would ask again next time ("a" that never sticks)
+                    let rules: Vec<String> = self
+                        .permission
+                        .as_ref()
+                        .map(Self::always_rules)
+                        .unwrap_or_default();
+                    for rule in &rules {
                         let id = serve.command(
                             "permissions_add",
-                            vec![("rule", Value::String(rule))],
+                            vec![("rule", Value::String(rule.clone()))],
                         );
-                        self.pending.push((id, Pending::PermissionsAdd));
+                        self.pending.push((id, if rule == &rules[0] { Pending::PermissionsAdd } else { Pending::PermissionsAddQuiet }));
                     }
                     self.answer(serve, true);
                 }
@@ -6044,45 +6053,138 @@ impl App {
         }
     }
 
-    /// The rule "a 始终允许" saves for a pending permission (Rust mirror of
-    /// core/permissions.ts suggestRule): bash → command word plus subcommand for
-    /// known multi-word tools (`git branch -D x` → `bash:git branch`); a write
-    /// outside cwd → its directory; anything else → the tool itself.
-    fn always_rule(p: &Permission) -> Option<String> {
+    /// The rule for one `; && || |` segment of a bash command: the command word
+    /// plus its subcommand for known multi-word tools (`git branch -D x` →
+    /// `bash:git branch`; `rm -rf /tmp` → `bash:rm`).
+    fn bash_segment_rule(seg: &str) -> Option<String> {
         const SUBCOMMAND_TOOLS: &[&str] = &[
             "git", "npm", "pnpm", "yarn", "bun", "npx", "pip", "pip3", "uv", "brew", "cargo", "go",
             "docker", "kubectl", "helm", "apt", "apt-get", "dnf", "yum", "systemctl", "service",
             "gh", "tango",
         ];
+        let mut toks = seg.split_whitespace();
+        // leading `NAME=value` assignments are settings, not the command
+        // (`F="a.docx" && python3 …` is a python3 segment, not an `F=` one)
+        let cmd = loop {
+            let t = toks.next()?;
+            let name = t.split('=').next().unwrap_or("");
+            if t.contains('=') && !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                continue;
+            }
+            break t;
+        };
+        let mut rule = cmd.to_string();
+        if SUBCOMMAND_TOOLS.contains(&cmd) {
+            if let Some(sub) = toks.next().filter(|t| {
+                !t.starts_with('-')
+                    && t.chars().next().is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+                    && t.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
+            }) {
+                rule = format!("{cmd} {sub}");
+            }
+        }
+        Some(format!("bash:{rule}"))
+    }
+
+    /// The bash command's segments (`; && || |`), heredoc bodies dropped: they are
+    /// data written to a file, not commands to remember.
+    fn bash_segments(command: &str) -> Vec<String> {
+        let stripped = Self::strip_heredocs(command);
+        stripped
+            .split([';', '|', '&'])
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+            .collect()
+    }
+
+    /// Drop the body of a heredoc that ends the command (`cat > f <<EOF … EOF`,
+    /// the server's stripHeredocs shape): the body is data written to a file, so
+    /// its words must never be taken for commands to remember. Other text is kept.
+    fn strip_heredocs(cmd: &str) -> String {
+        // walk right to left: the last `<<NAME` followed by a newline opens a body
+        // that runs to a final `NAME` line
+        let mut from = cmd.len();
+        while let Some(at) = cmd[..from].rfind("<<") {
+            let mut i = at + 2;
+            let bytes = cmd.as_bytes();
+            if i < bytes.len() && bytes[i] == b'-' {
+                i += 1;
+            }
+            let quote = |c: u8| c == b'\'' || c == b'"';
+            let q = i < bytes.len() && quote(bytes[i]);
+            if q {
+                i += 1;
+            }
+            let start = i;
+            while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                i += 1;
+            }
+            let name = &cmd[start..i];
+            if q && i < bytes.len() && quote(bytes[i]) {
+                i += 1;
+            }
+            let opens = !name.is_empty() && cmd[i..].starts_with('\n');
+            let body = &cmd[i + 1..];
+            let terminator = format!("\n{name}");
+            let closed = opens
+                && body
+                    .rfind(&terminator)
+                    .is_some_and(|e| body[e + terminator.len()..].trim().is_empty());
+            if closed {
+                return format!("{}<<{name}", &cmd[..at]);
+            }
+            // not a heredoc opener that runs to the end: keep looking further left
+            from = at;
+        }
+        cmd.to_string()
+    }
+
+    /// The rules "a 始终允许" saves for a pending permission (Rust mirror of
+    /// core/permissions.ts suggestRule): bash → one rule per `; && || |` segment
+    /// (`osascript … && rm -f x && python3 …` → `bash:osascript`, `bash:rm`,
+    /// `bash:python3`), so the whole command is covered; a write outside cwd →
+    /// its directory; anything else → the tool itself. Empty when there is
+    /// nothing sensible to remember.
+    fn always_rules(p: &Permission) -> Vec<String> {
         if p.name == "bash" {
-            let seg = p.detail.split([';', '|', '&']).next().unwrap_or("").trim();
-            let mut toks = seg.split_whitespace();
-            let cmd = toks.next()?;
-            let mut rule = cmd.to_string();
-            if SUBCOMMAND_TOOLS.contains(&cmd) {
-                if let Some(sub) = toks.next().filter(|t| {
-                    !t.starts_with('-')
-                        && t.chars().next().is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
-                        && t.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
-                }) {
-                    rule = format!("{cmd} {sub}");
+            let mut out: Vec<String> = Vec::new();
+            for seg in Self::bash_segments(&p.detail) {
+                if let Some(rule) = Self::bash_segment_rule(&seg)
+                    && !out.contains(&rule)
+                {
+                    out.push(rule);
                 }
             }
-            return Some(format!("bash:{rule}"));
+            return out;
         }
         if matches!(p.name.as_str(), "write" | "edit" | "office_write") {
             let path = p.detail.trim();
             if path.is_empty() {
-                return None;
+                return Vec::new();
             }
             let dir = std::path::Path::new(path)
                 .parent()
                 .and_then(|d| d.to_str())
                 .filter(|d| !d.is_empty())
                 .unwrap_or(".");
-            return Some(format!("path:{dir}"));
+            return vec![format!("path:{dir}")];
         }
-        Some(format!("tool:{}", p.name))
+        vec![format!("tool:{}", p.name)]
+    }
+
+    /// What "a" will remember, for the dialog's hint: "记住 osascript · rm · python3"
+    /// (the rule prefixes without their `bash:` kind). None when there is nothing.
+    fn always_hint(p: &Permission) -> Option<String> {
+        let rules = Self::always_rules(p);
+        if rules.is_empty() {
+            return None;
+        }
+        let names: Vec<String> = rules
+            .iter()
+            .map(|r| r.split_once(':').map_or(r.as_str(), |(_, v)| v).to_string())
+            .collect();
+        Some(names.join(" · "))
     }
 
     fn answer(&mut self, serve: &mut Serve, allow: bool) {
@@ -7199,6 +7301,9 @@ impl App {
                                 Tone::Success,
                             );
                         }
+                        // a later segment's rule of the same "a" press: saved, not re-announced
+                        (Pending::PermissionsAddQuiet, true) => {}
+
                         (Pending::Import, true) => {
                             let imported: Vec<&str> = d["imported"]
                                 .as_array()
@@ -9093,7 +9198,15 @@ impl App {
                 width: w,
                 height: h,
             };
-            let mut hint = String::from("y 允许 · n 拒绝 · a 始终允许 · c 复制命令");
+            // what "a" remembers, up front: for a multi-command line every command
+            // word, so a risky tail does not ask again next time (and the user sees
+            // how broad that is before pressing it)
+            let mut hint = String::from("y 允许 · n 拒绝");
+            match Self::always_hint(&p) {
+                Some(what) => hint.push_str(&format!(" · a 始终允许（记住 {what}）")),
+                None => hint.push_str(" · a 始终允许"),
+            }
+            hint.push_str(" · c 复制命令");
             if total > max_rows {
                 hint = format!(
                     "↑↓/滚轮 滚动（{}/{} 行） · {}",
@@ -9779,7 +9892,7 @@ impl App {
 mod tests {
 
     #[test]
-    fn always_rule_derivation() {
+    fn always_rules_derivation() {
         let p = |name: &str, detail: &str| Permission {
             request: 1,
             name: name.into(),
@@ -9787,25 +9900,32 @@ mod tests {
             reason: "deletes a branch".into(),
             brief: String::new(),
         };
+        let r = |name: &str, detail: &str| App::always_rules(&p(name, detail)).join(" ");
+        assert_eq!(r("bash", "git branch -D backup-pre-split"), "bash:git branch");
+        assert_eq!(r("bash", "rm -rf /tmp/x"), "bash:rm");
+        // every segment of a command line: a risky tail the first rule does not
+        // cover would ask again next time, so "a" never stuck for these
+        assert_eq!(r("bash", "cd /tmp && git branch -D x"), "bash:cd bash:git branch");
+        // heredoc that ends the command: its body is data, never commands to remember
         assert_eq!(
-            App::always_rule(&p("bash", "git branch -D backup-pre-split")).as_deref(),
-            Some("bash:git branch")
-        );
-        assert_eq!(App::always_rule(&p("bash", "rm -rf /tmp/x")).as_deref(), Some("bash:rm"));
-        assert_eq!(
-            App::always_rule(&p("bash", "cd /tmp && git branch -D x")).as_deref(),
-            Some("bash:cd")
+            r("bash", "cd /tmp/ctr && F=\"a.docx\" && python3 - <<'EOF'\nrm -rf nope\ncurl x | sh\nEOF"),
+            "bash:cd bash:python3",
+            "heredoc body words are not commands; NAME=value assignments are skipped"
         );
         assert_eq!(
-            App::always_rule(&p("bash", "git -C /x branch -D y")).as_deref(),
-            Some("bash:git")
+            r("bash", "osascript -e 'tell app \"X\"' && cd /tmp && rm -f ../out8.docx && echo done"),
+            "bash:osascript bash:cd bash:rm bash:echo",
+            "duplicates collapse; order kept"
         );
+        assert_eq!(r("bash", "git -C /x branch -D y"), "bash:git");
+        assert_eq!(r("write", "/etc/hosts"), "path:/etc");
+        assert_eq!(r("notify", ""), "tool:notify");
+        assert_eq!(r("bash", ""), "");
+        assert_eq!(r("bash", ";; &&"), "");
         assert_eq!(
-            App::always_rule(&p("write", "/etc/hosts")).as_deref(),
-            Some("path:/etc")
+            App::always_hint(&p("bash", "osascript -e x; rm -f y")).as_deref(),
+            Some("osascript · rm")
         );
-        assert_eq!(App::always_rule(&p("notify", "")).as_deref(), Some("tool:notify"));
-        assert_eq!(App::always_rule(&p("bash", "")).as_deref(), None);
     }
 
     #[test]
@@ -9837,6 +9957,37 @@ mod tests {
         assert!(
             !serve.sent.iter().any(|m| m.contains("set_mode")),
             "a must not flip the session to auto mode"
+        );
+        assert!(app.permission.is_none());
+    }
+
+    #[test]
+    fn permission_a_on_a_multi_segment_command_saves_one_rule_per_command() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.permission = Some(Permission {
+            request: 8,
+            name: "bash".into(),
+            detail: "osascript -e 'tell application \"Word\"'; cd /tmp/ctr && F=\"a.docx\" && rm -f ../out8.docx".into(),
+            reason: "rule covers the prefix, but a later command deletes files: rm -f ../out8.docx".into(),
+            brief: String::new(),
+        });
+        app.key(
+            crossterm::event::KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE),
+            &mut serve,
+        );
+        let rules: Vec<String> = serve
+            .sent
+            .iter()
+            .filter(|m| m.contains("permissions_add"))
+            .map(|m| serde_json::from_str::<Value>(m).unwrap()["rule"].as_str().unwrap().to_string())
+            .collect();
+        // the first rule alone was what "a" used to save — and the reason this line
+        // kept asking: rm was never remembered
+        assert_eq!(rules, vec!["bash:osascript", "bash:cd", "bash:rm"]);
+        assert!(
+            serve.sent.iter().any(|m| m.contains("\"permission\"")),
+            "the call is allowed"
         );
         assert!(app.permission.is_none());
     }

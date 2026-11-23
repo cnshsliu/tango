@@ -99,28 +99,54 @@ const SUBCOMMAND_TOOLS = new Set([
   'service', 'gh', 'tango'
 ]);
 
-/** The rule a permission dialog's "a = always allow" saves for a call:
- * - bash: the command word plus its subcommand for known multi-word tools
- *   (`git branch -D x` → `bash:git branch`; `rm -rf /tmp` → `bash:rm`)
+/** The rule for one bash command segment: the command word plus its subcommand for
+ * known multi-word tools (`git branch -D x` → `bash:git branch`; `rm -rf /tmp` → `bash:rm`).
+ * Leading `NAME=value` assignments are skipped (`F="a.docx" && python3 …` is python3). */
+function bashSegmentRule(seg: string): string | null {
+  const toks = seg.split(/\s+/);
+  let cmd: string | undefined;
+  for (const t of toks) {
+    const name = t.split('=')[0];
+    if (t.includes('=') && name && /^\w+$/.test(name)) continue;
+    cmd = t;
+    break;
+  }
+  if (!cmd) return null;
+  const i = toks.indexOf(cmd);
+  const sub = SUBCOMMAND_TOOLS.has(cmd) && /^\w[\w.-]*$/.test(toks[i + 1] ?? '') ? ` ${toks[i + 1]}` : '';
+  return `bash:${cmd}${sub}`;
+}
+
+/** The rules a permission dialog's "a = always allow" saves for a call:
+ * - bash: one rule per `; && || |` segment (heredoc bodies dropped, duplicates collapsed)
+ *   — `osascript … && rm -f x` saves `bash:osascript` and `bash:rm`. The first rule alone
+ *   would leave the risky tail uncovered, so the same command would ask again every time.
  * - write tools: the written file's directory (`path:<dir>`)
  * - anything else: the tool itself (`tool:<name>`)
- * Null when there is nothing sensible to remember. */
-export function suggestRule(call: ToolCallBlock): string | null {
+ * Empty when there is nothing sensible to remember. */
+export function suggestRules(call: ToolCallBlock): string[] {
+  const name = call.name;
   const input = (call.input ?? {}) as Record<string, unknown>;
-  if (call.name === 'bash') {
-    const seg = String(input.command ?? '').split(/[;|&]/)[0].trim();
-    const toks = seg.split(/\s+/);
-    if (!toks[0]) return null;
-    const sub = SUBCOMMAND_TOOLS.has(toks[0]) && /^\w[\w.-]*$/.test(toks[1] ?? '') ? ` ${toks[1]}` : '';
-    return `bash:${toks[0]}${sub}`;
+  if (name === 'bash') {
+    const out: string[] = [];
+    for (const seg of bashSegments(stripHeredocs(String(input.command ?? '')))) {
+      const r = bashSegmentRule(seg);
+      if (r && !out.includes(r)) out.push(r);
+    }
+    return out;
   }
-  if (WRITE_TOOLS.has(call.name)) {
+  if (WRITE_TOOLS.has(name)) {
     const path = String(input.path ?? '').trim();
-    if (!path) return null;
+    if (!path) return [];
     const dir = path.includes('/') ? path.replace(/\/[^/]*$/, '') : '.';
-    return `path:${dir || '/'}`;
+    return [`path:${dir || '/'}`];
   }
-  return `tool:${call.name}`;
+  return [`tool:${name}`];
+}
+
+/** The first (leading-command) rule "always allow" remembers — `suggestRules(call)[0]`. */
+export function suggestRule(call: ToolCallBlock): string | null {
+  return suggestRules(call)[0] ?? null;
 }
 
 /** Segment a bash command into its ; && || | parts (first tokens), for tail re-checks. */

@@ -168,7 +168,7 @@ test('suggestRule derives the rule "always allow" remembers for a call', async (
   assert.equal(suggestRule(bash('git branch -D backup-pre-split')), 'bash:git branch');
   assert.equal(suggestRule(bash('npm publish --access public')), 'bash:npm publish');
   assert.equal(suggestRule(bash('rm -rf /tmp/x')), 'bash:rm');
-  // segment before ; && || | — the rule never covers a piped tail
+  // the LEADING segment only (suggestRules has the rest) — the rule never covers a piped tail
   assert.equal(suggestRule(bash('cd /tmp && git branch -D x')), 'bash:cd');
   // a flag right after the tool is not a subcommand
   assert.equal(suggestRule(bash('git -C /x branch -D y')), 'bash:git');
@@ -178,6 +178,27 @@ test('suggestRule derives the rule "always allow" remembers for a call', async (
   assert.equal(suggestRule(write('notes.txt')), 'path:.');
   const tool = { type: 'tool_call' as const, id: 'x', name: 'notify', input: {} };
   assert.equal(suggestRule(tool as any), 'tool:notify');
+});
+
+test('"always allow" saves a rule per segment, so a command with a risky tail is not asked again', async () => {
+  const { suggestRules, suggestRule, decide, parseRule } = await import('../src/core/permissions.js');
+  const bash = (command: string) => ({ type: 'tool_call' as const, id: 'x', name: 'bash', input: { command } });
+  // the shape from the field: harmless prefix, then cd / an assignment / python3 / rm
+  const cmd = `osascript -e 'tell application "Microsoft Word" to close document' "协议.docx" saving no'; cd /tmp/ctr && F="/Volumes/WD/协议.docx" && python3 - <<'EOF'\np='/tmp/ctr/t/word/document.xml'\nEOF && rm -f ../out8.docx && echo done`;
+  const call = bash(cmd);
+  assert.deepEqual(suggestRules(call), ['bash:osascript', 'bash:cd', 'bash:python3', 'bash:rm', 'bash:echo']);
+  const rules = suggestRules(call).map((r) => parseRule(r)).filter((r): r is Extract<typeof r, { ok: true }> => r.ok).map((r) => r.rule);
+  // the old behaviour (first rule only) asked again every time: the reason from the field
+  const firstOnly = rules.slice(0, 1);
+  assert.deepEqual(decide('ask', call, '/tmp', firstOnly).action, 'ask');
+  assert.match((decide('ask', call, '/tmp', firstOnly) as any).reason, /rule covers the prefix, but a later command deletes files/);
+  // all of them: the same command is allowed next time …
+  assert.deepEqual(decide('ask', call, '/tmp', rules), { action: 'allow' });
+  // … while a command that was never allowed still asks
+  assert.equal(decide('ask', bash('ls; rm -rf ~/Documents'), '/tmp', rules).action, 'ask');
+  assert.equal(suggestRule(call), 'bash:osascript');
+  // no segment, nothing to remember
+  assert.deepEqual(suggestRules(bash(';; &&')), []);
 });
 
 test('writes under ~/.tango/worktrees never ask; other outside writes still do', async () => {

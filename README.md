@@ -228,14 +228,19 @@ project's personal `.tango/config.local.json`, or the global file outside a proj
 cwd or absolute, segment-boundary matched so `src` never matches `src-evil/`), `bash:<prefix>`
 (first command tokens, so `bash:git status` matches `git status -s` but not `git_status`).
 Rules never override readonly mode; they only turn "ask" into "allow". Answering `a`
-(始终允许) in a permission dialog creates exactly such a rule for the pending call — `bash:git
+(始终允许) in a permission dialog creates such rules for the pending call — `bash:git
 branch` for `git branch -D x`, the directory for an outside write, `tool:<name>` otherwise — and
-allows the call (it no longer flips the session to auto mode).
+allows the call (it no longer flips the session to auto mode). A command line with several
+`; && || |` segments gets one rule per segment: `osascript … && rm -f x` saves `bash:osascript`
+and `bash:rm`, because a rule for the first command alone leaves the risky tail uncovered and the
+same line would ask again every time. The dialog's hint names what `a` remembers
+(`a 始终允许（记住 osascript · rm）`) before you press it; `NAME=value` assignments and heredoc
+bodies are not commands. Since `bash:rm` then allows any `rm`, prefer `y` for one-offs.
 `/import claude-code|grok|codex` maps another agent's allowed-tools into these rules and
 reports every entry it could not represent (codex reads trusted `command = "…"` entries from
 `~/.codex/config.toml`, loose TOML scan, `path:` override for testing). Bash rules cover only
 the command segments they match: a risky command later in the same line (`git status; rm …`)
-still asks. `/export` and `/insights` write into `~/.tango/exports/` (never dirty the repo). `/cd <dir>` moves the session working directory (agent,
+still asks unless its own command word is allowed too. `/export` and `/insights` write into `~/.tango/exports/` (never dirty the repo). `/cd <dir>` moves the session working directory (agent,
 tools and checkpoints follow live); `/add_dir <dir>` registers an extra writable root.
 
 ## Observability

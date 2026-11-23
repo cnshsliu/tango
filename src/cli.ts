@@ -15,12 +15,13 @@ import {
   sessionsDir,
   tangoDir
 } from './core/config.js';
+import type { Config } from './core/config.js';
 import { listDrafts, promoteDraft, saveDraft } from './core/skills.js';
 import { keyEnvName, retryText } from './core/models/util.js';
 import { groupModels } from './core/models/registry.js';
 import { SessionStore, type SessionSummary } from './core/session.js';
 import { resolveConfig, updateLocalConfig, type Resolved } from './core/project-config.js';
-import { suggestRule, type AskFn, type PermissionMode } from './core/permissions.js';
+import { suggestRules, type AskFn, type PermissionMode } from './core/permissions.js';
 import { addTask, daemonLoop, feishuWebhook, lastRunAt, loadTasks, parseInterval, removeTask, runDueOnce, sendFeishu, summarizeOutput } from './core/scheduler.js';
 import type { Message, ModelSpec, ToolCallBlock } from './core/types.js';
 import type { Task } from './core/scheduler.js';
@@ -296,19 +297,22 @@ async function interactive(agent: Agent, store: SessionStore, resolved: Resolved
         answer = undefined;
         const a = line.trim().toLowerCase();
         if (a === 'a' || a === 'always') {
-          const rule = suggestRule(call);
-          if (rule) {
+          // every `; && || |` segment gets its rule: the first alone would leave a risky
+          // tail uncovered, and the same command would ask again next time
+          const rules = suggestRules(call);
+          if (rules.length) {
             // nearest scope, same as the serve /permissions add: the project's
             // personal file inside a project, the global config outside
+            const add = (c: Config): Config => ({ ...c, permissions: { allow: [...new Set([...(c.permissions?.allow ?? []), ...rules])] } });
             let where: string;
-            if (resolved?.project) where = updateLocalConfig(resolved.project.localRoot, (c) => ({ ...c, permissions: { allow: [...new Set([...(c.permissions?.allow ?? []), rule])] } }));
+            if (resolved?.project) where = updateLocalConfig(resolved.project.localRoot, add);
             else {
               const cfg = await loadConfig();
-              await saveConfig({ ...cfg, permissions: { allow: [...new Set([...(cfg.permissions?.allow ?? []), rule])] } });
+              await saveConfig(add(cfg));
               where = 'config.json';
             }
-            perm.rules!.allow = [...new Set([...(perm.rules?.allow ?? []), rule])];
-            console.log(dim(`allow rule saved (${where}): ${rule} · /permissions rm ${rule} undoes it`));
+            perm.rules!.allow = [...new Set([...(perm.rules?.allow ?? []), ...rules])];
+            console.log(dim(`allow rule${rules.length > 1 ? 's' : ''} saved (${where}): ${rules.join(' · ')} · /permissions rm <rule> undoes it`));
           } else {
             perm.mode = 'auto';
             console.log(dim('nothing to remember for this call — permission mode → auto for this session'));
