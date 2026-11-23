@@ -142,6 +142,16 @@ id like `p1` straight away, so the turn goes on. Later it reads the output with 
 stops it with `process_stop` and lists everything with `process_list`. Up to 8 can run at once,
 and all of them are killed when tango exits, so nothing keeps running after you quit.
 
+### Scripts and CI (one-shot runs)
+
+`tango "<prompt>"` runs one prompt without the TUI and prints the answer. For a script that needs
+to read the result, add `--format json`: every stdout line is then a JSON event (start, each model
+step, each tool call with its output and duration, token usage and cost, errors) and the last line
+is always a `done` summary. `--max-tool-rounds N` caps how many model→tool rounds the run may take,
+so a stuck task fails fast instead of using the default 64. One-shot runs cannot answer permission
+asks, so risky calls are refused unless you add `-y`. The README's "Headless JSON" section lists
+every event field.
+
 ### Worktrees
 
 A managed worktree is a separate checkout of your repo at `~/.tango/worktrees/<name>` on

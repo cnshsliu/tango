@@ -77,6 +77,7 @@ tango                  fullscreen TUI (the interactive interface)
 tango -c / -r <id>     TUI on the most recent / a given session
 tango -m <model> -y    TUI options: model, auto mode (or --readonly)
 tango [prompt...]      run one prompt and exit (also when stdin is a pipe)
+tango --format json [prompt...]   same, but JSON lines on stdout for scripts and CI
 tango --models         list models   tango --sessions   list sessions   --cwd <dir>
 tango repl             line-mode REPL — dev fallback, not the product
 tango tui              start the Rust TUI from node (dev; TANGO_TUI=<path> picks the binary)
@@ -95,8 +96,29 @@ tango task run [--loop]  run due tasks once, or keep running as a daemon
 | `--yes` | `-y` | auto mode: tools run without asking |
 | `--readonly` | | no writes, no bash |
 | `--cwd <dir>` | | working directory for the session |
+| `--format json\|text` | | one-shot output: JSON lines (see "Headless JSON") or text (default) |
+| `--max-tool-rounds <n>` | | cap model→tool rounds for this run (1-500); overrides `maxTurns` |
 | `--models` / `--sessions` | | list models with key status / list sessions |
 | `--help` / `--version` | `-h` / `-V` | usage / version |
+
+### Headless JSON
+
+`tango --format json "<prompt>"` prints one JSON object per line on stdout and nothing else
+(warnings stay on stderr):
+
+| `type` | fields |
+| --- | --- |
+| `start` | `session`, `model`, `cwd` |
+| `step_start` | `step` (1-based model request number) |
+| `text` | `step`, `text` (the assistant's text for that step) |
+| `tool_use` | `step`, `id`, `name`, `input`, `output` (cut to 2000 chars), `isError`, `ms` |
+| `step_finish` | `step`, `stopReason`, `usage` (`input`, `output`, `cacheRead`, `cacheWrite`), `costUsd` |
+| `error` | `step`, `message` (e.g. the `--max-tool-rounds` cap was hit, or the model call failed) |
+| `done` | `session`, `stopReason` (`stop`, `aborted`, `error`), `steps`, `toolCalls`, `usage` totals, `costUsd`, `ms` |
+
+`done` is always the last line. Exit code: 0 on success, 1 on `error`, 130 when interrupted. In
+one-shot runs permission asks are refused, as in text mode, unless `--yes` is given. Example:
+`tango --format json --max-tool-rounds 10 -y "run the tests" | jq -c 'select(.type=="done")'`.
 
 TUI commands: `/model`, `/agents`, `/resume`, `/new`, `/restart`, `/rename`, `/mode`, `/plan`, `/goal`,
 `/loop`, `/effort`, `/review`, `/security-review`, `/bg`, `/tasks`, `/stop`, `/subtask`,
@@ -655,7 +677,7 @@ used as the literal key. Nothing is inferred. `tango --models` shows which varia
 | `nvimViewer` | `ask`, `readonly` (Neovim for read-only views) or `internal` (built-in viewer) | Neovim picker |
 | `checkpoint` | `off` disables per-turn workspace snapshots (default on) | edit |
 | `autocompact` | compact when context passes this share of the window (default `0.75`); `off` disables | `/autocompact` |
-| `maxTurns` | model round-trips per prompt before tango stops the loop (1-500, default 64) | edit |
+| `maxTurns` | model round-trips per prompt before tango stops the loop (1-500, default 64); `--max-tool-rounds` overrides it for one run | edit |
 | `warming` | keep prompt caches warm: `true` or `{ "interval": 240, "duration": 1800 }` (see "Session warming") | edit |
 | `statusline` | status bar template with `{model} {mode} {cost} {ctx} {pct} {session} {tokens}` | `/statusline` |
 | `permissions` | `{ "allow": [rules] }` (see "Permissions rules"; trust-gated in project files) | `/permissions add` |

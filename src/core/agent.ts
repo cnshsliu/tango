@@ -183,7 +183,7 @@ export class Agent {
       }
       throw new Error(
         `单轮工具循环已达上限 ${this.maxTurns} 次（防失控保险丝）。进度已保存：发一句"继续"可接着做；` +
-          `长任务可在 ~/.tango/config.json 把 maxTurns 调大（1-500，默认 64）`
+          `长任务可在 ~/.tango/config.json 把 maxTurns 调大（1-500，默认 64），一次性运行也可用 --max-tool-rounds N`
       );
     } catch (e: any) {
       if (this.controller.signal.aborted || e?.name === 'AbortError') {

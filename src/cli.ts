@@ -25,6 +25,7 @@ import { addTask, daemonLoop, feishuWebhook, lastRunAt, loadTasks, parseInterval
 import type { Message, ModelSpec, ToolCallBlock } from './core/types.js';
 import type { Task } from './core/scheduler.js';
 import { makeAgent, openAgent, VERSION, type PermState } from './host.js';
+import { runJson } from './headless.js';
 import { serveStdio } from './serve.js';
 
 // Node's fetch ignores http(s)_proxy unless told to; many users in China need it.
@@ -50,6 +51,9 @@ usage:
 options:
   --cwd <dir>            work in <dir> (default: current directory)
   -y / --yes             run risky commands without asking
+  --format json          one-shot runs print JSON lines (start, step_start, text, tool_use,
+                         step_finish, error, done) instead of text
+  --max-tool-rounds [n]  cap model→tool rounds for this run (1-500; default maxTurns, 64)
   --readonly             block all writes and shell commands
   -h / --help, -V / --version
 
@@ -85,6 +89,10 @@ interface Args {
   input?: string;
   yes: boolean;
   readonly: boolean;
+  /** one-shot output: human text (default) or JSON lines */
+  format?: 'text' | 'json';
+  /** --max-tool-rounds: overrides config maxTurns for this run */
+  maxToolRounds?: number;
   task?: string[];
   serve?: boolean;
   tui?: boolean;
@@ -111,6 +119,19 @@ function parseArgs(argv: string[]): Args {
       case '--readonly':
         a.readonly = true;
         break;
+      case '--format': {
+        const f = argv[++i];
+        if (f !== 'json' && f !== 'text') throw new Error(`--format: expected json or text, got ${f ?? '(nothing)'}`);
+        a.format = f;
+        break;
+      }
+      case '--max-tool-rounds': {
+        const raw = argv[++i];
+        const n = Number(raw);
+        if (!Number.isInteger(n) || n < 1 || n > 500) throw new Error(`--max-tool-rounds: expected an integer 1-500, got ${raw ?? '(nothing)'}`);
+        a.maxToolRounds = n;
+        break;
+      }
       case '-h':
       case '--help':
         a.help = true;
@@ -555,6 +576,15 @@ async function main(): Promise<void> {
   // the TUI is the product: an interactive terminal with no prompt opens it
   if (!args.repl && !args.input && process.stdin.isTTY && process.stdout.isTTY) return launchTui(args);
   perm.mode = args.yes ? 'auto' : args.readonly ? 'readonly' : 'ask';
+  if (args.format === 'json') {
+    if (!args.input) throw new Error('--format json needs a prompt (tango --format json "<prompt>")');
+    // nothing but JSON lines on stdout: open the agent without the REPL's tool printer
+    const { agent, store, warning, resolved } = await openAgent(args, perm);
+    if (warning) console.error(`⚠ ${warning}`);
+    for (const src of resolved.sources) if (src.error) console.error(`⚠ 配置文件已跳过：${src.path}（${src.error}）`);
+    process.exitCode = await runJson(agent, args.input, store.id);
+    return;
+  }
   const { agent, store, resolved } = await openReplAgent(args);
   if (args.input) return runOnce(agent, args.input);
   await interactive(agent, store, resolved);
