@@ -5792,7 +5792,7 @@ impl App {
                         Tone::Muted,
                     );
                 }
-                self.push("[interrupt requested]", Tone::Muted);
+                self.push("[interrupt requested]", Tone::Warning);
                 return;
             }
             if ctrl && k.code == KeyCode::Char('e') {
@@ -6151,7 +6151,7 @@ impl App {
                     Tone::Muted,
                 );
             }
-            self.push("[interrupt requested]", Tone::Muted);
+            self.push("[interrupt requested]", Tone::Warning);
             return;
         }
         // the picker grabs navigation keys while it is open
