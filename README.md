@@ -572,7 +572,7 @@ Both tools count as reads for permissions.
 ## Background processes
 
 `bash` with `background: true` starts the command detached in its own process group and returns
-at once (after a 1 s grace period that catches commands failing right away) with an id such as
+at once (after a 2 s grace period that catches commands failing right away) with an id such as
 `p1`, its pid and the first output lines. Use it for dev servers, watchers and other commands
 that would hit the 120 s foreground timeout. At most 8 run at a time; each keeps the last 200 000
 characters of combined stdout+stderr.

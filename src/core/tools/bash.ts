@@ -27,8 +27,9 @@ export const bashTool: Tool<{ command: string; timeout?: number; background?: bo
       } catch (e) {
         return error((e as Error).message);
       }
-      // a short grace period catches commands that fail right away (typo, port in use)
-      await Promise.race([p.exited, new Promise((r) => setTimeout(r, 1000))]);
+      // a short grace period catches commands that fail right away (typo, port in use);
+      // a login shell alone can take ~0.8 s to start on a busy profile, so 1 s was too tight
+      await Promise.race([p.exited, new Promise((r) => setTimeout(r, 2000))]);
       const head = tail(p, 20);
       return {
         content: [{ type: 'text', text: `started ${describe(p)}` + (head ? `\n${head}` : '') }],
