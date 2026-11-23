@@ -1,8 +1,0 @@
-[package]
-name = "ledger"
-version = "0.1.0"
-edition = "2021"
-description = "A tiny personal ledger on SQLite — the demo project for Tango's tutorial posts"
-
-[dependencies]
-rusqlite = { version = "0.43", features = ["bundled"] }
