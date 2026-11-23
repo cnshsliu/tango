@@ -3265,8 +3265,9 @@ impl App {
 
     fn refresh_popup(&mut self) {
         let text: String = self.input.iter().collect();
-        // slash palette: input is the command word only, idle
-        if !self.busy && self.pastes.is_empty() && text.starts_with('/') && !text.contains(' ') {
+        // slash palette: input is the command word only. Busy too: Enter runs slash
+        // commands mid-turn (see run_slash), so completing them then is just as useful
+        if self.pastes.is_empty() && text.starts_with('/') && !text.contains(' ') {
             let items: Vec<(&str, &str)> = SLASH
                 .iter()
                 .copied()
@@ -14847,6 +14848,20 @@ mod tests {
         // preview and annotations never leak into the transcript as raw text
         assert!(!app.lines.iter().any(|l| l.text.contains("| cd ~/x")));
         assert!(!app.lines.iter().any(|l| l.text.contains("跑完直接提交")));
+    }
+
+    #[test]
+    fn tab_completes_slash_commands_while_a_turn_runs() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.busy = true;
+        for ch in "/mo".chars() {
+            app.key(KeyCode::Char(ch).into(), &mut serve);
+        }
+        assert!(app.popup.is_some(), "the palette opens mid-turn too");
+        app.key(KeyCode::Tab.into(), &mut serve);
+        let typed: String = app.input.iter().collect();
+        assert_eq!(typed, "/model ", "tab completes to the first match while busy");
     }
 
     #[test]
