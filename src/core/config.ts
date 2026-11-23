@@ -139,18 +139,43 @@ export function keyProblem(spec: ModelSpec): string | undefined {
 }
 
 /**
- * Resolve a model: exact id, then single id match on the search string,
- * else config default, else first model whose API key exists.
+ * Do the characters of `needle` appear in `haystack` in order (case-insensitive,
+ * separators skipped nowhere — a plain subsequence)? "glm54" matches
+ * "zhipu-plan/glm-5.4"; "opusfan" matches "apikeyfan/claude-opus-5-5".
+ */
+export function fuzzyMatch(haystack: string, needle: string): boolean {
+  if (!needle) return true;
+  let i = 0;
+  for (const c of haystack.toLowerCase()) {
+    if (c === needle[i]) {
+      i++;
+      if (i === needle.length) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Resolve a model: exact id, then a fuzzy match on the search string — every
+ * whitespace-separated word must appear in the id as a subsequence (so
+ * "glm54" finds zhipu-plan/glm-5.4, "zp glm5.4" too) — else config default,
+ * else first model whose API key exists.
  */
 export function pickModel(models: ModelSpec[], cfg: Config, wanted?: string): ModelSpec {
   const q = wanted ?? cfg.model;
   if (q) {
     const exact = models.find((m) => m.id === q);
     if (exact) return exact;
-    const hits = models.filter((m) => m.id.includes(q));
+    const words = q.toLowerCase().split(/\s+/).filter(Boolean);
+    const hit = (id: string) => words.every((w) => fuzzyMatch(id, w.toLowerCase()));
+    const hits = models.filter((m) => hit(m.id));
     if (hits.length === 1) return hits[0];
-    if (hits.length > 1) throw new Error(`ambiguous model "${q}": ${hits.map((m) => m.id).join(', ')}`);
-    throw new Error(`unknown model "${q}". Run \`tango --models\` to list what is available.`);
+    // rank what matched best (an id that contains the whole query verbatim beats
+    // a scattered subsequence) so a short query still lands on the obvious one
+    const ranked = [...hits].sort((a, b) => Number(b.id.toLowerCase().includes(q.toLowerCase())) - Number(a.id.toLowerCase().includes(q.toLowerCase())));
+    if (ranked.length > 1) throw new Error(`ambiguous model "${q}": ${ranked.slice(0, 6).map((m) => m.id).join(', ')}${ranked.length > 6 ? ' …' : ''}`);
+    const near = models.filter((m) => hit(m.id.split('/').pop() ?? m.id)).map((m) => m.id).slice(0, 6);
+    throw new Error(`unknown model "${q}"${near.length ? `. Did you mean: ${near.join(', ')}?` : ''}. Run \`tango --models\` to list what is available.`);
   }
   const usable = models.find(hasKey);
   if (usable) return usable;

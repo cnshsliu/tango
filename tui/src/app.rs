@@ -487,13 +487,37 @@ impl Picker {
 
     fn filtered_items(&self) -> Vec<&PickItem> {
         let query = self.query.trim().to_lowercase();
+        // every word must appear (as an in-order subsequence, separators skippable)
+        // in the id, label or note — "glm54" finds zhipu-plan/glm-5.4. Matching stays
+        // inside one token (a run of alphanumerics, '-', '.', '_'): matching across a
+        // whole sentence glued English words together and pulled in noise ("resu" hit
+        // "driver/subagent" inside a Chinese note).
+        let words: Vec<String> = query.split_whitespace().map(String::from).collect();
         self.items
             .iter()
             .filter(|item| {
-                query.is_empty()
-                    || [&item.id, &item.label, &item.note]
-                        .into_iter()
-                        .any(|text| text.to_lowercase().contains(&query))
+                words.is_empty()
+                    || words.iter().all(|w| {
+                        let needle: Vec<char> = w.chars().collect();
+                        [&item.id, &item.label, &item.note].into_iter().any(|text| {
+                            text.to_lowercase()
+                                .split(|c: char| {
+                                    !(c.is_alphanumeric() || matches!(c, '-' | '.' | '_'))
+                                })
+                                .any(|token| {
+                                    let mut i = 0;
+                                    for c in token.chars() {
+                                        if Some(c) == needle.get(i).copied() {
+                                            i += 1;
+                                            if i == needle.len() {
+                                                return true;
+                                            }
+                                        }
+                                    }
+                                    false
+                                })
+                        })
+                    })
             })
             .filter(|item| {
                 if !Self::session_scoped(self.kind) {
@@ -11085,6 +11109,33 @@ mod tests {
             .map(|x| buffer[(x, 7)].symbol())
             .collect::<String>();
         assert!(status.contains("ctx 160/200 80%"));
+    }
+
+    #[test]
+    fn model_picker_filter_is_fuzzy_across_words() {
+        let items = vec![
+            PickItem { group: "智谱".into(), id: "zhipu-plan/glm-5.4".into(), label: "zhipu-plan/glm-5.4".into(), note: String::new(), warn: false, current: true },
+            PickItem { group: "智谱".into(), id: "zhipu-plan/glm-5.3".into(), label: "zhipu-plan/glm-5.3".into(), note: String::new(), warn: false, current: false },
+            PickItem { group: "apikeyfan".into(), id: "apikeyfan/claude-opus-5-5".into(), label: "apikeyfan/claude-opus-5-5".into(), note: String::new(), warn: false, current: false },
+        ];
+        let mut picker = Picker::new(PickerKind::Model, items);
+        let ids = |p: &Picker| p.filtered_items().iter().map(|i| i.id.clone()).collect::<Vec<_>>();
+        // subsequence: separators may be skipped
+        picker.query = "glm54".into();
+        assert_eq!(ids(&picker), vec!["zhipu-plan/glm-5.4"]);
+        // plain substring still works, case-insensitive
+        picker.query = "GLM-5.3".into();
+        assert_eq!(ids(&picker), vec!["zhipu-plan/glm-5.3"]);
+        // every word must match (id, label or note)
+        picker.query = "afn opus".into();
+        assert_eq!(ids(&picker), vec!["apikeyfan/claude-opus-5-5"]);
+        picker.query = "afn glm".into();
+        assert_eq!(ids(&picker), Vec::<String>::new());
+        // notes are searched too
+        picker.query = String::new();
+        picker.items[1].note = "订阅套餐 Subscription".into();
+        picker.query = "subscri".into();
+        assert_eq!(ids(&picker), vec!["zhipu-plan/glm-5.3"]);
     }
 
     #[test]

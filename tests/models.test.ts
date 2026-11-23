@@ -23,6 +23,21 @@ test('zhipu coding-plan presets ride the anthropic-compatible endpoint', async (
   assert.ok(models.find((m) => m.id === 'zhipu/glm-5.3' && m.api === 'openai-completions'));
 });
 
+test('pickModel resolves fuzzily: subsequence, case-insensitive, multi-word; ambiguous lists candidates', async () => {
+  const { pickModel } = await import('../src/core/config.js');
+  const m = (id: string) => ({ id, provider: id.split('/')[0], model: id.split('/')[1] ?? id, api: 'openai-completions' as const, baseUrl: 'x' });
+  const models = ['zhipu-plan/glm-5.4', 'zhipu-plan/glm-5.3', 'zhipu/glm-5.3', 'apikeyfan/claude-opus-5-5', 'tknet/qwen3.8-flash-next'].map(m);
+  const p = (q: string) => pickModel(models, {}, q).id;
+  assert.equal(p('zhipu-plan/glm-5.4'), 'zhipu-plan/glm-5.4', 'exact still wins');
+  assert.equal(p('glm54'), 'zhipu-plan/glm-5.4', 'separators may be skipped');
+  assert.equal(p('GLM-5.4'), 'zhipu-plan/glm-5.4', 'case-insensitive');
+  assert.equal(p('opus'), 'apikeyfan/claude-opus-5-5', 'name part alone');
+  assert.equal(p('zp glm5.4'), 'zhipu-plan/glm-5.4', 'every word must match');
+  assert.throws(() => p('glm'), /ambiguous model "glm": zhipu-plan\/glm-5\.4, zhipu-plan\/glm-5\.3, zhipu\/glm-5\.3/);
+  assert.throws(() => p('glm5'), /ambiguous/);
+  assert.throws(() => p('nonexistent'), /unknown model "nonexistent"/);
+});
+
 test('platformOf: explicit platform wins, provider is the fallback', () => {
   assert.equal(platformOf(spec({ platform: 'opencode', provider: 'opencode' })), 'opencode');
   assert.equal(platformOf(spec({ provider: 'tknet' })), 'tknet');

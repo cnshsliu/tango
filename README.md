@@ -92,7 +92,7 @@ tango task run [--loop]  run due tasks once, or keep running as a daemon
 | --- | --- | --- |
 | `--continue` | `-c` | continue the most recent session |
 | `--resume <id>` | `-r` | continue a given session (id or prefix) |
-| `--model <id>` | `-m` | model for this run |
+| `--model <id>` | `-m` | model for this run (fuzzy: `glm54` finds `zhipu-plan/glm-5.4`) |
 | `--yes` | `-y` | auto mode: tools run without asking |
 | `--readonly` | | no writes, no bash |
 | `--cwd <dir>` | | working directory for the session |
@@ -129,7 +129,10 @@ TUI commands: `/model`, `/agents`, `/resume`, `/new`, `/restart`, `/rename`, `/m
 `/timestamps`, `/statusline`, `/preset`, `/permissions`, `/import`, `/cd`, `/pwd`, `/add_dir`,
 `/config`, `/trust`, `/keymap`, `/init`, `/doctor`, `/debug-zip`, `/status`, `/clear`, `/rewind`, `/undo`,
 `/redo`, `/fork`, `/handoff`, `/takeover`, `/branch`, `/tree`, `/find`, `/export`, `/transcript`, `/copy`, `/recap`,
-`/help`, `/exit`. `/model <id>` also saves the choice as the default for new sessions.
+`/help`, `/exit`. `/model <id>` also saves the choice as the default for new sessions. Model ids
+match fuzzily everywhere (`-m` too): case-insensitive subsequence — `glm54` finds `zhipu-plan/glm-5.4`,
+`zp glm5.4` needs every word to match, several matches list the candidates — and the pickers' filters
+(including the model picker's) match the same way.
 
 ## Worktrees, background, subagents, MCP, plugins
 
