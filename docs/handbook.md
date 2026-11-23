@@ -148,10 +148,10 @@ and all of them are killed when tango exits, so nothing keeps running after you 
 
 A request that fails before the model sends anything (connection reset, DNS failure, timeout, rate
 limit 429, gateway 502/503/504) is retried automatically. The chat shows
-`⟳ 请求失败（connection reset [ECONNRESET]），1 秒后第 1/3 次重试…` before each try, waiting 1s,
-2s, then 4s. Press Esc to stop waiting. After the last retry the error is shown as before, with
-"gave up after 3 retries". Set the count with `"retries": 5` in `~/.tango/config.json` (0-10,
-default 3; `0` turns it off), or per model with `retries` in `models.json`. A wrong key (401/403)
+`⟳ 请求失败（connection reset [ECONNRESET]），1 秒后第 1/10 次重试…` before each try, waiting 1s,
+2s, 4s, 8s, then 15s each. Press Esc to stop waiting. After the last retry the error is shown as
+before, with "gave up after 10 retries". Set the count with `"retries": 5` in `~/.tango/config.json` (0-10,
+default 10; `0` turns it off), or per model with `retries` in `models.json`. A wrong key (401/403)
 fails at once, since retrying cannot fix it. A reply that breaks off midway is not retried,
 because tango would have to throw away the text it already showed.
 

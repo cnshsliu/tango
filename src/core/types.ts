@@ -119,7 +119,7 @@ export interface CompletionRequest {
   signal?: AbortSignal;
   /** reasoning effort for supporting adapters (/effort) */
   effort?: 'low' | 'medium' | 'high';
-  /** retries for a request that fails before any output (network error, 429, 5xx); default 3 */
+  /** retries for a request that fails before any output (network error, 429, 5xx); default 10 */
   retries?: number;
   /** told before each retry, so the user sees "retrying n/max" instead of silence */
   onRetry?: (info: RetryInfo) => void;

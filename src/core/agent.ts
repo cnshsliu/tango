@@ -23,7 +23,7 @@ export interface AgentOptions {
   cwd: string;
   events?: EventBus;
   maxTurns?: number;
-  /** retries for a model request that fails before any output (config `retries`; default 3) */
+  /** retries for a model request that fails before any output (config `retries`; default 10) */
   retries?: number;
   /** compact when the estimated context passes this share of the window (0 disables) */
   compactAt?: number;

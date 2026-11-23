@@ -700,7 +700,7 @@ used as the literal key. Nothing is inferred. `tango --models` shows which varia
 | `checkpoint` | `off` disables per-turn workspace snapshots (default on) | edit |
 | `autocompact` | compact when context passes this share of the window (default `0.75`); `off` disables | `/autocompact` |
 | `maxTurns` | model round-trips per prompt before tango stops the loop (1-500, default 64); `--max-tool-rounds` overrides it for one run | edit |
-| `retries` | retries for a model request that fails before any output: network errors (reset, refused, DNS, timeout) and HTTP 408/409/425/429/5xx/529 (0-10, default 3; `0` turns retrying off). Waits 1s, 2s, 4s, … (max 15s, or the server's `Retry-After`); each retry is announced ("第 1/3 次重试"); Esc cancels the wait. 401/403/400 are never retried, nor a stream that already started. A model in `models.json` can set its own `retries` | edit |
+| `retries` | retries for a model request that fails before any output: network errors (reset, refused, DNS, timeout) and HTTP 408/409/425/429/5xx/529 (0-10, default 10; `0` turns retrying off). Waits 1s, 2s, 4s, 8s, then 15s each (or the server's `Retry-After`); each retry is announced ("第 1/10 次重试"); Esc cancels the wait. 401/403/400 are never retried, nor a stream that already started. A model in `models.json` can set its own `retries` | edit |
 | `warming` | keep prompt caches warm: `true` or `{ "interval": 240, "duration": 1800 }` (see "Session warming") | edit |
 | `statusline` | status bar template with `{model} {mode} {cost} {ctx} {pct} {session} {tokens}` | `/statusline` |
 | `permissions` | `{ "allow": [rules] }` (see "Permissions rules"; trust-gated in project files) | `/permissions add` |

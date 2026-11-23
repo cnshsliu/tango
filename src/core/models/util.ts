@@ -38,7 +38,7 @@ export function resolveApiKey(spec: ModelSpec): string {
 export const STREAM_IDLE_MS = 180_000;
 
 /** default retries for a model request that fails before any output */
-export const DEFAULT_RETRIES = 3;
+export const DEFAULT_RETRIES = 10;
 /** retry n waits RETRY_BASE_MS * 2^(n-1), capped at RETRY_MAX_MS (1s, 2s, 4s, 8s, …) */
 export const RETRY_BASE_MS = 1000;
 const RETRY_MAX_MS = 15_000;
@@ -223,7 +223,7 @@ export function parseEvent(spec: ModelSpec, data: string): any {
   }
 }
 
-/** The line shown to the user before a retry, e.g. "⟳ 请求失败（HTTP 503），2 秒后第 1/3 次重试…". */
+/** The line shown to the user before a retry, e.g. "⟳ 请求失败（HTTP 503），2 秒后第 1/10 次重试…". */
 export function retryText(info: import('../types.js').RetryInfo): string {
   const secs = Math.max(1, Math.round(info.delayMs / 1000));
   return `⟳ 请求失败（${info.reason}），${secs} 秒后第 ${info.attempt}/${info.max} 次重试…`;

@@ -110,12 +110,12 @@ test('postJson retries 502 with backoff up to `retries`, announcing each retry',
     const res = await postJson(spec, url, {}, {}, undefined, opts);
     assert.equal(res.status, 200);
     assert.equal(hits, 2);
-    assert.deepEqual(seen.map((i) => [i.attempt, i.max, i.reason]), [[1, 3, 'HTTP 502']]);
+    assert.deepEqual(seen.map((i) => [i.attempt, i.max, i.reason]), [[1, 10, 'HTTP 502']]);
 
     hits = 0;
     failTimes = 99;
     seen.length = 0;
-    await assert.rejects(postJson(spec, url, {}, {}, undefined, opts), /HTTP 502[\s\S]*gave up after 3 retries/);
+    await assert.rejects(postJson(spec, url, {}, {}, undefined, { ...opts, retries: 3 }), /HTTP 502[\s\S]*gave up after 3 retries/);
     assert.equal(hits, 4, 'one try plus 3 retries');
     assert.deepEqual(seen.map((i) => i.attempt), [1, 2, 3]);
 
