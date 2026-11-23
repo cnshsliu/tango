@@ -121,7 +121,7 @@ tango task run [--loop]  run due tasks once, or keep running as a daemon
 one-shot runs permission asks are refused, as in text mode, unless `--yes` is given. Example:
 `tango --format json --max-tool-rounds 10 -y "run the tests" | jq -c 'select(.type=="done")'`.
 
-TUI commands: `/model`, `/agents`, `/resume`, `/new`, `/restart`, `/rename`, `/mode`, `/plan`, `/goal`,
+TUI commands: `/model`, `/agents`, `/resume`, `/new`, `/restart`, `/rename`, `/send`, `/mode`, `/plan`, `/goal`,
 `/loop`, `/effort`, `/review`, `/security-review`, `/bg`, `/tasks`, `/stop`, `/subtask`,
 `/worktree`, `/mcp`, `/plugins`, `/vim`, `/nvim`, `/editor`, `/multiline`, `/btw`, `/diff`,
 `/focus`, `/density`, `/mouse`, `/animations`, `/ascii`, `/clipboard`, `/theme`, `/compact`, `/autocompact`, `/skill`, `/skills`,
@@ -419,7 +419,7 @@ Commands: `prompt`, `btw` (ephemeral, tool-free side question), `interrupt`, `pe
 `set_model` (also saved as the default), `set_mode`, `set_nvim_viewer` (persist `ask`/`readonly`),
 `set_theme`, `set_mouse`, `diff` (read-only working-tree/staged patch), `timeline` (turn list with
 snapshot flags), `rewind`/`undo`/`redo` (time travel; refused while a turn runs), `fork`/`branch`/
-`tree` (session forking and ancestry), `handoff` / `takeover` (`session`, `note?` → `brief`; handoff also → `queueId`), `handoff_list` (→ `handoffs`), `handoff_cancel` (`queueId`), `find` (search all sessions incl. abandoned futures),
+`tree` (session forking and ancestry), `send` (`session`, `text` → `to`, `targetLive`), `handoff` / `takeover` (`session`, `note?` → `brief`; handoff also → `queueId`), `handoff_list` (→ `handoffs`), `handoff_cancel` (`queueId`), `find` (search all sessions incl. abandoned futures),
 `export` (md/html transcript file), `transcript` (raw text incl. orphans), `rename`, `recap`
 (tool-free one-line summary via `btw_stream`), `sessions`, `history`
 (flattened transcript with paired tool calls/results, latest 300 items by default), `save_skill`,

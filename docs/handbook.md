@@ -112,6 +112,13 @@ To move work between sessions, use `/handoff <session>` to send a brief of this 
 another one, or `/takeover <session>` to pull another session's work into this one. Neither
 command rewrites the other session's history.
 
+For a quick word instead of a full brief, `/send <session> <消息>` messages the other session's
+user: it appears in that session's chat while it is idle (within ~2s; a running turn finishes
+first) and is part of the model's context from its next prompt. Mail is delivery-only — receiving
+never starts a turn, so two sessions cannot reply-loop on their own — and messages expire after
+7 days. Remember that a received message does reach the other session's model, i.e. it can
+influence its behavior; permission checks still apply to whatever it then does.
+
 ### Background work: /bg vs /subtask
 
 Both commands start a separate tango process in its own new git worktree (`bg-<id>`), so the
@@ -306,6 +313,7 @@ while a turn is running unless noted. `/help` prints a short list inside the TUI
 | `/rename [name]` (`/name`) | Show or set the session name. In the picker, Ctrl+R renames any session |
 | `/editlast` (Alt+E) | Interrupt the running turn, roll the conversation **and code** back to before your last prompt, and load that prompt verbatim into the input box for editing. Two presses: the first arms (rollback touches code), the second executes; Esc cancels |
 | `/find [text]` | Search all sessions, including abandoned turns, and jump to a hit |
+| `/send [session] [消息]` | Send a short message to another session's user: it shows in that session's chat (within ~2s when idle, or on its next open) and joins the model's context from its next prompt. Bare: pick the session, then type the message. Reply with `/send <from>` (the sender id is in the notice). No auto-reply — a message never starts a turn by itself | 
 | `/handoff [session] [note]` | Send a brief of this session's work to another session. Bare: pick one |
 | `/handoff list` | Show queued briefs with their queue ids. Briefs not merged within 7 days expire |
 | `/handoff cancel <queue id>` | Withdraw a queued brief |
