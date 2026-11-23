@@ -26,6 +26,7 @@ import { listDrafts, promoteDraft, saveDraft } from './core/skills.js';
 import { join, resolve } from 'node:path';
 import { SessionStore, relativeTime } from './core/session.js';
 import { cancelHandoff, drainHandoffs, listHandoffs, purgeExpiredHandoffs, queueHandoff } from './core/handoff.js';
+import { drainMail, sendMail } from './core/mail.js';
 import { holdSessionLock, sessionHolder } from './core/session-lock.js';
 import { costUsd, displayPlatform, groupModels } from './core/models/registry.js';
 import { retryText } from './core/models/util.js';
@@ -249,6 +250,20 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
   };
   await mergeInbox();
 
+  // /send mail: merged while idle (never mid-turn — a message must not slip into a
+  // running turn's context unnoticed). The poll also covers mail that arrives while
+  // this session sits open in another window.
+  const receiveMail = async () => {
+    const got = await drainMail(store).catch(() => ({ received: [], expired: [] }));
+    for (const m of got.received) {
+      const head = m.text.split('\n')[0].slice(0, 160);
+      out({ type: 'notice', text: `✉ 来自会话 ${m.from.slice(0, 8)} 的消息：${head}${m.text.length > head.length ? '…' : ''}（下次提问时并入上下文 · /send ${m.from.slice(0, 8)} 可回复）` });
+    }
+    for (const m of got.expired)
+      out({ type: 'notice', text: `⌛ 丢弃来自会话 ${m.from.slice(0, 8)} 的过期消息（排队于 ${m.queuedAt.slice(0, 10)}，超过 7 天）` });
+  };
+  await receiveMail();
+
   out({
     type: 'hello',
     protocol: PROTOCOL,
@@ -386,6 +401,11 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
   }
 
   let promptInFlight = false;
+  // idle poll for /send mail (declared here: the callback reads promptInFlight)
+  const mailTimer = setInterval(() => {
+    if (!promptInFlight) void receiveMail();
+  }, 2000);
+  mailTimer.unref?.();
   // warming state: keep provider prompt caches warm between real prompts (opencode parity).
   // Real activity (a prompt turn) restarts the window; warming itself never extends it.
   const warmingCfg = (() => {
@@ -578,6 +598,7 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
         const imagePaths = Array.isArray(cmd.images) ? cmd.images.map(String) : [];
         if (!text.trim() && !imagePaths.length) return reply(cmd, false, undefined, 'prompt: empty text');
         await mergeInbox(); // a handoff that arrived while this session was open
+        await receiveMail(); // …and any /send mail (the poll only runs while idle)
         // plan instruction rides the system prompt, not the stored user text
         agent.systemSuffix = perm.plan?.on
           ? '\n# Plan mode\n当前处于 plan 模式：只做研究和计划，不要尝试写入或执行修改；产出清晰执行计划，等用户批准后 /plan off 再执行。'
@@ -1388,6 +1409,10 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
             items.push({ kind: 'handoff', from: e.from, via: e.via, text: e.summary });
             continue;
           }
+          if (e.kind === 'mail') {
+            items.push({ kind: 'mail', from: e.from, text: e.text });
+            continue;
+          }
           if (e.kind !== 'message') continue;
           const m = e.message;
           for (const b of m.content) {
@@ -1706,6 +1731,24 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
         reply(cmd, true, { sessionId: forkId, name: cmd.name ?? null });
         return;
       }
+      case 'send': {
+        // /send <session> <text>: a short message to another session's user. Queued in
+        // that session's inbox; its owner merges it while idle (see receiveMail).
+        const ref = String(cmd.session ?? '').trim();
+        const text = String(cmd.text ?? '').trim().slice(0, 4000);
+        if (!ref || !text) return reply(cmd, false, undefined, 'send: which session, and what? (/send <session> <message>)');
+        try {
+          const otherId = await resolveSessionId(ref);
+          if (otherId === store.id) return reply(cmd, false, undefined, 'send: that is the current session');
+          await sendMail(otherId, { from: store.id, text });
+          // live target: shown there within ~2s (idle poll); closed: on its next open
+          const holder = await sessionHolder(otherId);
+          reply(cmd, true, { to: otherId, targetLive: holder ? { pid: holder.pid } : null });
+        } catch (e: any) {
+          reply(cmd, false, undefined, String(e?.message ?? e));
+        }
+        return;
+      }
       case 'handoff_list': {
         // every queued brief (any target); merged ones are gone from the inbox. Expired ones are
         // deleted here too, else briefs for sessions never reopened would stay on disk forever.
@@ -1922,7 +1965,7 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
     // (e.g. "always allow" from a permission dialog), so they skip the prompt queue too
     const guarded = (p: Promise<unknown>) =>
       void p.catch((e) => out({ type: 'error', message: String(e?.message ?? e) }));
-    if (['set_mode', 'status', 'timeline', 'context', 'queue', 'usage', 'stats', 'insights', 'preset_save', 'preset_list', 'preset_get', 'permissions_list', 'permissions_add', 'permissions_remove', 'import', 'cd', 'pwd', 'add_dir', 'config_show', 'init', 'doctor', 'debug_zip', 'set_plan', 'set_effort', 'memory', 'remember', 'skills', 'goal', 'loop', 'worktree_create', 'worktree_list', 'worktree_remove', 'worktree_merge', 'tasks', 'agents_show', 'agents_set', 'mcp_list', 'plugins_list'].includes(cmd.cmd)) {
+    if (['set_mode', 'status', 'timeline', 'context', 'queue', 'usage', 'stats', 'insights', 'preset_save', 'preset_list', 'preset_get', 'permissions_list', 'permissions_add', 'permissions_remove', 'import', 'cd', 'pwd', 'add_dir', 'config_show', 'init', 'doctor', 'debug_zip', 'set_plan', 'set_effort', 'memory', 'remember', 'skills', 'goal', 'loop', 'worktree_create', 'worktree_list', 'worktree_remove', 'worktree_merge', 'tasks', 'agents_show', 'agents_set', 'mcp_list', 'plugins_list', 'send'].includes(cmd.cmd)) {
       guarded(handle(cmd));
       void checkSubtasks(); // immediate lane only: never between a prompt line and its turn start
       return;

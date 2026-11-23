@@ -341,6 +341,8 @@ enum Pending {
     Redo,
     Fork,
     Handoff,
+    /// /send <session> <text> — a short message to another session's user
+    Send,
     HandoffList,
     HandoffCancel,
     Takeover,
@@ -404,6 +406,8 @@ enum PickerKind {
     HandoffTarget,
     /// /takeover without an id: pick the session whose work this one continues
     TakeoverSource,
+    /// /send without an id: pick the session to message; the message is typed after
+    SendTarget,
     Command,
     History,
     Theme,
@@ -471,7 +475,10 @@ impl Picker {
     fn session_scoped(kind: PickerKind) -> bool {
         matches!(
             kind,
-            PickerKind::Session | PickerKind::HandoffTarget | PickerKind::TakeoverSource
+            PickerKind::Session
+                | PickerKind::HandoffTarget
+                | PickerKind::TakeoverSource
+                | PickerKind::SendTarget
         )
     }
 
@@ -694,6 +701,10 @@ const SLASH: &[(&str, &str)] = &[
     ("/usage", "跨会话聚合：按模型/会话的请求与花费"),
     ("/stats", "同 /usage"),
     ("/fork <name>", "从当前（或 /rewind 选中）位置复制出新会话"),
+    (
+        "/send [session] [消息]",
+        "给另一个 tango 会话发消息；对方空闲时收到并入上下文，裸 /send 选会话",
+    ),
     (
         "/handoff [session] [note]",
         "把当前会话的交接摘要发给已有会话（不切换），裸 /handoff 选会话",
@@ -3642,6 +3653,32 @@ impl App {
                 let id = serve.command("fork", extra);
                 self.pending.push((id, Pending::Fork));
             }
+            "/send" => {
+                let rest = rest.trim();
+                if rest.is_empty() {
+                    // pick the target first; the message is typed after the id
+                    let id = serve.command("sessions", vec![]);
+                    self.pending.push((id, Pending::Sessions));
+                    self.session_pick = Some(PickerKind::SendTarget);
+                } else {
+                    let (session, text) = rest
+                        .split_once(char::is_whitespace)
+                        .unwrap_or((rest, ""));
+                    if text.trim().is_empty() {
+                        self.push("用法：/send <会话> <消息>", Tone::Muted);
+                    } else {
+                        let id = serve.command(
+                            "send",
+                            vec![
+                                ("session", Value::String(session.into())),
+                                ("text", Value::String(text.trim().into())),
+                            ],
+                        );
+                        self.pending.push((id, Pending::Send));
+                        self.push("✉ 发送中 …", Tone::Muted);
+                    }
+                }
+            }
             "/handoff" | "/takeover" => {
                 let purpose = if head == "/handoff" {
                     PickerKind::HandoffTarget
@@ -5318,6 +5355,12 @@ impl App {
                 },
                 PickerKind::HandoffTarget | PickerKind::TakeoverSource => {
                     self.send_transfer(kind, &item.id, "", serve);
+                }
+                PickerKind::SendTarget => {
+                    // the target is fixed; the message still needs typing
+                    let lead = format!("/send {} ", item.id);
+                    self.input = lead.chars().collect();
+                    self.cursor = self.input.len();
                 }
                 PickerKind::Session => {
                     self.push(format!("↻ resuming session {} …", item.id), Tone::Muted);
@@ -7120,6 +7163,18 @@ impl App {
                                 self.switch_session(Some(id.to_string()));
                             }
                         }
+                        (Pending::Send, true) => {
+                            let to: String = d["to"].as_str().unwrap_or("?").chars().take(8).collect();
+                            let live = d["targetLive"]["pid"].as_u64().is_some();
+                            self.push(
+                                if live {
+                                    format!("✉ 消息已发给会话 {to}")
+                                } else {
+                                    format!("✉ 消息已排队给会话 {to}（未在运行 · 它下次打开时收到）")
+                                },
+                                Tone::Success,
+                            );
+                        }
                         (Pending::Handoff, true) => {
                             let target: String = d["target"]
                                 .as_str()
@@ -8108,6 +8163,13 @@ impl App {
                 }
                 Some("assistant") => {
                     self.stream = text.to_string();
+                    self.commit_stream();
+                }
+                Some("mail") => {
+                    let short: String =
+                        it["from"].as_str().unwrap_or("?").chars().take(8).collect();
+                    self.push(format!("✉ 来自会话 {short} 的消息："), Tone::Muted);
+                    self.stream = it["text"].as_str().unwrap_or("").to_string();
                     self.commit_stream();
                 }
                 Some("handoff") => {
@@ -9307,6 +9369,7 @@ impl App {
                 PickerKind::Session => "选择会话",
                 PickerKind::HandoffTarget => "交接给哪个会话 · 当前会话的摘要会并入它",
                 PickerKind::TakeoverSource => "接管哪个会话 · 它的摘要会并入当前会话",
+                PickerKind::SendTarget => "把消息发给哪个会话 · 选好后再输入内容",
                 PickerKind::Timeline => "时间轴 · 选中即回滚到该回合之前",
                 PickerKind::Find => "搜索命中 · 本会话=回滚到该处 · 他会话=切换过去",
                 PickerKind::Preset => "提示模板 · 选中填入输入框（不发送）",
@@ -11675,6 +11738,76 @@ mod tests {
         );
         // a respawn is requested with the fork's session id, like /resume switching
         assert_eq!(app.respawn, Some(Some("forked-123".into())));
+    }
+
+    #[test]
+    fn send_command_parses_and_reports_delivery() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.run_slash("/send abc123 测试跑完了，可以合并了", &mut serve);
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        assert_eq!(sent["cmd"], "send");
+        assert_eq!(sent["session"], "abc123");
+        assert_eq!(sent["text"], "测试跑完了，可以合并了");
+
+        // closed target: queued, delivered on its next open
+        let id = sent["id"].as_u64().unwrap();
+        app.frame(
+            json!({"type": "result", "id": id, "ok": true, "data": {"to": "abc12345-x", "targetLive": null}}),
+            &mut serve,
+        );
+        assert!(app.lines.iter().any(|l| l.text.contains("已排队") && l.text.contains("abc12345")));
+
+        // live target: shown within ~2s
+        app.run_slash("/send abc123 再发一条", &mut serve);
+        let sent: Value = serde_json::from_str(&serve.sent[1]).unwrap();
+        let id = sent["id"].as_u64().unwrap();
+        app.frame(
+            json!({"type": "result", "id": id, "ok": true, "data": {"to": "abc12345-x", "targetLive": {"pid": 4242}}}),
+            &mut serve,
+        );
+        assert!(app.lines.iter().any(|l| l.text.contains("消息已发给会话")));
+
+        // a target without a message is a usage hint, nothing sent
+        serve.sent.clear();
+        app.run_slash("/send abc123", &mut serve);
+        assert!(serve.sent.is_empty());
+        assert!(app.lines.iter().any(|l| l.text.contains("用法：/send")));
+
+        // bare /send: sessions are listed, the picker's pick prefills the command
+        let mut serve = Serve::mock();
+        let sessions = json!({"type": "result", "ok": true, "data": {"sessions": [
+            {"id": "ffff0000", "topic": "另一个会话", "at": "2026-11-23T10:00:00Z", "current": false},
+            {"id": "current123", "topic": "本会话", "at": "2026-11-23T10:00:00Z", "current": true}
+        ]}});
+        let mut app = App::new();
+        app.run_slash("/send", &mut serve);
+        assert!(serve.sent[0].contains("\"cmd\":\"sessions\"") || serve.sent[0].contains("\"cmd\": \"sessions\""));
+        let id: u64 = serde_json::from_str::<Value>(&serve.sent[0]).unwrap()["id"].as_u64().unwrap();
+        app.frame(
+            json!({"type": "result", "id": id, "ok": true, "data": sessions["data"].clone()}),
+            &mut serve,
+        );
+        let picker = app.picker.as_ref().expect("target picker open");
+        assert_eq!(picker.kind, PickerKind::SendTarget);
+        assert!(picker.items.iter().all(|i| !i.current), "the current session is not a target");
+        app.picker.as_mut().unwrap().sel = 0;
+        app.accept_picker(&mut serve);
+        let typed: String = app.input.iter().collect();
+        assert_eq!(typed, "/send ffff0000 ");
+        assert_eq!(app.cursor, app.input.len());
+
+        // history renders a received message in place
+        let mut app = App::new();
+        app.load_history(&json!({
+            "items": [
+                {"kind": "user", "text": "问点别的"},
+                {"kind": "mail", "from": "ffff0000aaaa", "text": "测试跑完了"}
+            ],
+            "total": 2
+        }));
+        assert!(app.lines.iter().any(|l| l.text.contains("✉ 来自会话 ffff0000 的消息")));
+        assert!(app.lines.iter().any(|l| l.text.contains("测试跑完了")));
     }
 
     #[test]

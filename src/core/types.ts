@@ -178,6 +178,8 @@ export type SessionEntry =
   | { kind: 'compaction'; ts: string; summary: string; droppedCount: number; keep?: number }
   /** a brief of session `from` merged into this one (/handoff from there, or /takeover from here) */
   | { kind: 'handoff'; ts: string; from: string; summary: string; via: 'handoff' | 'takeover' }
+  /** a short message from another session's user (/send): shown in the chat, in the model's context from the next request on */
+  | { kind: 'mail'; ts: string; from: string; text: string }
   | { kind: 'checkpoint'; ts: string; hash: string; note?: string }
   | { kind: 'rewind'; ts: string; to: number };
 
