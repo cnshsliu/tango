@@ -46,6 +46,7 @@ git diff | tango "review this patch"
 | Park a half-written draft | Alt+S (press again to restore) |
 | Edit a draft in Neovim | Ctrl+E, or `/nvim` |
 | See a full tool output | Ctrl+O, or double-click the tool line |
+| See what a turn produced at a glance | Each finished turn ends with a muted `✓ 本轮：…` line: the answer's whole first line, wrapped when long, never cut. `/recap` instead summarizes the whole conversation |
 | Read the model's full reasoning | Double-click a thinking block to expand / collapse it |
 | Copy over SSH or inside tmux | Works by default: over SSH tango copies through the terminal (OSC 52). In tmux set `set -g set-clipboard on`; if it still fails, try `/clipboard osc52` |
 | Emoji show as boxes or misalign | `/ascii on` draws them (and the thinking robot) as plain ASCII |

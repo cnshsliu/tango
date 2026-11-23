@@ -303,7 +303,7 @@ tools and checkpoints follow live); `/add_dir <dir>` registers an extra writable
   switch lives in the TUI process (not persisted, kept across serve respawns until you quit); **Ctrl+C interrupts only the current reply and keeps the queue**; **Alt+Enter appends the typed
   text to the RUNNING turn** ("forgot to mention…") — it rides the same turn's next model
   request as a `（补充）…` user message. The status bar pins the active ask (▶) and each
-  finished turn leaves a `✓ 本轮：…` recap line.
+  finished turn leaves a `✓ 本轮：…` recap line: the answer's whole first line, never cut (long ones wrap).
 - `/autocompact [N%|0.N|off]` shows or sets the auto-compaction threshold (default 75% of the
   window); persisted in config.
 - **Compaction** (`/compact` or auto): the newest whole turns, up to ~20 000 estimated tokens

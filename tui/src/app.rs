@@ -6311,11 +6311,12 @@ impl App {
                             self.queue_buttons.clear();
                         }
                     }
-                    // auto recap: first line of the answer, so a glance reconstructs
-                    // what this long turn actually produced
+                    // auto recap: the answer's whole first line, so a glance reconstructs
+                    // what this long turn actually produced. Never cut: the chat wraps it,
+                    // and a cut mid-sentence ("…同事如果现在就看这份文档，可") reads as a bug
                     if let Some(last) = self.assistant_replies.last() {
                         let first = last.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
-                        let head: String = first.trim().chars().take(80).collect();
+                        let head = first.trim();
                         if !head.is_empty() {
                             self.push(format!("✓ 本轮：{head}"), Tone::Muted);
                         }
@@ -14815,7 +14816,7 @@ mod tests {
 
         // turn completes: recap line from the answer's first line, pin context ends
         app.assistant_replies
-            .push("已将慢查询加了索引，延迟从 2s 降到 50ms。\n细节略".into());
+            .push("已将慢查询加了索引，延迟从 2s 降到 50ms。另外把连接池从 10 调到 50，并给 orders 表的 user_id 和 created_at 建了联合索引，另外把连接池从 10 调到 50，并给 orders 表的 user_id 和 created_at 建了联合索引，另外把连接池从 10 调到 50，并给 orders 表的 user_id 和 created_at 建了联合索引，结尾在这里\n细节略".into());
         app.frame(
             json!({"type": "result", "id": app.prompt_id, "ok": true, "data": {}}),
             &mut serve,
@@ -14824,9 +14825,11 @@ mod tests {
         assert!(
             app.lines
                 .iter()
-                .any(|l| l.text.contains("✓ 本轮：已将慢查询加了索引")),
-            "auto recap pushed"
+                .any(|l| l.text.contains("✓ 本轮：已将慢查询加了索引")
+                    && l.text.ends_with("结尾在这里")),
+            "auto recap pushed, whole first line however long"
         );
+        assert!(!app.lines.iter().any(|l| l.text.contains("细节略")), "only the first line");
         // pinned prompt span stops showing after completion
         let spans2 = app.status_spans(200);
         let text2: String = spans2.iter().map(|s| s.content.to_string()).collect();
