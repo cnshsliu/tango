@@ -71,7 +71,8 @@ terminals without 24-bit color; once idle, or with `/animations off`, it is a fl
 While a turn runs, Enter queues your next prompt instead of interrupting. Queued prompts
 are sent in order when the turn ends. `/queue` shows them, and its `[并入当前]` button merges
 one into the running turn. The dialog works without a mouse too: ↑↓ (or `j`/`k`, `1`–`9`)
-picks a row, Enter merges it, `d` deletes it, `a` merges all, `c` clears, Esc closes. Alt+Enter does the same for what you're typing: the text joins the
+picks a row, Enter merges it, `d` deletes it, `a` merges all, `c` clears, Esc closes. Once the
+queue is empty the dialog closes on its own. Alt+Enter does the same for what you're typing: the text joins the
 running turn, and the model sees it on its next request. Ctrl+C (or Esc) stops the current
 reply and keeps the queue.
 

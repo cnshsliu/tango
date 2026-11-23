@@ -2271,6 +2271,11 @@ impl App {
             }
         }
         self.queue_sel = self.queue_sel.min(self.local_queue.len().saturating_sub(1));
+        // nothing left to manage: the dialog closes itself (merge all, or the last one merged/removed)
+        if self.local_queue.is_empty() {
+            self.queue_dialog = false;
+            self.queue_buttons.clear();
+        }
     }
 
     /// /queue dialog keys: ↑↓/j k pick a row, enter/m merges it, d/delete drops
@@ -6280,6 +6285,11 @@ impl App {
                     if let Some(next) = self.local_queue.first().cloned() {
                         self.local_queue.remove(0);
                         self.submit_text(serve, next.text, next.images);
+                        // the last queued ask just went out: an open /queue dialog has nothing left
+                        if self.local_queue.is_empty() {
+                            self.queue_dialog = false;
+                            self.queue_buttons.clear();
+                        }
                     }
                     // auto recap: first line of the answer, so a glance reconstructs
                     // what this long turn actually produced
@@ -12147,16 +12157,19 @@ mod tests {
             &mut serve,
         );
         assert!(app.local_queue.is_empty());
+        assert!(!app.queue_dialog, "an empty queue closes the dialog");
         let sent2: Value = serde_json::from_str(&serve.sent[1]).unwrap();
         assert_eq!(sent2["text"], "第三问");
+        // queue more and reopen
+        app.local_queue = vec![QueuedPrompt::text_only("x")];
+        app.run_slash("/queue", &mut serve);
         {
             use ratatui::{Terminal, backend::TestBackend};
             let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();
             terminal.draw(|f| app.draw(f)).unwrap();
         }
 
-        // queue more, click [清空]
-        app.local_queue = vec![QueuedPrompt::text_only("x")];
+        // click [清空]
         let (clr, _): (Rect, QueueAction) = app
             .queue_buttons
             .iter()
@@ -12173,8 +12186,12 @@ mod tests {
             &mut serve,
         );
         assert!(app.local_queue.is_empty());
+        assert!(!app.queue_dialog, "clearing closes it too");
 
-        // Esc closes
+        // Esc closes while items remain
+        app.local_queue = vec![QueuedPrompt::text_only("y")];
+        app.run_slash("/queue", &mut serve);
+        assert!(app.queue_dialog);
         app.key(
             crossterm::event::KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
             &mut serve,
@@ -12203,12 +12220,21 @@ mod tests {
         key(&mut app, &mut serve, KeyCode::Up);
         key(&mut app, &mut serve, KeyCode::Up);
         assert_eq!(app.queue_sel, 0);
+        assert!(app.queue_dialog, "items left: still open");
         key(&mut app, &mut serve, KeyCode::Char('a'));
         assert!(app.local_queue.is_empty());
-        app.local_queue = vec![QueuedPrompt::text_only("x")];
-        key(&mut app, &mut serve, KeyCode::Char('c'));
-        assert!(app.local_queue.is_empty());
+        assert!(!app.queue_dialog, "merge all empties the queue and closes the dialog");
+        // merging the last item one by one closes it as well
+        app.local_queue = ["五", "六"].map(QueuedPrompt::text_only).to_vec();
+        app.run_slash("/queue", &mut serve);
+        key(&mut app, &mut serve, KeyCode::Enter);
         assert!(app.queue_dialog);
+        key(&mut app, &mut serve, KeyCode::Enter);
+        assert!(app.local_queue.is_empty());
+        assert!(!app.queue_dialog);
+        // q closes while items remain
+        app.local_queue = vec![QueuedPrompt::text_only("x")];
+        app.run_slash("/queue", &mut serve);
         key(&mut app, &mut serve, KeyCode::Char('q'));
         assert!(!app.queue_dialog);
     }
