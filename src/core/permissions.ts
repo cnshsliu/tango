@@ -3,11 +3,13 @@ import type { EventBus } from './events.js';
 import type { ToolCallBlock } from './types.js';
 
 /**
+ * - confirm: reads pass; every change asks first — file writes and every bash command
+ *   (zcode's 变更前确认: "改文件前先问我", extended to commands)
  * - ask: reads always pass; writes inside cwd pass; risky bash and writes outside cwd ask first
- * - auto: everything passes (user opted in with --yes)
+ * - auto: everything passes (user opted in with --yes, after the risk acknowledgement)
  * - readonly: reads pass; writes and bash are blocked
  */
-export type PermissionMode = 'ask' | 'auto' | 'readonly';
+export type PermissionMode = 'confirm' | 'ask' | 'auto' | 'readonly';
 
 export type Decision = { action: 'allow' } | { action: 'ask'; reason: string } | { action: 'deny'; reason: string };
 
@@ -190,6 +192,7 @@ function decideBase(mode: PermissionMode, call: ToolCallBlock, cwd: string, extr
   if (WRITE_TOOLS.has(call.name)) {
     if (mode === 'readonly') return { action: 'deny', reason: 'read-only mode' };
     const path = String(input.path ?? '');
+    if (mode === 'confirm') return { action: 'ask', reason: `变更前确认：写入 ${resolve(cwd, path)}` };
     if (inside(cwd, path)) return { action: 'allow' };
     if (extraDirs?.some((d) => inside(d, path))) return { action: 'allow' };
     return { action: 'ask', reason: `writes outside the working directory: ${resolve(cwd, path)}` };
@@ -201,6 +204,7 @@ function decideBase(mode: PermissionMode, call: ToolCallBlock, cwd: string, extr
     // risk rules read the executable part only — heredoc bodies are file data
     const scanned = stripHeredocs(cmd);
     for (const [re, why] of RISKY_BASH) if (re.test(scanned)) return { action: 'ask', reason: why };
+    if (mode === 'confirm') return { action: 'ask', reason: '变更前确认：每条命令都先问' };
     return { action: 'allow' };
   }
 

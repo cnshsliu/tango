@@ -180,6 +180,27 @@ test('suggestRule derives the rule "always allow" remembers for a call', async (
   assert.equal(suggestRule(tool as any), 'tool:notify');
 });
 
+test('confirm mode asks before every change: file writes and every bash command', async () => {
+  const { decide } = await import('../src/core/permissions.js');
+  const call = (name: string, input: object) => ({ type: 'tool_call' as const, id: 'x', name, input });
+  // a write inside cwd: ask mode allows it, confirm asks
+  const w = call('write', { path: '/w/src/a.ts' });
+  assert.deepEqual(decide('ask', w, '/w'), { action: 'allow' });
+  assert.equal(decide('confirm', w, '/w').action, 'ask');
+  // an innocent command: ask allows, confirm asks
+  const b = call('bash', { command: 'ls -la' });
+  assert.deepEqual(decide('ask', b, '/w'), { action: 'allow' });
+  assert.equal(decide('confirm', b, '/w').action, 'ask');
+  // reads still pass, and an explicit allow rule still beats confirm
+  assert.deepEqual(decide('confirm', call('read', { path: '/w/a.ts' }), '/w'), { action: 'allow' });
+  assert.deepEqual(
+    decide('confirm', call('bash', { command: 'git branch' }), '/w', [{ kind: 'bash', value: 'git branch' }]),
+    { action: 'allow' }
+  );
+  // plan mode still vetoes writes whatever the mode says
+  // (checked one level up, not in decide itself)
+});
+
 test('"always allow" saves a rule per segment, so a command with a risky tail is not asked again', async () => {
   const { suggestRules, suggestRule, decide, parseRule } = await import('../src/core/permissions.js');
   const bash = (command: string) => ({ type: 'tool_call' as const, id: 'x', name: 'bash', input: { command } });

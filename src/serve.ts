@@ -67,7 +67,7 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
   // launch options ride the environment too (tango tui -m / -y / --readonly)
   if (!args.model && process.env.TANGO_MODEL) args.model = process.env.TANGO_MODEL;
   const envMode = process.env.TANGO_MODE;
-  if (!args.readonly && (envMode === 'ask' || envMode === 'auto' || envMode === 'readonly')) perm.mode = envMode;
+  if (!args.readonly && (envMode === 'confirm' || envMode === 'ask' || envMode === 'auto' || envMode === 'readonly')) perm.mode = envMode;
 
   let opened: Awaited<ReturnType<typeof openAgent>>;
   try {
@@ -1504,8 +1504,8 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
       }
       case 'set_mode': {
         const mode = String(cmd.mode ?? '') as PermissionMode;
-        if (mode !== 'ask' && mode !== 'auto' && mode !== 'readonly')
-          return reply(cmd, false, undefined, `bad mode "${cmd.mode}" (ask|auto|readonly)`);
+        if (mode !== 'confirm' && mode !== 'ask' && mode !== 'auto' && mode !== 'readonly')
+          return reply(cmd, false, undefined, `bad mode "${cmd.mode}" (confirm|ask|auto|readonly)`);
         perm.mode = mode;
         reply(cmd, true, { mode });
         return;

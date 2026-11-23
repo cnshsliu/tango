@@ -594,16 +594,22 @@ skips the protocol. Example:
 
 ## Permissions
 
-Three modes, set with flags or `/mode`:
+Four modes, set with flags or `/mode`:
 
 | mode       | flag           | behaviour                                                                                                                                   |
 | ---------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `confirm`  | `/mode confirm` | ask before every change: file writes and every shell command ask first (allow rules still pass)                                              |
 | `ask`      | (default)      | reads and writes inside cwd run; deletes, `git push`/`reset --hard`, `sudo`, `curl … \| sh`, writes outside cwd (except managed worktrees under `~/.tango/worktrees/`, `/add_dir` roots and allow rules) and unknown tools ask first |
 | `auto`     | `-y` / `--yes` | everything runs                                                                                                                             |
 | `readonly` | `--readonly`   | reads only; writes and shell are refused                                                                                                    |
 
-In the TUI's permission dialog, answer `y`, `n` or `a` (always: switches to `auto` for the rest of
-the session, taking effect mid-turn). One-shot runs
+In the TUI, bare `/mode` opens the mode picker (one line per mode with its description, plan
+included). Switching to `auto` first shows the full-access acknowledgement: what it allows (any
+file path, any shell command, network), a warning that mistakes may be irreversible, and the
+`☐ 我已了解风险，并对自己的数据安全负责` checkbox — Space checks it, Enter enables, Esc cancels.
+
+In the TUI's permission dialog, answer `y`, `n` or `a` (always: saves allow rules for the
+commands in the call, taking effect mid-turn). One-shot runs
 can't ask, so risky calls are refused there unless `--yes` is given. The gate is a `before_tool`
 handler in `src/core/permissions.ts`.
 

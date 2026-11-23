@@ -65,7 +65,7 @@ cannot ask, so those calls are refused unless --yes is given.`;
 const CMD_HELP = `commands:
   /model <id>  switch model (saved as default)
   /models      list models
-  /mode [ask|auto|readonly]  show or change permission mode
+  /mode [confirm|ask|auto|readonly]  show or change permission mode
   /sessions    list sessions, newest first
   /compact     summarize and drop older context
   /save-as-skill [描述]  save this session's flow as a skill draft (then /save-as-skill finish <file>)
@@ -369,7 +369,7 @@ async function interactive(agent: Agent, store: SessionStore, resolved: Resolved
         return true;
       }
       case 'mode': {
-        if (arg === 'ask' || arg === 'auto' || arg === 'readonly') perm.mode = arg;
+        if (arg === 'confirm' || arg === 'ask' || arg === 'auto' || arg === 'readonly') perm.mode = arg;
         else if (arg) console.log(red('mode must be ask, auto or readonly'));
         console.log(dim(`permission mode: ${perm.mode}`));
         return true;

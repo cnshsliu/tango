@@ -221,11 +221,12 @@ Every tool call passes a permission gate. There are three modes:
 
 | Mode | Start with | Behaviour |
 | --- | --- | --- |
+| `confirm` | `/mode confirm` | Ask before every change: file writes and every shell command ask first (zcode's 变更前确认) |
 | `ask` | default | Reads and writes inside the project run. Deletes, `git push`, `git reset --hard`, `sudo`, `curl … \| sh`, writes outside the project and unknown tools ask first |
 | `auto` | `tango -y` | Everything runs |
 | `readonly` | `tango --readonly` | Reads only. Writes and shell are refused |
 
-Switch at any time with `/mode ask|auto|readonly`. Answering `a` (始终允许) in a permission
+Switch at any time with `/mode <mode>` — bare `/mode` opens a picker listing all modes with a one-line description each (plan included). Switching to `auto` (完全访问) first shows an acknowledgement: what it allows (any file path, any shell command, network), a warning that mistakes may be irreversible, and a `☐ 我已了解风险，并对自己的数据安全负责` checkbox — press Space to check it, then Enter to enable; Esc cancels. Answering `a` (始终允许) in a permission
 dialog saves persistent allow rules for that call and allows it — `bash:git branch` for
 `git branch -D x`, the written file's directory for an outside write, `tool:<name>` otherwise —
 so the same thing never asks again, in this session or the next. A command line with several
@@ -332,7 +333,7 @@ while a turn is running unless noted. `/help` prints a short list inside the TUI
 | --- | --- |
 | `/model [id]` | Switch model and save it as the default. Bare: open the model picker (its filter is fuzzy too). The id matches fuzzily, case-insensitive: `glm54` → `zhipu-plan/glm-5.4`; with several words each must match (`zp glm5.4`); several matches list the candidates instead of guessing. `-m` on the command line uses the same matching |
 | `/agents [role model]` | Show or set role models: `driver`, `subagent` (`/bg`, `/subtask`), `longContext` (`/bg --long`) |
-| `/mode [ask\|auto\|readonly]` | Show or set the permission mode |
+| `/mode [confirm\|ask\|auto\|readonly]` | Show or set the permission mode. Bare: a picker with all modes; switching to auto asks for the risk acknowledgement first |
 | `/plan` | Toggle plan mode: writes refused, the model produces a plan |
 | `/effort [low\|medium\|high\|off]` | Show or set reasoning effort for this session |
 | `/goal <text>` | Keep working toward a goal. After each turn tango checks whether it's done and continues if not |

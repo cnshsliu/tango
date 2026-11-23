@@ -62,8 +62,8 @@ impl Theme {
         if self.light { Color::Rgb(236, 236, 236) } else { Color::Rgb(30, 30, 30) }
     }
 
-    /// Accent for a permission mode (input bar, info row): plan orange, auto red,
-    /// readonly gray, ask blue. Plan wins: it vetoes writes whatever the mode says.
+    /// Accent for a permission mode (input bar, info row): plan orange, confirm
+    /// purple, auto red, readonly gray, ask blue. Plan wins: it vetoes writes whatever the mode says.
     pub fn mode_color(self, mode: &str, plan: bool) -> Color {
         let pick = |dark: (u8, u8, u8), light: (u8, u8, u8)| {
             let (r, g, b) = if self.light { light } else { dark };
@@ -73,6 +73,7 @@ impl Theme {
             return pick((245, 167, 110), (190, 100, 20));
         }
         match mode {
+            "confirm" => pick((198, 120, 221), (150, 60, 180)),
             "auto" => pick((224, 108, 117), (190, 40, 50)),
             "readonly" => pick((140, 140, 140), (110, 110, 110)),
             _ => pick((97, 175, 239), (30, 100, 200)),

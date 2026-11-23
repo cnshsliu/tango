@@ -397,6 +397,8 @@ enum Pending {
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum PickerKind {
     Model,
+    /// /mode bare: the permission-mode picker (zcode-style dropdown)
+    Mode,
     Session,
     /// /handoff without an id: pick the session to send this one's brief to
     HandoffTarget,
@@ -477,6 +479,7 @@ impl Picker {
         matches!(
             self.kind,
             PickerKind::Model
+                | PickerKind::Mode
                 | PickerKind::Session
                 | PickerKind::HandoffTarget
                 | PickerKind::TakeoverSource
@@ -1482,6 +1485,8 @@ pub struct App {
     multiline_enter: bool,
     /// the terminal is tall enough (>= 20 rows) to keep the wordmark in the chat
     chat_roomy: bool,
+    /// the full-access (auto) acknowledgement dialog: the "我已了解风险" checkbox state
+    full_access: Option<bool>,
     /// serve-side working directory (/cd moves it); @file resolves against it
     serve_cwd: Option<std::path::PathBuf>,
     /// in-chat mouse selection (terminal rows); release copies the covered lines
@@ -1649,6 +1654,7 @@ impl App {
             running_tools: std::collections::HashSet::new(),
             think_frame: 0,
             chat_roomy: false,
+            full_access: None,
             prompt_id: 0,
             btw_id: None,
             btw_title: None,
@@ -4429,7 +4435,10 @@ impl App {
             }
             "/mode" => {
                 if rest.is_empty() {
-                    self.push("usage: /mode ask|auto|readonly", Tone::Muted);
+                    self.open_mode_picker();
+                } else if rest == "auto" {
+                    // typed or picked: full access always goes through the acknowledgement
+                    self.full_access = Some(false);
                 } else {
                     let id = serve.command("set_mode", vec![("mode", Value::String(rest.into()))]);
                     self.pending.push((id, Pending::Mode));
@@ -5286,6 +5295,25 @@ impl App {
                     }
                     self.run_slash(&format!("/model {}", item.id), serve);
                 }
+                // zcode's execution-authorization dropdown: one line per mode, the
+                // current one marked. Full access goes through its own acknowledgement.
+                PickerKind::Mode => match item.id.as_str() {
+                    "plan" => {
+                        if !self.plan_mode {
+                            let id = serve.command("set_plan", vec![("on", Value::Bool(true))]);
+                            self.pending.push((id, Pending::Plan));
+                        }
+                    }
+                    "auto" => self.full_access = Some(false),
+                    id => {
+                        if self.plan_mode {
+                            let pid = serve.command("set_plan", vec![("on", Value::Bool(false))]);
+                            self.pending.push((pid, Pending::Plan));
+                        }
+                        let mid = serve.command("set_mode", vec![("mode", Value::String(id.into()))]);
+                        self.pending.push((mid, Pending::Mode));
+                    }
+                },
                 PickerKind::HandoffTarget | PickerKind::TakeoverSource => {
                     self.send_transfer(kind, &item.id, "", serve);
                 }
@@ -5636,6 +5664,27 @@ impl App {
                 KeyCode::PageDown => viewer.scroll_by(10, viewer.max_scroll),
                 KeyCode::Home => viewer.home(),
                 KeyCode::End => viewer.end(viewer.max_scroll),
+                _ => {}
+            }
+            return;
+        }
+        // the full-access acknowledgement grabs the keyboard (zcode: the confirm
+        // button stays disabled until "我已了解风险" is checked)
+        if self.full_access.is_some() {
+            match k.code {
+                KeyCode::Char(' ') | KeyCode::Enter if k.code == KeyCode::Char(' ') => {
+                    self.full_access = self.full_access.map(|v| !v);
+                }
+                KeyCode::Enter => {
+                    if self.full_access == Some(true) {
+                        self.full_access = None;
+                        let id = serve.command("set_mode", vec![("mode", Value::String("auto".into()))]);
+                        self.pending.push((id, Pending::Mode));
+                    } else {
+                        self.toast("先按空格勾选「我已了解风险」");
+                    }
+                }
+                KeyCode::Esc => self.full_access = None,
                 _ => {}
             }
             return;
@@ -6373,6 +6422,33 @@ impl App {
                 if allow { Tone::Muted } else { Tone::Error },
             );
         }
+    }
+
+    /// The zcode-style permission-mode picker: plan, confirm, ask, auto, readonly,
+    /// one line each, the current one marked.
+    fn open_mode_picker(&mut self) {
+        let modes: [(&str, &str, &str); 5] = [
+            ("plan", "💡 计划模式", "编辑前先出计划（不改文件）"),
+            ("confirm", "✋ 变更前确认", "改文件、跑命令前都先问我"),
+            ("ask", "🛡 自主模式", "项目内直过，有风险时才问（默认）"),
+            ("auto", "⚠ 完全访问", "减少确认：全部直接执行"),
+            ("readonly", "🚫 只读", "只看不改：写入和命令都拒绝"),
+        ];
+        let items = modes
+            .into_iter()
+            .map(|(id, label, note)| PickItem {
+                group: String::new(),
+                id: id.into(),
+                label: label.into(),
+                note: note.into(),
+                warn: false,
+                current: match id {
+                    "plan" => self.plan_mode,
+                    other => !self.plan_mode && self.mode == other,
+                },
+            })
+            .collect();
+        self.picker = Some(Picker::new(PickerKind::Mode, items));
     }
 
     fn send_prompt(&mut self, serve: &mut Serve) {
@@ -9225,6 +9301,7 @@ impl App {
             };
             let title = match p.kind {
                 PickerKind::Model => "选择模型",
+                PickerKind::Mode => "执行授权 · 选中即切换",
                 PickerKind::Session => "选择会话",
                 PickerKind::HandoffTarget => "交接给哪个会话 · 当前会话的摘要会并入它",
                 PickerKind::TakeoverSource => "接管哪个会话 · 它的摘要会并入当前会话",
@@ -9412,6 +9489,55 @@ impl App {
             )));
             body.push(Line::from(""));
             body.extend(shown);
+            f.render_widget(Paragraph::new(body), inner);
+        }
+
+        // the full-access (auto) acknowledgement dialog
+        if let Some(ack) = self.full_access {
+            let w = area.width.min(64).max(40);
+            let h = 12u16.min(area.height);
+            let popup = Rect {
+                x: (area.width.saturating_sub(w)) / 2,
+                y: (area.height.saturating_sub(h)) / 2,
+                width: w,
+                height: h,
+            };
+            let hint = if ack {
+                "enter 确认启用 · esc 取消".to_string()
+            } else {
+                "空格 勾选了解风险 · esc 取消".to_string()
+            };
+            let inner = render_dialog(f, popup, "⚠ 要启用完全访问吗？", &hint, self.theme);
+            let mut body = vec![
+                Line::from(Span::styled(
+                    "启用后，任务可以直接执行以下操作，无需逐次请求你确认：",
+                    self.theme.style(Tone::Muted),
+                )),
+                Line::from(""),
+            ];
+            for line in [
+                "• 写入、编辑任何路径下的文件（包括项目外）",
+                "• 执行任意 shell 命令（包括 rm、git push、安装依赖）",
+                "• 访问网络、调用外部服务",
+            ] {
+                body.push(Line::from(Span::styled(line.to_string(), self.theme.style(Tone::Text))));
+            }
+            body.push(Line::from(""));
+            body.push(Line::from(Span::styled(
+                "出错时可能无法撤销。建议只在可信的仓库或隔离环境里使用。",
+                self.theme.style(Tone::Warning),
+            )));
+            body.push(Line::from(""));
+            let box_char = if ack { "☑" } else { "☐" };
+            let check_style = if ack {
+                self.theme.style(Tone::Error)
+            } else {
+                self.theme.style(Tone::Muted)
+            };
+            body.push(Line::from(Span::styled(
+                format!("{box_char} 我已了解风险，并对自己的数据安全负责"),
+                check_style,
+            )));
             f.render_widget(Paragraph::new(body), inner);
         }
 
@@ -11109,6 +11235,64 @@ mod tests {
             .map(|x| buffer[(x, 7)].symbol())
             .collect::<String>();
         assert!(status.contains("ctx 160/200 80%"));
+    }
+
+    #[test]
+    fn mode_picker_lists_all_modes_and_full_access_needs_the_risk_ack() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.mode = "ask".into();
+        app.run_slash("/mode", &mut serve);
+        let picker = app.picker.as_ref().expect("bare /mode opens the picker");
+        assert_eq!(picker.kind, PickerKind::Mode);
+        let ids: Vec<&str> = picker.items.iter().map(|i| i.id.as_str()).collect();
+        assert_eq!(ids, vec!["plan", "confirm", "ask", "auto", "readonly"]);
+        assert!(picker.items.iter().find(|i| i.id == "ask").unwrap().current, "ask is current");
+        assert!(!picker.items.iter().find(|i| i.id == "auto").unwrap().current);
+
+        // picking a normal mode sends set_mode and drops the picker
+        fn pick(app: &mut App, serve: &mut Serve, id: &str) {
+            let i = app.picker.as_ref().unwrap().items.iter().position(|x| x.id == id).unwrap();
+            app.picker.as_mut().unwrap().sel = i;
+            app.accept_picker(serve);
+        }
+        pick(&mut app, &mut serve, "confirm");
+        assert!(app.picker.is_none());
+        let sent: String = serve.sent.concat();
+        assert!(sent.contains("\"set_mode\"") && sent.contains("\"confirm\""), "{sent}");
+
+        // picking full access opens the acknowledgement, nothing sent yet
+        serve.sent.clear();
+        app.run_slash("/mode", &mut serve);
+        pick(&mut app, &mut serve, "auto");
+        assert!(app.full_access == Some(false), "dialog open, unchecked");
+        assert!(!serve.sent.concat().contains("set_mode"), "nothing sent yet");
+
+        // Enter without the checkbox is refused
+        app.key(KeyCode::Enter.into(), &mut serve);
+        assert!(app.full_access.is_some());
+        assert!(!serve.sent.concat().contains("set_mode"));
+
+        // space checks the box, Enter enables
+        app.key(KeyCode::Char(' ').into(), &mut serve);
+        assert_eq!(app.full_access, Some(true));
+        app.key(KeyCode::Enter.into(), &mut serve);
+        assert!(app.full_access.is_none());
+        let sent: String = serve.sent.concat();
+        assert!(sent.contains("\"set_mode\"") && sent.contains("\"auto\""), "{sent}");
+
+        // typed /mode auto goes through the same acknowledgement
+        serve.sent.clear();
+        app.run_slash("/mode auto", &mut serve);
+        assert!(app.full_access == Some(false));
+        assert!(!serve.sent.concat().contains("set_mode"));
+        app.key(KeyCode::Esc.into(), &mut serve);
+        assert!(app.full_access.is_none(), "esc cancels");
+
+        // picking plan turns plan on
+        app.run_slash("/mode", &mut serve);
+        pick(&mut app, &mut serve, "plan");
+        assert!(serve.sent.concat().contains("set_plan"));
     }
 
     #[test]
