@@ -1621,6 +1621,9 @@ pub struct App {
     session_name: String,
     /// the status-bar sess span's rect — clicking copies the full id
     session_id_area: Rect,
+    /// the model name (+ provider) in the input block's info row: a click opens
+    /// the model picker
+    model_area: Rect,
     /// user-message style: true = right-positioned bubble (default),
     /// false = Claude Code style (same theme, left, full-width bg) — /bubble
     user_bubble: bool,
@@ -1763,6 +1766,7 @@ impl App {
             serve_branch: String::new(),
             session_name: String::new(),
             session_id_area: Rect::default(),
+            model_area: Rect::default(),
             user_bubble: true,
             animations: true,
             ascii: false,
@@ -5483,6 +5487,12 @@ impl App {
                                     }
                                     Err(e) => self.push(format!("复制失败：{e}"), Tone::Error),
                                 }
+                                return false;
+                            }
+                            // clicking the model in the input info row opens the model
+                            // picker, the current model preselected
+                            if self.model_area.width > 0 && self.model_area.contains(pos) {
+                                self.run_slash("/model", serve);
                                 return false;
                             }
                             // a click on an input-box image chip opens the image
@@ -9656,11 +9666,26 @@ impl App {
                 height: visible as u16,
             },
         );
+        let info = self.input_info_line(text_w as usize);
+        let info_y = block.y + block.height.saturating_sub(1);
+        // the model part (everything after "mode · ") is a click target
+        self.model_area = Rect::default();
+        if !self.model.is_empty() {
+            let skip = usize::from(!self.mode_label().is_empty()) * 2;
+            let before: usize = info.spans.iter().take(skip).map(|s| display_width(&s.content)).sum();
+            let model_w: usize = info.spans.iter().skip(skip).map(|s| display_width(&s.content)).sum();
+            self.model_area = Rect {
+                x: INPUT_X + before as u16,
+                y: info_y,
+                width: (model_w as u16).min(text_w.saturating_sub(before as u16)),
+                height: 1,
+            };
+        }
         f.render_widget(
-            Paragraph::new(self.input_info_line(text_w as usize)),
+            Paragraph::new(info),
             Rect {
                 x: INPUT_X,
-                y: block.y + block.height.saturating_sub(1),
+                y: info_y,
                 width: text_w,
                 height: 1,
             },
@@ -13153,6 +13178,48 @@ mod tests {
             app.toast.as_ref().is_some_and(|(t, _)| t.contains("已复制会话 id") && t.contains("a1b2c3d4e5f67890")),
             "click confirms the copy"
         );
+    }
+
+    #[test]
+    fn clicking_the_model_in_the_info_row_opens_the_model_picker_on_the_current_model() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.mode = "auto".into();
+        app.model = "apikeyfan/claude-opus-5-5".into();
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        let area = app.model_area;
+        let b = terminal.backend().buffer();
+        let under: String = (area.x..area.x + area.width).map(|x| b[(x, area.y)].symbol()).collect();
+        assert_eq!(under, "claude-opus-5-5 apikeyfan", "the target covers exactly the model");
+        let click = |app: &mut App, serve: &mut Serve, x: u16| {
+            app.handle(
+                Event::Mouse(crossterm::event::MouseEvent {
+                    kind: crossterm::event::MouseEventKind::Down(MouseButton::Left),
+                    column: x,
+                    row: area.y,
+                    modifiers: KeyModifiers::NONE,
+                }),
+                serve,
+            );
+        };
+        // the mode label beside it is not the model
+        click(&mut app, &mut serve, area.x - 3);
+        assert!(serve.sent.iter().all(|s| !s.contains("\"models\"")));
+        click(&mut app, &mut serve, area.x + 3);
+        let sent: Value = serde_json::from_str(serve.sent.last().unwrap()).unwrap();
+        assert_eq!(sent["cmd"], "models");
+        app.frame(
+            json!({"type":"result","id":sent["id"],"ok":true,"data":{"current":"apikeyfan/claude-opus-5-5","models":[
+                {"id":"zhipu-plan/glm-5.4","platform":"zhipu","keyed":true},
+                {"id":"apikeyfan/claude-opus-5-5","platform":"apikeyfan","keyed":true}
+            ]}}),
+            &mut serve,
+        );
+        let p = app.picker.as_ref().expect("model picker opens");
+        assert!(p.kind == PickerKind::Model);
+        assert_eq!(p.items[p.sel].id, "apikeyfan/claude-opus-5-5", "current model is selected");
     }
 
     #[test]
