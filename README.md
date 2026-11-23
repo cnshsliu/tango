@@ -468,7 +468,10 @@ change: `idle` at the input box (including a collapsed `?choice` panel), `workin
 runs, `blocked:kind=permission` while the y/n/a dialog is open, `blocked:kind=question` while a
 `?choice` panel is open, and `clear` while Neovim owns the terminal and on exit. Orca uses this to
 recognize a tango pane and to type `orca orchestration check` mail notes only when tango is at its
-prompt; terminals that don't know the sequence ignore it. Also: mouse wheel scrolling, streaming answers, thinking lines, tool status lines with
+prompt; terminals that don't know the sequence ignore it. A `?choice` block from the model opens a
+pick panel (↑↓/click, Enter, or an option number + Enter); Tab answers in your own words — it fills
+the input with the ask as a lead-in ending in `": "` (关于…，模型在等你选择: …) in the conversation's
+language, and only what you write after it is sent. Also: mouse wheel scrolling, streaming answers, thinking lines, tool status lines with
 durations, a centered permission modal (y/n/a), and an input block: a tinted background (its own
 shade in the light theme) with a left bar colored by risk — plan orange, auto red, readonly gray,
 ask blue (plan wins) — the draft, and an info row `mode · model provider` (e.g.

@@ -211,6 +211,81 @@ fn clip_to_width(s: &str, width: usize) -> String {
 const EXIT_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
 const EXIT_HINT: &str = "再按一次 Ctrl+C 退出";
 
+/// The language a conversation is written in — for the few phrases the TUI itself
+/// writes into it (the choice ask and Tab's lead-in), so they match what the user
+/// and the model are speaking instead of always being Chinese.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum ChatLang {
+    Zh,
+    Ja,
+    Ko,
+    En,
+}
+
+impl ChatLang {
+    const ALL: [ChatLang; 4] = [ChatLang::Zh, ChatLang::Ja, ChatLang::Ko, ChatLang::En];
+
+    /// The language of `text`, or None when it has no letters to tell by.
+    fn of(text: &str) -> Option<ChatLang> {
+        let mut cjk = false;
+        for c in text.chars() {
+            match c {
+                // CJK ideographs (Chinese, or kanji — kana below decide Japanese)
+                '\u{4e00}'..='\u{9fff}' | '\u{3400}'..='\u{4dbf}' | '\u{f900}'..='\u{faff}' => cjk = true,
+                '\u{3040}'..='\u{30ff}' | '\u{31f0}'..='\u{31ff}' | '\u{ff66}'..='\u{ff9d}' => {
+                    return Some(ChatLang::Ja)
+                }
+                '\u{ac00}'..='\u{d7a3}' | '\u{1100}'..='\u{11ff}' => return Some(ChatLang::Ko),
+                c if c.is_alphabetic() && !('\u{3000}'..='\u{303f}').contains(&c) => {
+                    // letters of a non-CJK script (ASCII, Latin with accents, Cyrillic…):
+                    // the TUI's other-language wording, English
+                    if !cjk {
+                        return Some(ChatLang::En);
+                    }
+                }
+                _ => {}
+            }
+        }
+        cjk.then_some(ChatLang::Zh)
+    }
+
+    /// "the model is waiting for your choice"
+    fn waiting(self) -> &'static str {
+        match self {
+            ChatLang::Zh => "模型在等你选择",
+            ChatLang::Ja => "モデルが選択を待っています",
+            ChatLang::Ko => "모델이 선택을 기다리고 있습니다",
+            ChatLang::En => "the model is waiting for your choice",
+        }
+    }
+
+    /// What opens the lead-in that quotes the question: "关于" / "About: ".
+    fn about(self) -> &'static str {
+        match self {
+            ChatLang::Zh => "关于",
+            ChatLang::Ja => "「",
+            ChatLang::Ko => "",
+            ChatLang::En => "About: ",
+        }
+    }
+
+    /// What follows the quoted question, before the waiting phrase.
+    fn about_sep(self) -> &'static str {
+        match self {
+            ChatLang::Zh => "，",
+            ChatLang::Ja => "」、",
+            ChatLang::Ko => "에 대해 ",
+            ChatLang::En => " ",
+        }
+    }
+}
+
+impl Default for ChatLang {
+    fn default() -> Self {
+        ChatLang::Zh
+    }
+}
+
 struct ChatLine {
     text: String,
     tone: Tone,
@@ -2817,6 +2892,78 @@ impl App {
     /// Lightweight markdown commit: fences become indented gray blocks (markers stripped),
     /// headings turn bold, ** and ` markers vanish, `|` tables are re-flowed into aligned
     /// columns. No inline spans — one style per line.
+    /// The language the conversation is written in, from the newest user prompt
+    /// that has letters: CJK ideographs alone → Chinese, kana → Japanese, hangul →
+    /// Korean, otherwise English. Chat lines the TUI itself wrote (tools, notices,
+    /// recaps) are skipped, and so is the tab lead-in itself (it would otherwise
+    /// pin the language after one press).
+    fn chat_language(&self) -> ChatLang {
+        for line in self.lines.iter().rev() {
+            if line.tone != Tone::User || line.wordmark || line.notice {
+                continue;
+            }
+            let text = line.text.strip_prefix("❯ ").unwrap_or(&line.text);
+            let text = Self::strip_tab_lead(text);
+            if let Some(l) = ChatLang::of(text) {
+                return l;
+            }
+        }
+        ChatLang::default()
+    }
+
+    /// "模型在等你选择" — the panel title and the stand-in question when the model
+    /// wrote nothing before `?choice`.
+    fn waiting_label(lang: ChatLang) -> String {
+        lang.waiting().to_string()
+    }
+
+    /// The choice panel's title, in the conversation's language.
+    fn choice_title(&self) -> String {
+        let label = Self::waiting_label(self.chat_language());
+        if self.ascii {
+            format!("? {label}")
+        } else {
+            format!("❓ {label}")
+        }
+    }
+
+    /// What Tab puts in the input box so the user can write their own answer
+    /// instead of picking an option: the ask as a lead-in that ends in ": ", in the
+    /// conversation's language — `关于要改吗，模型在等你选择: `, `About: ship it now? The
+    /// model is waiting for your choice: `. A closing ? / ？ of the question is
+    /// dropped; a question that is only the stand-in label gets no "关于".
+    fn amend_lead(question: &str, lang: ChatLang) -> String {
+        let q = question.trim();
+        let waiting = lang.waiting();
+        if q == waiting || q.is_empty() {
+            return format!("{waiting}: ");
+        }
+        let q = q.trim_end_matches(['?', '？']).trim_end();
+        format!("{}{q}{}{waiting}: ", lang.about(), lang.about_sep())
+    }
+
+    /// `(answer, true)` when `text` is Tab's lead-in followed by the user's answer:
+    /// the lead-in is `<about>…<waiting>: ` — cut at the FIRST `<waiting>: ` after
+    /// the `<about>` opener, so an answer that repeats the phrase stays whole.
+    fn split_tab_lead(text: &str) -> (&str, bool) {
+        for lang in ChatLang::ALL {
+            let Some(head) = text.strip_prefix(lang.about()) else {
+                continue;
+            };
+            let mark = format!("{}: ", lang.waiting());
+            if let Some(n) = head.find(&mark) {
+                return (&head[n + mark.len()..], true);
+            }
+        }
+        (text, false)
+    }
+
+    /// Undo `amend_lead` for a text that starts with it (so a language guess or a
+    /// resend never reads the lead-in as the user's words).
+    fn strip_tab_lead(text: &str) -> &str {
+        Self::split_tab_lead(text).0
+    }
+
     fn commit_stream(&mut self) {
         if !self.thinking.is_empty() {
             // the whole block is kept; chat_lines shows a collapsed preview until
@@ -2939,7 +3086,8 @@ impl App {
         }
         if !choice_options.is_empty() {
             let question = if last_text.is_empty() {
-                "模型在等你选择".to_string()
+                // no question before ?choice: a label in the conversation's language
+                Self::waiting_label(self.chat_language())
             } else {
                 last_text
             };
@@ -5566,12 +5714,12 @@ impl App {
                 }
                 // tab = amend: the options are suggestions, the user's own words win
                 KeyCode::Tab => {
-                    let question = self
+                    let lead = self
                         .choices
                         .as_ref()
-                        .map(|c| c.question.clone())
+                        .map(|c| Self::amend_lead(&c.question, self.chat_language()))
                         .unwrap_or_default();
-                    self.input = question.chars().collect();
+                    self.input = lead.chars().collect();
                     self.cursor = self.input.len();
                     self.choices_collapsed = true;
                     return;
@@ -6205,6 +6353,17 @@ impl App {
 
     fn send_prompt(&mut self, serve: &mut Serve) {
         let (text, images) = self.take_submission();
+        // Tab's lead-in ("关于…模型在等你选择: ") frames the answer in the box; the
+        // model gets the answer alone — and nothing goes out while it is still empty
+        let (bare, led) = match Self::split_tab_lead(text.trim_start()) {
+            (bare, true) => (bare.trim().to_string(), true),
+            _ => (text.clone(), false),
+        };
+        if led && bare.is_empty() && images.is_empty() {
+            self.toast("请写下你的回答，或直接选一个选项");
+            return;
+        }
+        let text = if led { bare } else { text };
         if text.trim().is_empty() && images.is_empty() {
             return;
         }
@@ -8747,7 +8906,7 @@ impl App {
             let inner = render_dialog(
                 f,
                 pop,
-                if self.ascii { "? 模型在等你选择" } else { "❓ 模型在等你选择" },
+                &self.choice_title(),
                 "↑↓/点击 选择 · enter 确认（或输编号+enter）· tab 改写自答 · esc 收起",
                 self.theme,
             );
@@ -14277,8 +14436,12 @@ mod tests {
         );
         let typed: String = app.input.iter().collect();
         assert_eq!(
-            typed, "要改吗？",
-            "tab preloads the question for a custom answer"
+            typed, "关于要改吗，模型在等你选择: ",
+            "tab preloads the ask as a lead-in ending in \": \" for the user's own answer"
+        );
+        assert_eq!(
+            app.cursor, app.input.len(),
+            "the cursor sits after the lead-in, ready for the answer"
         );
         assert!(
             app.choices_collapsed,
@@ -14288,6 +14451,108 @@ mod tests {
             app.choices.is_some() && app.todos.len() == 1,
             "the ask itself is not answered by amending"
         );
+    }
+
+    #[test]
+    fn tab_lead_in_follows_the_conversations_language() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        // an English conversation: the ask and Tab's lead-in are English too
+        app.push_user("Refactor the parser and add tests");
+        app.stream = "Ship it now?\n?choice\n1. Yes\n2. No".into();
+        app.commit_stream();
+        assert_eq!(
+            app.choices.as_ref().unwrap().question, "Ship it now?",
+            "the model's own question is kept as written"
+        );
+        app.key(
+            crossterm::event::KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
+            &mut serve,
+        );
+        let typed: String = app.input.iter().collect();
+        assert_eq!(typed, "About: Ship it now the model is waiting for your choice: ");
+
+        // no question before ?choice: a stand-in label in the conversation's language
+        let mut app = App::new();
+        app.push_user("Deploy next?");
+        app.stream = "?choice\n1. staging\n2. production".into();
+        app.commit_stream();
+        assert_eq!(
+            app.choices.as_ref().unwrap().question,
+            "the model is waiting for your choice"
+        );
+        assert_eq!(app.choice_title(), "❓ the model is waiting for your choice");
+        app.ascii = true;
+        assert_eq!(app.choice_title(), "? the model is waiting for your choice");
+        let typed = App::amend_lead(&app.choices.as_ref().unwrap().question, app.chat_language());
+        assert_eq!(typed, "the model is waiting for your choice: ");
+
+        // Chinese again once the user writes Chinese
+        let mut app = App::new();
+        app.push_user("开始吧");
+        app.stream = "?choice\n1. 好\n2. 不了".into();
+        app.commit_stream();
+        assert_eq!(app.choice_title(), "❓ 模型在等你选择");
+        assert_eq!(App::amend_lead("模型在等你选择", app.chat_language()), "模型在等你选择: ");
+
+        // no user prompt at all: the default wording
+        let app = App::new();
+        assert_eq!(App::amend_lead("", app.chat_language()), "模型在等你选择: ");
+    }
+
+    #[test]
+    fn a_tab_lead_in_is_not_sent_only_the_answer_is() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.push_user("重构解析器");
+        app.stream = "现在就发吗？\n?choice\n1. 发\n2. 不发".into();
+        app.commit_stream();
+        app.key(KeyCode::Tab.into(), &mut serve);
+        // Enter with the lead-in alone: nothing goes out
+        app.key(KeyCode::Enter.into(), &mut serve);
+        assert!(
+            !serve.sent.iter().any(|m| m.contains("\"cmd\":\"prompt\"") || m.contains("\"cmd\": \"prompt\"")),
+            "an empty answer is not sent: {:?}",
+            serve.sent
+        );
+        assert!(app.choices.is_some(), "the ask stays open");
+        // with an answer: the model gets the answer alone
+        for c in "可以，发吧".chars() {
+            app.key(KeyCode::Char(c).into(), &mut serve);
+        }
+        let typed: String = app.input.iter().collect();
+        assert_eq!(typed, "关于现在就发吗，模型在等你选择: 可以，发吧");
+        app.key(KeyCode::Enter.into(), &mut serve);
+        let sent: String = serve.sent.concat();
+        assert!(sent.contains("可以，发吧"), "the answer goes out: {sent}");
+        assert!(!sent.contains("模型在等你选择"), "the lead-in stays in the box: {sent}");
+        assert!(!sent.contains("关于现在就发吗"), "the lead-in stays in the box: {sent}");
+        // an answer that repeats the phrase is cut at the first one, not the last
+        assert_eq!(
+            App::split_tab_lead("关于发吗，模型在等你选择: 写一句 模型在等你选择: 当例子"),
+            ("写一句 模型在等你选择: 当例子", true)
+        );
+    }
+
+    #[test]
+    fn chat_language_tells_scripts_apart() {
+        assert_eq!(ChatLang::of("要改吗？"), Some(ChatLang::Zh));
+        assert_eq!(ChatLang::of("Ship it now?"), Some(ChatLang::En));
+        assert_eq!(ChatLang::of("今すぐ出しますか？"), Some(ChatLang::Ja));
+        assert_eq!(ChatLang::of("바로 배포할까요?"), Some(ChatLang::Ko));
+        assert_eq!(ChatLang::of("déploiement bientôt ?"), Some(ChatLang::En));
+        assert_eq!(ChatLang::of("Czy wdrożyć?"), Some(ChatLang::En));
+        assert_eq!(ChatLang::of("3"), None, "no letters to tell by");
+        assert_eq!(ChatLang::of("❯ 2"), None);
+        // the TUI's own lead-in does not pin the language: it is stripped first
+        let mut app = App::new();
+        app.push_user("Refactor the parser");
+        app.push_user("About: Ship it now the model is waiting for your choice: looks good");
+        assert_eq!(app.chat_language(), ChatLang::En);
+        let mut app = App::new();
+        app.push_user("重构解析器");
+        app.push_user("关于现在就发吗，模型在等你选择: 可以");
+        assert_eq!(app.chat_language(), ChatLang::Zh);
     }
 
     #[test]

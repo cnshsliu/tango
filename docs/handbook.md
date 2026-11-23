@@ -42,6 +42,7 @@ git diff | tango "review this patch"
 | Ask about a file by its path | Paste or drag the full path (`/Users/me/notes.md`, `~/x.md`, quoted or with `\ ` escapes), alone or followed by your question. It goes to the model as `文件：<path>` plus your text; a bare path asks the model to read and understand the file. It is never taken for a slash command; a path that doesn't exist says so |
 | Attach an image | Paste it; terminals paste a temp file path, which becomes a `[图片 #N]` chip |
 | Run a command | Type `/` and Tab-complete, or open the palette with Ctrl+P |
+| Answer a `?choice` panel | ↑↓/click + Enter, or type the option number + Enter. Tab answers in your own words: the input fills with the ask as a lead-in (`关于…，模型在等你选择: `) in the conversation's language — only what you write after it is sent; the panel's title uses the same language. Esc collapses the panel |
 | Search earlier prompts | Ctrl+R |
 | Park a half-written draft | Alt+S (press again to restore) |
 | Edit a draft in Neovim | Ctrl+E, or `/nvim` |
