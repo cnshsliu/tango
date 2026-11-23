@@ -15,6 +15,10 @@ Scenario keys:
     ["sleep", secs]           hold (the video keeps recording)
     ["shot", name]            save the current screen as <name>.png
     ["sh", cmd]               run a shell command in the workspace (not shown)
+  cover                   shot name shown for the first 0.6 s of the video, so X's default
+                          thumbnail (frame 1) is a real screen (default: the last shot)
+    ["mark", "start"]         the video starts here (default: when the first keystroke lands,
+                              so the splash screen is not the cover frame)
 Everything runs in a throwaway dir: TANGO_HOME and the workspace are temp copies.
 """
 import json, os, re, shutil, subprocess, sys, tempfile, threading, time
@@ -50,12 +54,12 @@ def workspace(sc, tmp):
     home = tmp / "home"
     home.mkdir()
     (home / "models.json").write_text(json.dumps([{
-        "id": "anthropic/claude-opus-5-5", "provider": "anthropic", "model": "demo",
+        "id": "demo/scripted", "provider": "demo", "model": "scripted",
         "api": "openai-completions", "baseUrl": f"http://127.0.0.1:{PORT}/v1", "apiKey": "demo-key",
-        "contextWindow": 200000, "maxTokens": 8192, "cost": {"input": 5, "output": 25},
+        "contextWindow": 200000, "maxTokens": 8192, "cost": {"input": 0, "output": 0},
     }]))
-    (home / "config.json").write_text(json.dumps({"model": "anthropic/claude-opus-5-5", **sc.get("config", {})}))
-    work = tmp / "demo-ledger"
+    (home / "config.json").write_text(json.dumps({"model": "demo/scripted", **sc.get("config", {})}))
+    work = tmp / "demo-ledger"  # tmp is also $HOME, so the TUI shows ~/demo-ledger
     shutil.copytree(LEDGER, work, ignore=shutil.ignore_patterns("target", "*.db"))
     subprocess.run(["cargo", "build", "-q", "--release"], cwd=LEDGER, check=True)
     bindir = tmp / "bin"
@@ -77,6 +81,7 @@ class Video(threading.Thread):
         self.stop = threading.Event()
         self.log = []  # (png path, start time)
         self.last = None
+        self.cut = None  # video cut-in time
 
     def run(self):
         while not self.stop.is_set():
@@ -92,9 +97,14 @@ class Video(threading.Thread):
                 print("frame:", e, file=sys.stderr)
             time.sleep(max(0, 1 / FPS - (time.time() - t)))
 
-    def encode(self, mp4, end):
+    def encode(self, mp4, end, cover=None):
         lst = self.frames / "list.txt"
         rows = []
+        if self.cut:
+            k = max([i for i, (_, t) in enumerate(self.log) if t <= self.cut] or [0])
+            self.log = [(self.log[k][0], self.cut)] + [x for x in self.log if x[1] > self.cut]
+        if cover:
+            rows.append(f"file '{cover}'\nduration 0.6")
         for i, (p, t) in enumerate(self.log):
             nxt = self.log[i + 1][1] if i + 1 < len(self.log) else end
             rows.append(f"file '{p}'\nduration {max(nxt - t, 0.04):.3f}")
@@ -110,6 +120,8 @@ def play(tape, work, out, video):
     for step in tape:
         op, *a = step
         if op == "type":
+            if video.cut is None:
+                video.cut = time.time()
             for ch in a[0]:
                 tmux("send-keys", "-t", "demo", "-l", ch)
                 time.sleep(0.045 if ch.isascii() else 0.09)
@@ -131,6 +143,8 @@ def play(tape, work, out, video):
             video.r.render(screen(), cursor(), video.title).save(out / f"{a[0]}.png")
             (out / f"{a[0]}.txt").write_text(screen(ansi=False))
             print("shot", a[0])
+        elif op == "mark":
+            video.cut = time.time()
         elif op == "sh":
             subprocess.run(a[0], shell=True, cwd=work, check=True)
         else:
@@ -146,7 +160,7 @@ def main():
     out = Path(args[args.index("--out") + 1]).resolve() if "--out" in args else HERE / "out" / sc_path.stem
     out.mkdir(parents=True, exist_ok=True)
     cols, rows = sc.get("cols", 100), sc.get("rows", 30)
-    tmp = Path(tempfile.mkdtemp(prefix="tango-studio-"))
+    tmp = Path(tempfile.mkdtemp(prefix="tango-studio-")).resolve()  # /var → /private/var, so ~ matches
     home, work, bindir = workspace(sc, tmp)
     for cmd in sc.get("setup", []):
         subprocess.run(cmd, shell=True, cwd=work, check=True, env={**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}"})
@@ -155,7 +169,7 @@ def main():
     mock = subprocess.Popen(["node", str(HERE / "mock-model.mjs"), str(turns), str(PORT)],
                             env={**os.environ, "MOCK_LOG": str(out / "mock.log")}, stdout=subprocess.DEVNULL)
     time.sleep(0.6)
-    env = (f"cd {work} && env TANGO_HOME={home} PATH={bindir}:$PATH COLORTERM=truecolor "
+    env = (f"cd {work} && env HOME={tmp} TANGO_HOME={home} CARGO_HOME={os.environ.get('CARGO_HOME', Path.home() / '.cargo')} RUSTUP_HOME={os.environ.get('RUSTUP_HOME', Path.home() / '.rustup')} PATH={bindir}:$PATH COLORTERM=truecolor "
            f"TERM=xterm-256color LANG=en_US.UTF-8 {TUI} {sc.get('flags', '')}")
     tmux("kill-server", check=False)
     tmux("-f", "/dev/null", "new-session", "-d", "-s", "demo", "-x", str(cols), "-y", str(rows), env)
@@ -177,7 +191,9 @@ def main():
         # anything a demo started from the temp bin dir (e.g. a background server) goes too
         subprocess.run(["pkill", "-f", str(bindir)], check=False)
     if video.log:
-        video.encode(out / "demo.mp4", end)
+        shots = [st[1] for st in sc["tape"] if st[0] == "shot"]
+        cover = sc.get("cover") or (shots[-1] if shots else None)
+        video.encode(out / "demo.mp4", end, out / f"{cover}.png" if cover else None)
         print("video", out / "demo.mp4", f"{end - video.log[0][1]:.1f}s", len(video.log), "frames")
     shutil.rmtree(frames)
     shutil.rmtree(tmp, ignore_errors=True)

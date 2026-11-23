@@ -33,10 +33,14 @@ The system Python's Pillow is blocked by macOS code signing, so use the Homebrew
 
 Everything in a recording is real except the model: the release `tango-tui`, its tools, and the
 `ledger` binary. Each run uses a temp `TANGO_HOME` and a temp copy of `demo-ledger` outside this
-repo, so your `~/.tango` and the repo's project hooks stay out of it. The model id shown is
-`anthropic/claude-opus-5-5`, served by `mock-model.mjs` on port 7690. Rebuild `tui/` before
+repo, so your `~/.tango` and the repo's project hooks stay out of it. The status bar shows the
+model as `demo/scripted` (served by `mock-model.mjs` on port 7690), so nobody mistakes the
+footage for a real model's output. Rebuild `tui/` before
 recording so the footage shows the current UI.
 
-Tape ops: `type`, `key` (tmux key names), `wait` (regex on the screen), `sleep`, `shot`, `sh`.
+Tape ops: `type`, `key` (tmux key names), `wait` (regex on the screen), `sleep`, `shot`, `sh`,
+`mark` (video cut-in; default is the first keystroke). The video opens with a 0.6 s still of
+`cover` (default: the last shot) so X's thumbnail is a real screen, not the splash. A model step
+with `"afterSupplement": true` plays once an Alt+Enter supplement has reached the turn.
 `config` in a scenario is merged into the demo `config.json` (e.g. `nvimViewer: "internal"` so
 Ctrl+O opens the built-in viewer rather than the Neovim picker).
