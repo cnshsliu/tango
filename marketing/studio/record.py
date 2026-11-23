@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Record a Tango demo: real tango-tui in tmux, scripted model, frames → PNG shots + MP4.
 
-    .venv/bin/python record.py scenarios/<name>.json [--out ../posts/<dir>/media]
+    .venv/bin/python record.py scenarios/<name>.json [--out DIR] [--cols N --rows N --tag NAME]
+
+--cols/--rows override the terminal size (e.g. 56x60 for a portrait 视频号 / 小红书 cut);
+--tag names the output dir out/<scenario>-<tag>/.
 
 Scenario keys:
   cols, rows, title       terminal size and window title
@@ -157,9 +160,11 @@ def main():
         raise SystemExit(__doc__)
     sc_path = Path(args[0]).resolve()
     sc = json.loads(sc_path.read_text())
-    out = Path(args[args.index("--out") + 1]).resolve() if "--out" in args else HERE / "out" / sc_path.stem
+    opt = lambda k, d=None: args[args.index(k) + 1] if k in args else d
+    tag = opt("--tag")  # e.g. "portrait" → out/<scenario>-portrait/
+    out = Path(opt("--out")).resolve() if opt("--out") else HERE / "out" / (sc_path.stem + (f"-{tag}" if tag else ""))
     out.mkdir(parents=True, exist_ok=True)
-    cols, rows = sc.get("cols", 100), sc.get("rows", 30)
+    cols, rows = int(opt("--cols", sc.get("cols", 100))), int(opt("--rows", sc.get("rows", 30)))
     tmp = Path(tempfile.mkdtemp(prefix="tango-studio-")).resolve()  # /var → /private/var, so ~ matches
     home, work, bindir = workspace(sc, tmp)
     for cmd in sc.get("setup", []):
