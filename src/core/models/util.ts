@@ -1,4 +1,17 @@
 import type { ModelSpec } from '../types.js';
+import { readFileSync } from 'node:fs';
+
+/** What tango calls itself over HTTP. Gateways capacity-split by user agent
+ * (Zhipu's anthropic endpoint 529s generic `node`/`python-requests` agents on
+ * newly launched models while `tango/…` goes through), and a real name is
+ * kinder to logs than an unconfigured runtime default. */
+const TANGO_UA = (() => {
+  try {
+    return `tango/${JSON.parse(readFileSync(new URL('../../../package.json', import.meta.url), 'utf8')).version}`;
+  } catch {
+    return 'tango';
+  }
+})();
 
 /** An apiKey written in UPPER_SNAKE (letters, digits, underscores) names an environment variable. */
 const ENV_NAME = /^[A-Z_][A-Z0-9_]*$/;
@@ -96,7 +109,7 @@ export async function postJson(
     try {
       res = await fetch(url, {
         method: 'POST',
-        headers: { 'content-type': 'application/json', ...headers },
+        headers: { 'content-type': 'application/json', 'user-agent': TANGO_UA, ...headers },
         body: JSON.stringify(body),
         signal
       });
