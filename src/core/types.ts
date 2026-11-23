@@ -193,6 +193,10 @@ export interface TangoEvents {
   before_prompt: { text: string };
   /** the model is about to finish; a veto keeps it going with reason as the next user note (Stop hooks) */
   before_stop: { message: Message; continued: boolean };
+  /** before a compaction (manual = /compact, auto = context threshold); a veto skips it (PreCompact hooks) */
+  before_compact: { trigger: 'manual' | 'auto' };
+  /** a compaction finished; summary is what replaced the older messages (PostCompact hooks) */
+  after_compact: { trigger: 'manual' | 'auto'; summary: string };
   /** the prompt turn ended (stop, abort or error); per-turn machinery closes out */
   prompt_end: Record<string, never>;
   /** may mutate req before it is sent */

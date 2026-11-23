@@ -76,6 +76,10 @@ export class Agent {
   systemSuffix?: string;
   /** mid-turn supplements (Alt+Enter): appended as user messages before the next model call */
   private supplements: { text: string; images?: ImageBlock[] }[] = [];
+  /** hook additionalContext: appended as user notes before the next model call */
+  private hookContext: string[] = [];
+  /** a hook's continue: false — the turn ends at the next safe point with this reason */
+  private hookStop?: string;
   private readonly maxTurns: number;
   /** config `retries`; a model's own `retries` wins, undefined means the default (3) */
   retries?: number;
@@ -112,8 +116,22 @@ export class Agent {
     }
   }
 
+  /** Hook additionalContext: the model sees it before its next request (this turn or the next). */
+  addContext(text: string): void {
+    if (text.trim()) this.hookContext.push(text.trim());
+  }
+
+  /** A hook said continue: false: end the running turn after the current step. */
+  requestStop(reason: string): void {
+    if (this.controller) this.hookStop ??= reason;
+  }
+
   /** flush pending supplements into the session as user messages */
   private async flushSupplements(): Promise<void> {
+    while (this.hookContext.length) {
+      const text = this.hookContext.shift()!;
+      await this.store.appendMessage({ role: 'user', content: [{ type: 'text', text: `[hook context] ${text}` }] });
+    }
     while (this.supplements.length) {
       const s = this.supplements.shift()!;
       await this.store.appendMessage({
@@ -149,11 +167,14 @@ export class Agent {
     await this.events.emit('prompt_start', { text });
 
     this.controller = new AbortController();
+    this.hookStop = undefined;
     let continued = 0; // times a Stop hook sent the model back this prompt (capped)
     try {
       for (let turn = 0; turn < this.maxTurns; turn++) {
         await this.flushSupplements();
         await this.compactIfNeeded();
+        // a hook during auto-compaction said continue: false
+        if (this.hookStop !== undefined) return await this.hookStopped(this.hookStop);
 
         const req = await this.request();
         await this.events.emit('before_request', { req, model: this.model });
@@ -193,6 +214,7 @@ export class Agent {
         if (this.controller.signal.aborted) {
           return { role: 'assistant', content: [], stopReason: 'aborted' };
         }
+        if (this.hookStop !== undefined) return await this.hookStopped(this.hookStop);
       }
       throw new Error(
         `单轮工具循环已达上限 ${this.maxTurns} 次（防失控保险丝）。进度已保存：发一句"继续"可接着做；` +
@@ -210,6 +232,14 @@ export class Agent {
       await this.events.emit('prompt_end', {});
       this.controller = undefined;
     }
+  }
+
+  /** End the turn for a hook's continue: false; the reason is the visible last word. */
+  private async hookStopped(reason: string): Promise<Message> {
+    const msg: Message = { role: 'assistant', content: [{ type: 'text', text: `[hook] ${reason}` }], stopReason: 'stop' };
+    await this.store.appendMessage(msg);
+    await this.events.emit('message', { message: msg });
+    return msg;
   }
 
   /** Ask a side question with the current context, without tools or session writes. */
@@ -256,9 +286,11 @@ export class Agent {
    * A previous summary is updated incrementally instead of re-summarized from scratch.
    * The kept tail starts at a user message, so no tool_result is cut from its tool_call.
    */
-  async compact(): Promise<boolean> {
+  async compact(trigger: 'manual' | 'auto' = 'manual'): Promise<boolean> {
     const messages = this.store.messages();
     if (messages.length < 4) return false;
+    const veto = await this.events.emit('before_compact', { trigger });
+    if (veto && veto.block) return false;
     const hasPrev = messages[0]?.role === 'user' && textOf(messages[0]).startsWith(SUMMARY_OPEN);
     const body = hasPrev ? messages.slice(1) : messages;
     // small windows keep less, or the kept tail alone would re-trigger auto-compaction
@@ -308,6 +340,7 @@ export class Agent {
     }
     if (!summary.trim()) return false;
     await this.store.compact(summary.trim(), keep);
+    await this.events.emit('after_compact', { trigger, summary: summary.trim() });
     return true;
   }
 
@@ -370,7 +403,7 @@ export class Agent {
   private async compactIfNeeded(): Promise<void> {
     if (this.compactAt <= 0) return;
     const window = this.model.contextWindow ?? 128_000;
-    if (this.estimateTokens() >= window * this.compactAt) await this.compact();
+    if (this.estimateTokens() >= window * this.compactAt) await this.compact('auto');
   }
 
   /**

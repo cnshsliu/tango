@@ -11,7 +11,7 @@ import { checkpointEnabled, installCheckpoints } from './core/checkpoint.js';
 import { keyProblem, loadModels, pickModel, sessionsDir, tangoDir } from './core/config.js';
 import { installDiagnostics } from './core/diagnostics.js';
 import { EventBus } from './core/events.js';
-import { mergeHookConfigs, runHooks, type HookConfig } from './core/hooks.js';
+import { mergeHookConfigs, runHooks, type HookConfig, type HookOutcome } from './core/hooks.js';
 import { resolveConfig, type Resolved } from './core/project-config.js';
 import { worktreeRoot } from './core/worktrees.js';
 import { installPermissionGate, parseRule, type AllowRule, type AskFn, type PermissionMode } from './core/permissions.js';
@@ -105,15 +105,37 @@ export function loadPluginHooks(): {
   return { plugins, hooks, lifecycle };
 }
 
-/** Wire PreToolUse / PostToolUse / UserPromptSubmit / Stop hooks onto the event bus. */
-function installLifecycleHooks(events: EventBus, hooks: HookConfig, ctx: { cwd: () => string; sessionId: () => string; projectDir?: string }): void {
+/**
+ * Wire the lifecycle hooks onto the event bus. Besides exit 2, a hook's stdout JSON can block
+ * (decision "block"), add context for the model (additionalContext) or end the turn
+ * (continue: false); `ctx.addContext` / `ctx.stop` carry the last two to the agent.
+ */
+function installLifecycleHooks(
+  events: EventBus,
+  hooks: HookConfig,
+  ctx: { cwd: () => string; sessionId: () => string; projectDir?: string; resumed: () => boolean; addContext: (t: string) => void; stop: (reason: string) => void }
+): void {
   const base = () => ({ session_id: ctx.sessionId(), cwd: ctx.cwd() });
   const run = (ev: keyof HookConfig, payload: Record<string, unknown>, tool?: string) =>
     runHooks(hooks, ev, { ...base(), ...payload }, { cwd: ctx.cwd(), tool, projectDir: ctx.projectDir ?? ctx.cwd() });
+  const later = (r: HookOutcome) => r.context?.forEach(ctx.addContext);
+  if (hooks.SessionStart) {
+    // once per opened session, just before its first prompt; its context rides that prompt
+    let fired = false;
+    events.on('before_prompt', async () => {
+      if (fired) return;
+      fired = true;
+      const r = await run('SessionStart', { source: ctx.resumed() ? 'resume' : 'startup' });
+      if (r.block) process.stderr.write(`[hook SessionStart] ${r.block}\n`.slice(0, 500));
+      later(r);
+    });
+  }
   if (hooks.PreToolUse) {
     events.on('before_tool', async ({ call, tool }) => {
       const r = await run('PreToolUse', { tool_name: tool.name, tool_input: call.input }, tool.name);
-      if (r.block) return { block: true, reason: `PreToolUse hook: ${r.block}` };
+      later(r);
+      if (r.stop) ctx.stop(r.stop);
+      if (r.block ?? r.stop) return { block: true, reason: `PreToolUse hook: ${r.block ?? r.stop}` };
     });
   }
   if (hooks.PostToolUse) {
@@ -122,19 +144,40 @@ function installLifecycleHooks(events: EventBus, hooks: HookConfig, ctx: { cwd: 
       const r = await run('PostToolUse', { tool_name: call.name, tool_input: call.input, tool_response: { text, is_error: !!result.isError } }, call.name);
       // exit 2 after the fact: the tool already ran, so the hook's word goes to the model
       if (r.block) result.content.push({ type: 'text', text: `\n[PostToolUse hook] ${r.block}` });
+      for (const c of r.context ?? []) result.content.push({ type: 'text', text: `\n[PostToolUse hook context] ${c}` });
+      if (r.stop) ctx.stop(r.stop);
     });
   }
   if (hooks.UserPromptSubmit) {
     events.on('before_prompt', async ({ text }) => {
       const r = await run('UserPromptSubmit', { prompt: text });
-      if (r.block) return { block: true, reason: r.block };
+      if (r.block ?? r.stop) return { block: true, reason: (r.block ?? r.stop)! };
+      later(r);
     });
   }
   if (hooks.Stop) {
     events.on('before_stop', async ({ message, continued }) => {
       const last = message.content.map((b) => (b.type === 'text' ? b.text : '')).join('');
       const r = await run('Stop', { stop_hook_active: continued, last_assistant_message: last.slice(0, 20_000) });
+      // continue: false wins: the model is finishing anyway, so nothing sends it back
+      if (r.block && !r.stop) return { block: true, reason: r.block };
+      later(r);
+    });
+  }
+  if (hooks.PreCompact) {
+    events.on('before_compact', async ({ trigger }) => {
+      const r = await run('PreCompact', { trigger }, trigger);
+      later(r);
+      if (r.stop) ctx.stop(r.stop);
       if (r.block) return { block: true, reason: r.block };
+    });
+  }
+  if (hooks.PostCompact) {
+    events.on('after_compact', async ({ trigger, summary }) => {
+      const r = await run('PostCompact', { trigger, summary: summary.slice(0, 20_000) }, trigger);
+      if (r.block) process.stderr.write(`[hook PostCompact] ${r.block}\n`.slice(0, 500));
+      later(r);
+      if (r.stop) ctx.stop(r.stop);
     });
   }
 }
@@ -157,13 +200,18 @@ export function makeAgent(model: ModelSpec, store: SessionStore, cwd: string, pe
     ? Math.floor(cfg.maxTurns as number)
     : undefined;
   const retries = Number.isFinite(cfg.retries) ? Math.max(0, Math.min(10, Math.floor(cfg.retries as number))) : undefined;
+  // decided at assembly: the first prompt's user message is already stored when SessionStart runs
+  const resumed = store.messageCount() > 0;
   const agent = new Agent({ store, tools: buildTools(), model, cwd, events, maxTurns, retries });
   const plugins = loadPluginHooks();
   // lifecycle hooks before the gate: a policy hook can refuse a call before anyone is asked
   installLifecycleHooks(events, mergeHookConfigs([cfg.hooks, ...plugins.lifecycle]), {
     cwd: () => agent.cwd,
     projectDir: cfg.projectDir,
-    sessionId: () => store.id
+    sessionId: () => store.id,
+    resumed: () => resumed,
+    addContext: (t) => agent.addContext(t),
+    stop: (reason) => agent.requestStop(reason)
   });
   installPermissionGate(events, {
     mode: () => perm.mode,

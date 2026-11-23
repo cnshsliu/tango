@@ -291,6 +291,13 @@ The script reads the event as JSON on stdin. Exiting with 2 refuses a tool call
 prompt (`UserPromptSubmit`), or sends the model back to work instead of finishing (`Stop`).
 Whatever the script prints to stderr is the reason the model sees. A `Stop` hook gets
 `"stop_hook_active": true` once it has already sent the model back, so it can let it finish. tango stops honoring it after 3 sends per prompt.
+
+Three more events: `SessionStart` runs once before a session's first prompt, `PreCompact` runs
+before a compaction (exit 2 skips it) and `PostCompact` after one. Instead of an exit code, a
+script can print JSON on stdout: `{"additionalContext": "…"}` hands the model extra text,
+`{"decision": "block", "reason": "…"}` works like exit 2, and `{"continue": false, "stopReason": "…"}`
+ends the turn. For example, a `SessionStart` hook that prints
+`{"additionalContext": "this repo uses pnpm"}` saves you saying it every session.
 Details and payload fields: README, "Hooks".
 
 ### Project config

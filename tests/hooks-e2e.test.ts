@@ -367,3 +367,197 @@ test('legacy beforeTool/afterTool keys still notify and never block', async () =
     await t.done();
   }
 });
+
+// ---------- stdout JSON ----------
+
+const json = (o: object) => hook('json-out.sh', JSON.stringify(o));
+
+test('PreToolUse: stdout {"decision":"block"} refuses the call like exit 2, with its reason', async () => {
+  const t = await setup(
+    { PreToolUse: [{ matcher: 'bash', command: json({ decision: 'block', reason: 'json says no' }) }] },
+    [toolCall('c1', 'bash', { command: 'touch ran.txt' })]
+  );
+  try {
+    await t.agent.prompt('go');
+    assert.ok(!existsSync(join(t.work, 'ran.txt')));
+    assert.match(seen(t.model.requests), /blocked: PreToolUse hook: json says no/);
+  } finally {
+    await t.done();
+  }
+});
+
+test('PreToolUse: additionalContext reaches the model on its next request; approve lets the call run', async () => {
+  const t = await setup(
+    { PreToolUse: [{ command: json({ decision: 'approve', additionalContext: 'remember: tabs not spaces' }) }] },
+    [toolCall('c1', 'bash', { command: 'touch ran.txt' })]
+  );
+  try {
+    await t.agent.prompt('go');
+    assert.ok(existsSync(join(t.work, 'ran.txt')));
+    assert.doesNotMatch(JSON.stringify(t.model.requests[0].messages), /tabs not spaces/);
+    assert.match(JSON.stringify(t.model.requests[1].messages), /\[hook context\] remember: tabs not spaces/);
+  } finally {
+    await t.done();
+  }
+});
+
+test('PostToolUse: additionalContext rides along with the tool result', async () => {
+  const t = await setup(
+    { PostToolUse: [{ command: json({ additionalContext: 'formatted by prettier' }) }] },
+    [toolCall('c1', 'bash', { command: 'echo hi' })]
+  );
+  try {
+    await t.agent.prompt('go');
+    const toolMsg = t.model.requests[1].messages.find((m: any) => m.role === 'tool');
+    assert.match(toolMsg.content, /\[PostToolUse hook context\] formatted by prettier/);
+  } finally {
+    await t.done();
+  }
+});
+
+test('PostToolUse: {"continue":false} ends the turn after the tool, stopReason is the last word', async () => {
+  const t = await setup(
+    { PostToolUse: [{ command: json({ continue: false, stopReason: 'budget reached' }) }] },
+    [toolCall('c1', 'bash', { command: 'touch ran.txt' }), toolCall('c2', 'bash', { command: 'touch second.txt' })]
+  );
+  try {
+    const msg = await t.agent.prompt('go');
+    assert.ok(existsSync(join(t.work, 'ran.txt')), 'the tool itself ran');
+    assert.equal(t.model.requests.length, 1, 'no further model request');
+    assert.ok(!existsSync(join(t.work, 'second.txt')));
+    assert.match(JSON.stringify(msg.content), /\[hook\] budget reached/);
+  } finally {
+    await t.done();
+  }
+});
+
+test('UserPromptSubmit: additionalContext is added before the first request; decision block rejects', async () => {
+  const t = await setup({ UserPromptSubmit: [{ command: json({ additionalContext: 'today is Monday' }) }] }, [say('ok')]);
+  try {
+    await t.agent.prompt('what day?');
+    assert.match(JSON.stringify(t.model.requests[0].messages), /\[hook context\] today is Monday/);
+  } finally {
+    await t.done();
+  }
+  const b = await setup({ UserPromptSubmit: [{ command: json({ decision: 'block', reason: 'no prompts today' }) }] }, []);
+  try {
+    await assert.rejects(b.agent.prompt('hi'), /prompt blocked by hook: no prompts today/);
+    assert.equal(b.model.requests.length, 0);
+  } finally {
+    await b.done();
+  }
+});
+
+test('Stop: {"decision":"block"} sends the model back like exit 2', async () => {
+  const t = await setup({ Stop: [{ command: json({ decision: 'block', reason: 'run the tests first' }) }] }, [say('done'), say('tests ran')]);
+  try {
+    await t.agent.prompt('go');
+    assert.match(seen(t.model.requests), /\[Stop hook\] run the tests first/);
+  } finally {
+    await t.done();
+  }
+});
+
+// ---------- SessionStart ----------
+
+test('SessionStart: payload says startup, runs once per session before the first prompt', async () => {
+  const t = await setup({ SessionStart: [{ command: hook('record.sh', 'hook-log.jsonl') }] }, [say('a'), say('b')]);
+  try {
+    await t.agent.prompt('one');
+    await t.agent.prompt('two');
+    const evs = await logged(t.log);
+    assert.equal(evs.length, 1, 'once, not per prompt');
+    assert.equal(evs[0].hook_event_name, 'SessionStart');
+    assert.equal(evs[0].source, 'startup');
+    assert.equal(evs[0].session_id, t.store.id);
+  } finally {
+    await t.done();
+  }
+});
+
+test('SessionStart: exit 2 cannot block a session (only warns); additionalContext reaches the first request', async () => {
+  const t = await setup(
+    { SessionStart: [{ command: hook('always-no.sh', 'start') }, { command: json({ additionalContext: 'project uses pnpm' }) }] },
+    [say('ok')]
+  );
+  try {
+    await t.agent.prompt('hi');
+    assert.equal(t.model.requests.length, 1, 'the prompt still went out');
+    assert.doesNotMatch(seen(t.model.requests), /always-no start/);
+  } finally {
+    await t.done();
+  }
+  const c = await setup({ SessionStart: [{ command: json({ additionalContext: 'project uses pnpm' }) }] }, [say('ok')]);
+  try {
+    await c.agent.prompt('hi');
+    assert.match(JSON.stringify(c.model.requests[0].messages), /\[hook context\] project uses pnpm/);
+  } finally {
+    await c.done();
+  }
+});
+
+// ---------- PreCompact / PostCompact ----------
+
+/** Two short turns (4 messages), so there is something to compact; reply 3 is the summary. */
+async function twoTurns(t: Awaited<ReturnType<typeof setup>>) {
+  await t.agent.prompt('first');
+  await t.agent.prompt('second');
+}
+
+test('PreCompact: exit 2 skips the compaction, nothing is summarized', async () => {
+  const t = await setup({ PreCompact: [{ command: hook('always-no.sh', 'compact') }] }, [say('a'), say('b'), say('SUMMARY')]);
+  try {
+    await twoTurns(t);
+    assert.equal(await t.agent.compact(), false);
+    assert.equal(t.model.requests.length, 2, 'no summary request');
+  } finally {
+    await t.done();
+  }
+});
+
+test('PreCompact: payload carries the trigger; the matcher selects manual or auto', async () => {
+  const t = await setup(
+    { PreCompact: [{ matcher: 'manual', command: hook('record.sh', 'hook-log.jsonl') }, { matcher: 'auto', command: hook('always-no.sh', 'auto') }] },
+    [say('a'), say('b'), say('SUMMARY')]
+  );
+  try {
+    await twoTurns(t);
+    assert.equal(await t.agent.compact(), true, 'the auto-only blocker did not run');
+    const [ev] = await logged(t.log);
+    assert.equal(ev.hook_event_name, 'PreCompact');
+    assert.equal(ev.trigger, 'manual');
+    assert.equal(ev.session_id, t.store.id);
+  } finally {
+    await t.done();
+  }
+});
+
+test('PostCompact: payload carries the trigger and the new summary', async () => {
+  const t = await setup({ PostCompact: [{ command: hook('record.sh', 'hook-log.jsonl') }] }, [say('a'), say('b'), say('SUMMARY TEXT')]);
+  try {
+    await twoTurns(t);
+    assert.equal(await t.agent.compact(), true);
+    const [ev] = await logged(t.log);
+    assert.equal(ev.hook_event_name, 'PostCompact');
+    assert.equal(ev.trigger, 'manual');
+    assert.equal(ev.summary, 'SUMMARY TEXT');
+  } finally {
+    await t.done();
+  }
+});
+
+test('PostCompact: exit 2 cannot undo the compaction (only warns); additionalContext goes to the next request', async () => {
+  const t = await setup(
+    // context collected before the chain stops still counts
+    { PostCompact: [{ command: json({ additionalContext: 're-read AGENTS.md' }) }, { command: hook('always-no.sh', 'post') }] },
+    [say('a'), say('b'), say('SUMMARY'), say('c')]
+  );
+  try {
+    await twoTurns(t);
+    assert.equal(await t.agent.compact(), true, 'already compacted, exit 2 does not change that');
+    await t.agent.prompt('third');
+    assert.match(JSON.stringify(t.model.requests[3].messages), /\[hook context\] re-read AGENTS\.md/);
+  } finally {
+    await t.done();
+  }
+});

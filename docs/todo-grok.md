@@ -22,7 +22,7 @@
 - [x] **3. 压缩（compact）升级**
   - grok：保留最近约 2 万 token 原文，只总结更早的部分。总结用固定格式（Goal / Constraints / Progress / Key Decisions / Next Steps / Critical Context）。再次压缩时在旧总结上增量更新。送去总结的工具结果截到 2000 字符。单个回合太大时，把这一回合的前半段单独总结。见 `src/agent/compaction.ts`。
   - tango：`Agent.compact()` 把全部消息压成一段总结，最近的原文也不保留，总结输出上限 1200 token（`src/core/agent.ts:230`）。
-- [ ] **4. Hooks 第二期：stdout JSON 和更多事件**
+- [x] **4. Hooks 第二期：stdout JSON 和更多事件**（已完成：stdout JSON 的 `decision` / `additionalContext` / `continue`，新增 `SessionStart`、`PreCompact`、`PostCompact`。其余事件依赖还没有的功能，如子 agent、任务，等那些做完再加）
   - grok：hook 可在 stdout 输出 JSON：`decision: approve|block`、`additionalContext`（追加给模型看的上下文）、`continue: false`。共 17 种事件，我们还缺 `PostToolUseFailure`、`SessionStart`、`SessionEnd`、`StopFailure`、`SubagentStart`、`SubagentStop`、`TaskCreated`、`TaskCompleted`、`PreCompact`、`PostCompact`、`Notification`、`InstructionsLoaded`、`CwdChanged`。见 `src/hooks/types.ts:150`、`src/hooks/executor.ts:165`。
   - tango：只认退出码和 stderr，只有 4 种事件。按 hook-guard 的规则，每加一个事件都要补 e2e 测试。
 - [x] **5. 无界面运行的 JSON 事件流和轮数上限**

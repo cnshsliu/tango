@@ -179,7 +179,7 @@ isolation), MCP server→client capabilities (sampling/roots), plugin marketplac
 
 ## Hooks
 
-Shell commands at four points of a turn, configured under `hooks` in `~/.tango/config.json`
+Shell commands at seven points of a session, configured under `hooks` in `~/.tango/config.json`
 or a trusted project's `.tango/config.json` (see "Project config and trust"; Claude Code's format;
 global hooks run first, then project, then personal, then plugin hooks):
 
@@ -188,14 +188,20 @@ global hooks run first, then project, then personal, then plugin hooks):
   "PreToolUse":       [{ "matcher": "bash", "command": "./guard.sh", "timeout": 10 }],
   "PostToolUse":      [{ "matcher": "edit|write", "command": "npm run -s lint" }],
   "UserPromptSubmit": [{ "command": "./no-secrets.sh" }],
-  "Stop":             [{ "command": "./tests-green.sh" }]
+  "Stop":             [{ "command": "./tests-green.sh" }],
+  "SessionStart":     [{ "command": "./project-notes.sh" }],
+  "PreCompact":       [{ "matcher": "auto", "command": "./save-transcript.sh" }],
+  "PostCompact":      [{ "command": "./log-summary.sh" }]
 } }
 ```
 
 Each command runs as `sh -c` in the session's cwd with the event JSON on stdin (`hook_event_name`,
-`session_id`, `cwd`, plus `tool_name` / `tool_input` / `tool_response`, `prompt`, or
-`stop_hook_active` / `last_assistant_message`). `matcher` is an anchored regex over the tool name;
-missing or `*` matches every tool. The nested `{matcher, hooks: [{type: "command", command}]}`
+`session_id`, `cwd`, plus `tool_name` / `tool_input` / `tool_response`, `prompt`,
+`stop_hook_active` / `last_assistant_message`, `source` (`startup` or `resume`) for SessionStart,
+or `trigger` (`manual` = `/compact`, `auto` = the context threshold) and, after compaction, `summary`).
+`matcher` is an anchored regex over the tool name, or over `trigger` for PreCompact / PostCompact;
+missing or `*` matches everything. SessionStart runs once per opened session, just before its
+first prompt. The nested `{matcher, hooks: [{type: "command", command}]}`
 form works too. `timeout` is in seconds (default 10) and a timed-out hook is killed.
 
 Exit 0 means go on. Exit 2 acts on the event, with stderr as the reason:
@@ -206,8 +212,20 @@ Exit 0 means go on. Exit 2 acts on the event, with stderr as the reason:
 | `PostToolUse` | the tool already ran; the reason is appended to its result for the model |
 | `UserPromptSubmit` | the prompt is rejected before it is saved or sent |
 | `Stop` | the model keeps going with the reason as a note; `stop_hook_active` is true on the next stop, so a hook can let it finish; at most 3 times per prompt |
+| `SessionStart` | nothing: a session cannot be refused; the reason is a warning on stderr |
+| `PreCompact` | the compaction is skipped (`/compact` reports nothing compacted) |
+| `PostCompact` | nothing: the compaction already happened; the reason is a warning on stderr |
 
-Any other exit code warns on stderr and never blocks. The older `beforeTool` / `afterTool` string
+Any other exit code warns on stderr and never blocks. The first block stops the chain of hooks
+for that event.
+
+On exit 0 a hook can print one JSON object on stdout (other output is ignored):
+
+| Field | Effect |
+| --- | --- |
+| `"decision": "block"`, `"reason"` | same as exit 2 with `reason` as stderr; `"approve"` is accepted and changes nothing |
+| `"additionalContext": "…"` | text for the model: PostToolUse appends it to the tool result, every other event adds it as a `[hook context]` note before the next model request |
+| `"continue": false`, `"stopReason"` | ends the turn after the current step; the turn's last message is `[hook] <stopReason>` (from UserPromptSubmit it rejects the prompt, from PreToolUse it also refuses the call; from Stop it lets the model finish) | The older `beforeTool` / `afterTool` string
 keys still work as before (notify only, never block).
 
 ## Lean by design (token plans)

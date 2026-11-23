@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { hookMatches, mergeHookConfigs, parseHookEntries, runHooks } from '../src/core/hooks.js';
+import { hookMatches, mergeHookConfigs, parseHookEntries, parseHookJson, runHooks } from '../src/core/hooks.js';
 
 test('hook entries: flat and nested (Claude Code) forms, junk skipped', () => {
   const cmds = parseHookEntries([
@@ -62,4 +62,14 @@ test('runHooks: stdin payload, exit 2 blocks with stderr, other exits only warn'
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test('parseHookJson: only a JSON object counts; unknown or mistyped fields are dropped', () => {
+  assert.deepEqual(parseHookJson(''), {});
+  assert.deepEqual(parseHookJson('all good\n'), {});
+  assert.deepEqual(parseHookJson('{not json'), {});
+  assert.deepEqual(parseHookJson('[1,2]'), {});
+  assert.deepEqual(parseHookJson(' {"decision":"block","reason":"r","extra":1}\n'), { decision: 'block', reason: 'r' });
+  assert.deepEqual(parseHookJson('{"decision":"maybe","continue":"no","additionalContext":"  "}'), {});
+  assert.deepEqual(parseHookJson('{"continue":false,"stopReason":"s","additionalContext":"c"}'), { continue: false, stopReason: 's', additionalContext: 'c' });
 });
