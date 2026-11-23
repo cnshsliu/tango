@@ -2884,7 +2884,7 @@ impl App {
                 })
             });
         if let Some((title, text, index, state)) = found {
-            self.request_viewer(Viewer::with_source(title, text, index, state));
+            self.viewer = Some(Viewer::with_source(title, text, index, state));
         }
     }
 
@@ -2935,8 +2935,10 @@ impl App {
                 .map(|output| (Self::viewer_title(line), output, line.prompt_state))
         });
         match found {
+            // a chat line's output is for a quick look (and maybe a copy): always the
+            // built-in dialog, never Neovim — ctrl+e still hands it to nvim on demand
             Some((title, text, state)) => {
-                self.request_viewer(Viewer::with_source(title, text, index, state));
+                self.viewer = Some(Viewer::with_source(title, text, index, state));
                 true
             }
             None => false,
@@ -2949,7 +2951,7 @@ impl App {
                 .map(|output| (Self::viewer_title(line), output, line.prompt_state))
         });
         if let Some((title, text, state)) = found {
-            self.request_viewer(Viewer::with_source(title, text, index, state));
+            self.viewer = Some(Viewer::with_source(title, text, index, state));
         }
     }
 
@@ -5878,11 +5880,14 @@ impl App {
                 }
                 return;
             }
-            if !ctrl && k.code == KeyCode::Char('c') {
+            if !ctrl && matches!(k.code, KeyCode::Char('y') | KeyCode::Char('c')) {
                 let text = self.viewer.as_ref().unwrap().text.clone();
                 let result = self.copy_to_clipboard(&text);
                 match result {
-                    Ok(()) => self.toast("已复制查看器全文"),
+                    Ok(()) => {
+                        let n = text.chars().count();
+                        self.toast(format!("已复制 {n} 个字符到剪贴板"));
+                    }
                     Err(error) => self.push(format!("复制失败：{error}"), Tone::Error),
                 }
                 return;
@@ -9911,8 +9916,8 @@ impl App {
         }
 
         if let Some(viewer) = self.viewer.as_mut() {
-            let w = (area.width * 9 / 10).max(20).min(area.width);
-            let h = (area.height * 9 / 10).max(8).min(area.height);
+            let w = (area.width * 8 / 10).max(20).min(area.width);
+            let h = (area.height * 8 / 10).max(8).min(area.height);
             let pop = Rect {
                 x: (area.width.saturating_sub(w)) / 2,
                 y: (area.height.saturating_sub(h)) / 2,
@@ -9921,9 +9926,9 @@ impl App {
             };
             let title = viewer.title.clone();
             let hint = if viewer.transcript {
-                "/ 搜索 · n/N 匹配 · {/} prompt · c 复制 · q 关闭"
+                "/ 搜索 · n/N 匹配 · {/} prompt · y 复制 · esc 关闭"
             } else {
-                "c 复制 · esc 关闭 · ctrl+e 编辑(nvim) · ↑↓/滚轮滚动"
+                "y 复制 · esc 关闭 · ↑↓/滚轮滚动 · ctrl+e 用 nvim 打开"
             };
             let inner = render_dialog(f, pop, &title, hint, self.theme);
             let inner_width = inner.width.max(1) as usize;
@@ -10788,7 +10793,16 @@ mod tests {
         app.nvim = Some(Some(Neovim {
             executable: "nvim".into(),
         }));
+        // a chat line's output (ctrl+o / double-click) is a quick look: the built-in
+        // dialog even with nvim around and nvimViewer=readonly — no picker, no nvim
+        app.nvim_preference = "readonly".into();
         app.open_latest_viewer();
+        assert!(app.picker.is_none() && app.pending_viewer.is_none());
+        assert_eq!(app.viewer.as_ref().unwrap().text, "x".repeat(1000));
+        app.viewer = None;
+        // other views (session preview …) still ask once
+        app.nvim_preference = "ask".into();
+        app.request_viewer(Viewer::read_only("会话预览", "p"));
         assert_eq!(
             app.picker.as_ref().map(|p| p.kind),
             Some(PickerKind::NvimBackend)

@@ -509,12 +509,14 @@ under 20 rows or 30 columns.
 A custom `/statusline` template can still place `{work}` in the status bar. A prompt that starts with an existing file or directory path is sent as `文件：<path>` (or `目录：`) plus the rest of the text, or a request to read it when nothing follows; known slash commands still win. The input is multi-line with Tab-completed `/` commands (also while a turn runs) and arguments (`/mode`, `/effort`, `/model`, `/send`, `/resume`: Tab inserts the first match, each further Tab the next one, Shift+Tab goes back, zsh-style) and `@file` inlining (contents ride along in the
 prompt, 6KB cap), fences render as indented gray blocks, and long pasted prompts collapse to a
 short summary (over 600 chars or 8 lines). Ctrl+O opens the latest full prompt/tool output in an
-independent scrollable viewer; double-clicking a specific summary/tool line opens that item. Closing the
-viewer restores the original chat position. All overlays use the shared `tui/src/dialog.rs` frame:
+independent scrollable viewer; double-clicking a specific summary/tool line opens that item. That viewer
+is always the built-in dialog (80% of the screen, ↑↓/PgUp/PgDn/wheel scroll, `y` copies the whole text to
+the clipboard, Esc closes), never Neovim, whatever `nvimViewer` says; Ctrl+E inside it still hands the
+item to Neovim. Closing the viewer restores the original chat position. All overlays use the shared `tui/src/dialog.rs` frame:
 rounded complete borders, a themed surface and title background, bottom key hints, and content
 confined to the inner rectangle. Focus is viewer → permission → picker → completion → chat; modal
 scrolling never leaks into the chat, pickers support wheel/click, and Esc closes the focused layer.
-Opening full content checks `nvim` and `vim` with `--version`; only an actual `NVIM` is used,
+Other full-content views (session previews and the like) check `nvim` and `vim` with `--version`; only an actual `NVIM` is used,
 never standard Vim. On first detection, choose one-time read-only, persistent read-only
 (`nvimViewer: "readonly"`), edit, or the internal viewer — picking the internal viewer persists it
 (`nvimViewer: "internal"`, no external editor at all), and that mode is the way back from
