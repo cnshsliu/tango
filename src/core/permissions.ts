@@ -38,9 +38,26 @@ const RISKY_BASH: [RegExp, string][] = [
 ];
 
 /** Drop heredoc payloads from a command: the body is data written to a file,
- * never something the shell executes — risk rules must not scan it. */
+ * never something the shell executes — risk rules must not scan it. The body runs
+ * from the line after `<<WORD` to a line that is exactly WORD (tabs allowed for <<-),
+ * wherever that is: commands may follow it. An unterminated body runs to the end. */
 export function stripHeredocs(cmd: string): string {
-  return cmd.replace(/<<-?['"]?(\w+)['"]?\n[\s\S]*?\n?\1\s*$/gm, "<<$1");
+  const lines = cmd.split('\n');
+  const out: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    out.push(line);
+    // every <<WORD / <<'WORD' / <<-"WORD" on this line opens a body, in order
+    // (<<< is a here-string: no body)
+    const words = [...line.matchAll(/(?<!<)<<(?!<)(-?)\s*(['"]?)([\w.-]+)\2/g)].map((m) => ({ dash: m[1] === '-', word: m[3] }));
+    for (const { dash, word } of words) {
+      while (i + 1 < lines.length) {
+        const body = lines[++i];
+        if ((dash ? body.replace(/^\t+/, '') : body) === word) break;
+      }
+    }
+  }
+  return out.join('\n');
 }
 
 export function inside(cwd: string, path: string): boolean {
@@ -89,7 +106,8 @@ export function ruleMatches(rule: AllowRule, call: ToolCallBlock, cwd: string): 
   }
   // bash: the rule covers the leading command tokens before ; && || |
   if (call.name !== 'bash') return false;
-  const first = String(input.command ?? '').split(/[;|&]/)[0].trim();
+  // same segmentation as the tail re-check: quotes respected, newlines separate
+  const first = bashSegments(String(input.command ?? ''))[0] ?? '';
   const prefix = rule.value;
   return first === prefix || first.startsWith(prefix + ' ');
 }
@@ -104,16 +122,29 @@ const SUBCOMMAND_TOOLS = new Set([
 /** The rule for one bash command segment: the command word plus its subcommand for
  * known multi-word tools (`git branch -D x` → `bash:git branch`; `rm -rf /tmp` → `bash:rm`).
  * Leading `NAME=value` assignments are skipped (`F="a.docx" && python3 …` is python3). */
+/** Shell grammar words: they lead a segment but name no command (`do echo x` runs echo). */
+const SHELL_KEYWORDS = new Set([
+  'for', 'in', 'do', 'done', 'while', 'until', 'if', 'then', 'else', 'elif', 'fi',
+  'case', 'esac', 'select', 'function', 'time', '!', '{', '}', '(', ')', '((', '))', '[[', ']]'
+]);
+
 function bashSegmentRule(seg: string): string | null {
-  const toks = seg.split(/\s+/);
+  // "(cd x" / "{ ls" / "done)": grouping punctuation glued to a word is not part of it
+  const toks = seg.replace(/^[({]+/, '').replace(/[)}]+$/, '').split(/\s+/).filter(Boolean);
   let cmd: string | undefined;
-  for (const t of toks) {
+  for (let j = 0; j < toks.length; j++) {
+    const t = toks[j];
     const name = t.split('=')[0];
     if (t.includes('=') && name && /^\w+$/.test(name)) continue;
+    // `for x in a b` / `case $x in`: the whole header is grammar, no command in it
+    if (t === 'for' || t === 'select' || t === 'case') return null;
+    if (SHELL_KEYWORDS.has(t) || /^[)}]+$/.test(t)) continue;
     cmd = t;
     break;
   }
   if (!cmd) return null;
+  // a word that cannot be a command name (quote fragments, code): nothing to remember
+  if (!/^[\w./~+-][\w./~+@:-]*$/.test(cmd)) return null;
   const i = toks.indexOf(cmd);
   const sub = SUBCOMMAND_TOOLS.has(cmd) && /^\w[\w.-]*$/.test(toks[i + 1] ?? '') ? ` ${toks[i + 1]}` : '';
   return `bash:${cmd}${sub}`;
@@ -131,7 +162,7 @@ export function suggestRules(call: ToolCallBlock): string[] {
   const input = (call.input ?? {}) as Record<string, unknown>;
   if (name === 'bash') {
     const out: string[] = [];
-    for (const seg of bashSegments(stripHeredocs(String(input.command ?? '')))) {
+    for (const seg of bashSegments(String(input.command ?? ''))) {
       const r = bashSegmentRule(seg);
       if (r && !out.includes(r)) out.push(r);
     }
@@ -151,12 +182,29 @@ export function suggestRule(call: ToolCallBlock): string | null {
   return suggestRules(call)[0] ?? null;
 }
 
-/** Segment a bash command into its ; && || | parts (first tokens), for tail re-checks. */
+/** Segment a bash command into its ; && || | and newline parts, for tail re-checks.
+ * Separators inside '…', "…", `…` or after a backslash are text, not separators
+ * (`grep "a|b; c" f` is one segment). Heredoc bodies are dropped first. */
 function bashSegments(command: string): string[] {
-  return command
-    .split(/[;|&]+/)
-    .map((s) => s.trim())
-    .filter(Boolean);
+  const cmd = stripHeredocs(command);
+  const out: string[] = [];
+  let cur = '';
+  let quote: string | null = null;
+  for (let i = 0; i < cmd.length; i++) {
+    const c = cmd[i];
+    if (quote) {
+      if (c === '\\' && quote !== "'" && i + 1 < cmd.length) { cur += c + cmd[++i]; continue; }
+      if (c === quote) quote = null;
+      cur += c;
+      continue;
+    }
+    if (c === '\\' && i + 1 < cmd.length) { cur += c + cmd[++i]; continue; }
+    if (c === "'" || c === '"' || c === '`') { quote = c; cur += c; continue; }
+    if (c === ';' || c === '|' || c === '&' || c === '\n') { out.push(cur); cur = ''; continue; }
+    cur += c;
+  }
+  out.push(cur);
+  return out.map((s) => s.trim()).filter(Boolean);
 }
 
 export function decide(mode: PermissionMode, call: ToolCallBlock, cwd: string, rules?: AllowRule[], extraDirs?: string[]): Decision {

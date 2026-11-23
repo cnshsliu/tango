@@ -237,8 +237,11 @@ allows the call (it no longer flips the session to auto mode). A command line wi
 `; && || |` segments gets one rule per segment: `osascript … && rm -f x` saves `bash:osascript`
 and `bash:rm`, because a rule for the first command alone leaves the risky tail uncovered and the
 same line would ask again every time. The dialog's hint names what `a` remembers
-(`a 始终允许（记住 osascript · rm）`) before you press it; `NAME=value` assignments and heredoc
-bodies are not commands. Since `bash:rm` then allows any `rm`, prefer `y` for one-offs.
+(`a 始终允许（记住 osascript · rm）`) before you press it. Lines split segments too, and `;`, `|`
+or `&` inside quotes do not; `NAME=value` assignments, shell keywords (`for … do … done`,
+`if … then … fi`, `{ … }`) and heredoc bodies (up to their terminator line, even when commands
+follow it) are not commands, so a script written with `cat > f <<'EOF'` never turns its code into
+rules. Since `bash:rm` then allows any `rm`, prefer `y` for one-offs.
 `/import claude-code|grok|codex` maps another agent's allowed-tools into these rules and
 reports every entry it could not represent (codex reads trusted `command = "…"` entries from
 `~/.codex/config.toml`, loose TOML scan, `path:` override for testing). Bash rules cover only

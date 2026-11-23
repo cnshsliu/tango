@@ -14,7 +14,7 @@ const cwd = '/work/proj';
 test('heredoc payloads are data, not commands — risk rules skip them', async () => {
   const { stripHeredocs } = await import('../src/core/permissions.js');
   const heredoc = "cat >> docs/handbook.md <<'EOF'\nsome text mentioning rm -rf / and sudo stuff\nEOF";
-  assert.equal(stripHeredocs(heredoc), "cat >> docs/handbook.md <<EOF");
+  assert.equal(stripHeredocs(heredoc), "cat >> docs/handbook.md <<'EOF'");
   // an append whose body merely mentions risky words passes without asking…
   assert.equal(decide('ask', call('bash', { command: heredoc }), cwd).action, 'allow');
   // …while the same words as actual commands still ask
@@ -205,7 +205,9 @@ test('"always allow" saves a rule per segment, so a command with a risky tail is
   const { suggestRules, suggestRule, decide, parseRule } = await import('../src/core/permissions.js');
   const bash = (command: string) => ({ type: 'tool_call' as const, id: 'x', name: 'bash', input: { command } });
   // the shape from the field: harmless prefix, then cd / an assignment / python3 / rm
-  const cmd = `osascript -e 'tell application "Microsoft Word" to close document' "协议.docx" saving no'; cd /tmp/ctr && F="/Volumes/WD/协议.docx" && python3 - <<'EOF'\np='/tmp/ctr/t/word/document.xml'\nEOF && rm -f ../out8.docx && echo done`;
+  // (the field command had an unbalanced quote and `EOF && rm …` on the terminator line, which
+  // bash itself would not end the heredoc on; the shape here is the well-formed equivalent)
+  const cmd = `osascript -e 'tell application "Microsoft Word" to close document "协议.docx" saving no'; cd /tmp/ctr && F="/Volumes/WD/协议.docx" && python3 - <<'EOF'\np='/tmp/ctr/t/word/document.xml'\nEOF\nrm -f ../out8.docx && echo done`;
   const call = bash(cmd);
   assert.deepEqual(suggestRules(call), ['bash:osascript', 'bash:cd', 'bash:python3', 'bash:rm', 'bash:echo']);
   const rules = suggestRules(call).map((r) => parseRule(r)).filter((r): r is Extract<typeof r, { ok: true }> => r.ok).map((r) => r.rule);
@@ -251,4 +253,28 @@ test('writes under ~/.tango/worktrees never ask; other outside writes still do',
     await rm(home, { recursive: true, force: true });
     await rm(work, { recursive: true, force: true });
   }
+});
+
+test('"always allow" never saves code, quote fragments or shell keywords as rules', async () => {
+  const { suggestRules, stripHeredocs, decide } = await import('../src/core/permissions.js');
+  const bash = (command: string) => ({ type: 'tool_call' as const, id: 'x', name: 'bash', input: { command } });
+  // the field case: a JS heredoc with commands AFTER the terminator
+  const js = `cat > /tmp/a.mjs <<'EOF'\nconst o = [];\nconsole.log(await page.evaluate(async () => { for (const oid of [1]) { o.push(oid); } return [].filter(r => r).join("|"); }));\nEOF\nego-browser nodejs < /tmp/a.mjs\ncd ~/p && git add -A && git commit -qm "bili: x; record urls" && git push -q`;
+  assert.deepEqual(suggestRules(bash(js)), ['bash:cat', 'bash:ego-browser', 'bash:cd', 'bash:git add', 'bash:git commit', 'bash:git push']);
+  assert.equal(stripHeredocs(js).includes('console.log'), false, 'body dropped though commands follow it');
+  // <<- with tab-indented terminator, two heredocs on one line, here-strings untouched
+  assert.equal(stripHeredocs('cat <<-X\n\trm -rf /\n\tX\nls'), 'cat <<-X\nls');
+  assert.equal(stripHeredocs("diff <(cat <<A\na\nA\n) <(cat <<B\nb\nB\n)"), 'diff <(cat <<A\n) <(cat <<B\n)');
+  assert.equal(stripHeredocs('cat <<< "x"; rm y'), 'cat <<< "x"; rm y');
+  // separators inside quotes are text
+  assert.deepEqual(suggestRules(bash(`grep -n "a|b; c" f && sed 's/a;b/c/' g | note "x && y"`)), ['bash:grep', 'bash:sed', 'bash:note']);
+  // loops and conditionals: the commands inside, not the grammar
+  assert.deepEqual(suggestRules(bash('for n in 1 2; do echo $n; done')), ['bash:echo']);
+  assert.deepEqual(suggestRules(bash('if test -f x; then cat x; else ls; fi')), ['bash:test', 'bash:cat', 'bash:ls']);
+  assert.deepEqual(suggestRules(bash('(cd /x && make) && { ls; }')), ['bash:cd', 'bash:make', 'bash:ls']);
+  // a risky command on a later LINE (not just after ;) is still caught past an allowed prefix
+  const r = decide('ask', bash('ls\nrm -rf ~/x'), '/w', [{ kind: 'bash', value: 'ls' }]);
+  assert.equal(r.action, 'ask');
+  // a heredoc body with rm in it is data, not a risky tail
+  assert.deepEqual(decide('ask', bash("cat > n.md <<'EOF'\nthen rm -rf it\nEOF"), '/w', [{ kind: 'bash', value: 'cat' }]), { action: 'allow' });
 });

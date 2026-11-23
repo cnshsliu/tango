@@ -238,7 +238,9 @@ Switch at any time with `/mode <mode>` — bare `/mode` opens a picker listing a
 dialog saves persistent allow rules for that call and allows it — `bash:git branch` for
 `git branch -D x`, the written file's directory for an outside write, `tool:<name>` otherwise —
 so the same thing never asks again, in this session or the next. A command line with several
-parts (`osascript … && rm -f x`) saves one rule per command, so the line is covered as a whole;
+parts (`osascript … && rm -f x`) saves one rule per command, so the line is covered as a whole.
+Only real commands count: text inside quotes, loop and `if` keywords, and the body of a
+`cat > f <<'EOF'` heredoc are skipped;
 the hint under the dialog says what will be remembered (`a 始终允许（记住 osascript · rm）`).
 That also allows each of those commands anywhere, so for a one-off answer `y`. `/permissions`
 lists and removes the rules it created.
