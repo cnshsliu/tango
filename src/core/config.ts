@@ -42,6 +42,8 @@ export interface Config {
   autocompact?: number | 'off';
   /** Max model round-trips per prompt (runaway tool-loop fuse). 1-500, default 64. */
   maxTurns?: number;
+  /** Retries for a model request that fails before any output (network error, 429, 5xx). 0-10, default 3. */
+  retries?: number;
   /** Keep provider prompt caches warm between prompts. Off unless set. */
   warming?: boolean | {
     /** seconds between warming requests; "auto" = 240s (no per-model TTL data yet) */

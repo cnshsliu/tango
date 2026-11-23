@@ -28,6 +28,7 @@ import { SessionStore, relativeTime } from './core/session.js';
 import { cancelHandoff, drainHandoffs, listHandoffs, purgeExpiredHandoffs, queueHandoff } from './core/handoff.js';
 import { holdSessionLock, sessionHolder } from './core/session-lock.js';
 import { costUsd, displayPlatform, groupModels } from './core/models/registry.js';
+import { retryText } from './core/models/util.js';
 import type { AskFn, PermissionMode } from './core/permissions.js';
 import type { ToolResult } from './core/types.js';
 import { describeSources, localFile, projectFile, readLayerJson, resolveConfig, setTrust, updateLocalConfig } from './core/project-config.js';
@@ -231,6 +232,7 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
     })
   );
   agent.events.on('error', ({ error }) => out({ type: 'error', message: error.message }));
+  agent.events.on('retry', (info) => out({ type: 'retry', ...info, text: retryText(info) }));
 
   const denyPending = () => {
     for (const resolve of pending.values()) resolve(false);

@@ -120,7 +120,8 @@ export const openaiAdapter: ModelAdapter = {
       `${spec.baseUrl.replace(/\/$/, '')}/chat/completions`,
       { authorization: `Bearer ${resolveApiKey(spec)}` },
       body,
-      req.signal
+      req.signal,
+      { retries: req.retries, onRetry: req.onRetry }
     );
 
     let text = '';

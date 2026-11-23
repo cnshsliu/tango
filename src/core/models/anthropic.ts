@@ -75,7 +75,8 @@ export const anthropicAdapter: ModelAdapter = {
       `${spec.baseUrl.replace(/\/$/, '')}/messages`,
       { 'x-api-key': resolveApiKey(spec), 'anthropic-version': '2023-06-01' },
       body,
-      req.signal
+      req.signal,
+      { retries: req.retries, onRetry: req.onRetry }
     );
 
     const blocks: ContentBlock[] = [];

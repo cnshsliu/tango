@@ -16,7 +16,7 @@ import {
   tangoDir
 } from './core/config.js';
 import { listDrafts, promoteDraft, saveDraft } from './core/skills.js';
-import { keyEnvName } from './core/models/util.js';
+import { keyEnvName, retryText } from './core/models/util.js';
 import { groupModels } from './core/models/registry.js';
 import { SessionStore, type SessionSummary } from './core/session.js';
 import { resolveConfig, updateLocalConfig, type Resolved } from './core/project-config.js';
@@ -209,6 +209,8 @@ function replAgent(model: ModelSpec, store: SessionStore, cwd: string, cfg: Para
   agent.events.on('before_tool', ({ call }) => {
     if (process.stdout.isTTY) process.stdout.write(dim(`⚙ ${call.name} ${toolSummary(call)}\n`));
   });
+  // stderr: a piped stdout stays the model's answer only
+  agent.events.on('retry', (info) => void process.stderr.write(dim(retryText(info) + '\n')));
   return agent;
 }
 
@@ -251,6 +253,8 @@ async function openReplAgent(args: Args): Promise<{ agent: Agent; store: Session
   agent.events.on('before_tool', ({ call }) => {
     if (process.stdout.isTTY) process.stdout.write(dim(`⚙ ${call.name} ${toolSummary(call)}\n`));
   });
+  // stderr: a piped stdout stays the model's answer only
+  agent.events.on('retry', (info) => void process.stderr.write(dim(retryText(info) + '\n')));
   return { agent, store, resolved };
 }
 
