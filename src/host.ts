@@ -139,7 +139,7 @@ function installLifecycleHooks(events: EventBus, hooks: HookConfig, ctx: { cwd: 
   }
 }
 
-export function makeAgent(model: ModelSpec, store: SessionStore, cwd: string, perm: PermState, cfg: { checkpoint?: string; permissions?: { allow: string[] }; extraDirs?: string[]; hooks?: { beforeTool?: string; afterTool?: string } & Record<string, unknown>; maxTurns?: number; projectDir?: string } = {}): Agent {
+export function makeAgent(model: ModelSpec, store: SessionStore, cwd: string, perm: PermState, cfg: { checkpoint?: string; permissions?: { allow: string[] }; extraDirs?: string[]; hooks?: { beforeTool?: string; afterTool?: string } & Record<string, unknown>; maxTurns?: number; retries?: number; projectDir?: string } = {}): Agent {
   const events = new EventBus();
   // gate first: a vetoed call is never announced as running
   const rules = perm.rules ?? { allow: cfg.permissions?.allow ? [...cfg.permissions.allow] : [] };
@@ -156,7 +156,8 @@ export function makeAgent(model: ModelSpec, store: SessionStore, cwd: string, pe
   const maxTurns = Number.isFinite(cfg.maxTurns) && (cfg.maxTurns as number) >= 1 && (cfg.maxTurns as number) <= 500
     ? Math.floor(cfg.maxTurns as number)
     : undefined;
-  const agent = new Agent({ store, tools: buildTools(), model, cwd, events, maxTurns });
+  const retries = Number.isFinite(cfg.retries) ? Math.max(0, Math.min(10, Math.floor(cfg.retries as number))) : undefined;
+  const agent = new Agent({ store, tools: buildTools(), model, cwd, events, maxTurns, retries });
   const plugins = loadPluginHooks();
   // lifecycle hooks before the gate: a policy hook can refuse a call before anyone is asked
   installLifecycleHooks(events, mergeHookConfigs([cfg.hooks, ...plugins.lifecycle]), {

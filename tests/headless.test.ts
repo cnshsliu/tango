@@ -14,13 +14,17 @@ const answer = (text: string) =>
   SSE({ choices: [{ delta: { content: text } }] }) + SSE({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 50, completion_tokens: 6 } }) + 'data: [DONE]\n\n';
 
 /** run `tango <args>` against a scripted mock model; returns parsed stdout lines */
-async function run(script: string[], args: string[]) {
+async function run(script: string[], args: string[], config?: object) {
   let n = 0;
   const server = createServer((req, res) => {
     req.resume();
     req.on('end', () => {
+      const body = script[Math.min(n++, script.length - 1)];
+      // a script entry 'HTTP 503' answers with that status instead of a stream
+      const status = /^HTTP (\d{3})$/.exec(body);
+      if (status) return void res.writeHead(Number(status[1])).end('busy');
       res.writeHead(200, { 'content-type': 'text/event-stream' });
-      res.end(script[Math.min(n++, script.length - 1)]);
+      res.end(body);
     });
   });
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
@@ -29,6 +33,7 @@ async function run(script: string[], args: string[]) {
   await writeFile(join(home, 'models.json'), JSON.stringify([
     { id: 'mock/mock', provider: 'mock', model: 'm', api: 'openai-completions', baseUrl: `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`, apiKey: 'MOCK_KEY', cost: { input: 1, output: 2 } }
   ]));
+  if (config) await writeFile(join(home, 'config.json'), JSON.stringify(config));
   const env: NodeJS.ProcessEnv = { ...process.env, TANGO_HOME: home, MOCK_KEY: 'k' };
   for (const k of ['HTTP_PROXY', 'http_proxy', 'HTTPS_PROXY', 'https_proxy', 'TANGO_MODEL']) delete env[k];
   try {
@@ -100,4 +105,18 @@ test('text mode (default) is unchanged and also honours --max-tool-rounds', asyn
   const capped = await run([toolCall('c1', 'true')], ['--max-tool-rounds', '1', 'loop']);
   assert.equal(capped.requests, 1);
   assert.equal(capped.code, 1);
+});
+
+test('--format json: a failed request is retried with a retry line; config retries caps it', async () => {
+  const ok = await run(['HTTP 503', answer('after retry')], ['--format', 'json', 'hi'], { retries: 1 });
+  assert.equal(ok.code, 0, ok.err);
+  assert.equal(ok.requests, 2);
+  const retry = ok.lines.find((l) => l.type === 'retry');
+  assert.deepEqual({ ...retry, delayMs: undefined }, { type: 'retry', step: 1, attempt: 1, max: 1, reason: 'HTTP 503', delayMs: undefined });
+  assert.ok(ok.lines.some((l) => l.type === 'text' && l.text === 'after retry'));
+
+  const gaveUp = await run(['HTTP 503'], ['--format', 'json', 'hi'], { retries: 1 });
+  assert.equal(gaveUp.code, 1);
+  assert.equal(gaveUp.requests, 2, 'one try plus the configured single retry');
+  assert.match(gaveUp.lines.find((l) => l.type === 'error')?.message ?? '', /HTTP 503[\s\S]*gave up after 1 retry/);
 });

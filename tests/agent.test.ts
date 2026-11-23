@@ -168,7 +168,7 @@ test('HTTP errors and non-JSON stream events surface readable messages', async (
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   const port = (server.address() as AddressInfo).port;
   const { openaiAdapter } = await import('../src/core/models/openai.js');
-  const spec = (path: string) => ({ id: 'fake/m', provider: 'fake', model: 'm', api: 'openai-completions', baseUrl: `http://127.0.0.1:${port}/${path}`, apiKey: 'k' }) as any;
+  const spec = (path: string) => ({ id: 'fake/m', provider: 'fake', model: 'm', api: 'openai-completions', baseUrl: `http://127.0.0.1:${port}/${path}`, apiKey: 'k', retries: 0 }) as any;
   const drain = async (s: any) => {
     for await (const _ of openaiAdapter.stream(s, { system: '', messages: [], tools: [] } as any)) void _;
   };

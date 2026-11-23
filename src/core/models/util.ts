@@ -24,19 +24,75 @@ export function resolveApiKey(spec: ModelSpec): string {
 /** No bytes for this long while streaming means the connection is dead. */
 export const STREAM_IDLE_MS = 180_000;
 
+/** default retries for a model request that fails before any output */
+export const DEFAULT_RETRIES = 3;
+/** retry n waits RETRY_BASE_MS * 2^(n-1), capped at RETRY_MAX_MS (1s, 2s, 4s, 8s, …) */
+export const RETRY_BASE_MS = 1000;
+const RETRY_MAX_MS = 15_000;
+
+/** HTTP statuses worth retrying: rate limits, timeouts and gateway/upstream hiccups */
+const RETRY_STATUS = new Set([408, 409, 425, 429, 500, 502, 503, 504, 529]);
+
+export interface RetryOptions {
+  retries?: number;
+  onRetry?: (info: import('../types.js').RetryInfo) => void;
+  /** test hook: base delay in ms */
+  baseMs?: number;
+}
+
+/** Resolve the retry count: request > model spec > default, clamped to 0-10. */
+export function retryCount(spec: ModelSpec, requested?: number): number {
+  const n = requested ?? spec.retries ?? DEFAULT_RETRIES;
+  return Number.isFinite(n) ? Math.max(0, Math.min(10, Math.floor(n))) : DEFAULT_RETRIES;
+}
+
+/** Sleep that an abort cuts short (rejects with AbortError). */
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+    const t = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(t);
+      reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+/** Retry-After in ms (seconds or an HTTP date), capped; undefined when absent or bad. */
+function retryAfterMs(res: Response): number | undefined {
+  const h = res.headers.get('retry-after');
+  if (!h) return undefined;
+  const secs = Number(h);
+  const ms = Number.isFinite(secs) ? secs * 1000 : Date.parse(h) - Date.now();
+  return Number.isFinite(ms) && ms >= 0 ? Math.min(ms, 60_000) : undefined;
+}
+
 /**
  * POST JSON and return the response. Network failures get the underlying cause
- * (DNS, refused, TLS, proxy) instead of Node's bare "fetch failed".
+ * (DNS, refused, TLS, proxy) instead of Node's bare "fetch failed". A request that
+ * fails before any output (network error, 429, 5xx) is retried up to `retries` times
+ * with exponential backoff; `onRetry` is told before each wait. Auth and other 4xx
+ * errors are not retried. Once the response is returned, streaming is not retried.
  */
 export async function postJson(
   spec: ModelSpec,
   url: string,
   headers: Record<string, string>,
   body: unknown,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  opts: RetryOptions = {}
 ): Promise<Response> {
-  let res: Response;
+  const max = retryCount(spec, opts.retries);
+  const base = opts.baseMs ?? RETRY_BASE_MS;
+  const host = new URL(url).host;
   for (let attempt = 0; ; attempt++) {
+    let res: Response | undefined;
+    let reason: string;
+    let netError: Error | undefined;
     try {
       res = await fetch(url, {
         method: 'POST',
@@ -45,30 +101,39 @@ export async function postJson(
         signal
       });
     } catch (e: any) {
-      if (e?.name === 'AbortError') throw e;
-      throw new Error(`${spec.id}: cannot reach ${new URL(url).host}: ${describeNetError(e)}`);
+      if (e?.name === 'AbortError' || signal?.aborted) throw e;
+      reason = describeNetError(e);
+      netError = new Error(`${spec.id}: cannot reach ${host}: ${reason}`);
     }
-    // gateways answer 502/503/504 for transient upstream hiccups: one quiet retry before giving up
-    if (attempt === 0 && (res.status === 502 || res.status === 503 || res.status === 504) && !signal?.aborted) {
-      await res.body?.cancel().catch(() => {});
-      await new Promise((r) => setTimeout(r, 800));
-      continue;
+    if (res && (res.ok && res.body)) return res;
+    if (res && !RETRY_STATUS.has(res.status)) return fail(spec, url, res, attempt);
+    if (attempt >= max) {
+      if (netError) throw new Error(netError.message + (attempt ? ` (gave up after ${attempt} ${attempt === 1 ? 'retry' : 'retries'})` : ''));
+      return fail(spec, url, res!, attempt);
     }
-    break;
+    reason = res ? `HTTP ${res.status}` : reason!;
+    const wait = (res && retryAfterMs(res)) ?? Math.min(base * 2 ** attempt, RETRY_MAX_MS);
+    await res?.body?.cancel().catch(() => {});
+    opts.onRetry?.({ attempt: attempt + 1, max, reason, delayMs: wait });
+    await sleep(wait, signal);
   }
-  if (!res.ok || !res.body) {
-    const text = (await res.text().catch(() => '')).slice(0, 2000);
-    const env = keyEnvName(spec);
-    const hint =
-      res.status === 401 || res.status === 403
-        ? `\n${new URL(url).host} rejected the key ${env ? `from ${env}` : 'set in apiKey'}. ` +
-          'China and international accounts use different keys; check the key matches this endpoint.'
-        : res.status >= 500
-          ? `\nthe provider failed upstream${[502, 503, 504].includes(res.status) ? ' (retried once)' : ''}. Try again later, or switch with /model.`
+}
+
+async function fail(spec: ModelSpec, url: string, res: Response, retried: number): Promise<never> {
+  const text = (await res.text().catch(() => '')).slice(0, 2000);
+  const env = keyEnvName(spec);
+  const host = new URL(url).host;
+  const after = retried ? ` (gave up after ${retried} ${retried === 1 ? 'retry' : 'retries'})` : '';
+  const hint =
+    res.status === 401 || res.status === 403
+      ? `\n${host} rejected the key ${env ? `from ${env}` : 'set in apiKey'}. ` +
+        'China and international accounts use different keys; check the key matches this endpoint.'
+      : res.status >= 500
+        ? `\nthe provider failed upstream${after}. Try again later, or switch with /model.`
+        : res.status === 429
+          ? `\nrate limited${after}. Wait a moment, or switch with /model.`
           : '';
-    throw new Error(`${spec.id}: HTTP ${res.status} ${text}`.trim() + hint);
-  }
-  return res;
+  throw new Error(`${spec.id}: HTTP ${res.status} ${text}`.trim() + hint);
 }
 
 export function describeNetError(e: any): string {
@@ -143,4 +208,10 @@ export function parseEvent(spec: ModelSpec, data: string): any {
   } catch {
     throw new Error(`${spec.id}: malformed stream event: ${data.slice(0, 200)}`);
   }
+}
+
+/** The line shown to the user before a retry, e.g. "⟳ 请求失败（HTTP 503），2 秒后第 1/3 次重试…". */
+export function retryText(info: import('../types.js').RetryInfo): string {
+  const secs = Math.max(1, Math.round(info.delayMs / 1000));
+  return `⟳ 请求失败（${info.reason}），${secs} 秒后第 ${info.attempt}/${info.max} 次重试…`;
 }

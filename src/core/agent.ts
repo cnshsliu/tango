@@ -9,6 +9,7 @@ import type {
   ImageBlock,
   Message,
   ModelSpec,
+  RetryInfo,
   StreamEvent,
   ToolCallBlock,
   ToolResult,
@@ -22,6 +23,8 @@ export interface AgentOptions {
   cwd: string;
   events?: EventBus;
   maxTurns?: number;
+  /** retries for a model request that fails before any output (config `retries`; default 3) */
+  retries?: number;
   /** compact when the estimated context passes this share of the window (0 disables) */
   compactAt?: number;
 }
@@ -74,6 +77,8 @@ export class Agent {
   /** mid-turn supplements (Alt+Enter): appended as user messages before the next model call */
   private supplements: { text: string; images?: ImageBlock[] }[] = [];
   private readonly maxTurns: number;
+  /** config `retries`; a model's own `retries` wins, undefined means the default (3) */
+  retries?: number;
   /** auto-compact threshold as a share of the context window; 0 disables (/autocompact) */
   compactAt: number;
   private controller?: AbortController;
@@ -85,10 +90,18 @@ export class Agent {
     this.model = opts.model;
     this.events = opts.events ?? new EventBus();
     this.maxTurns = opts.maxTurns ?? 64;
+    this.retries = opts.retries;
     this.compactAt = opts.compactAt ?? 0.75;
   }
 
-  abort(): void {
+  /** Stream one model request; failures before any output are retried and announced as `retry` events. */
+  private streamModel(req: CompletionRequest): AsyncIterable<StreamEvent> {
+    const retries = this.model.retries ?? this.retries;
+    const onRetry = (info: RetryInfo) => void this.events.emit('retry', info);
+    return adapterFor(this.model).stream(this.model, { ...req, retries, onRetry });
+  }
+
+    abort(): void {
     this.controller?.abort();
   }
 
@@ -146,7 +159,7 @@ export class Agent {
         await this.events.emit('before_request', { req, model: this.model });
 
         let message: Message | undefined;
-        for await (const ev of adapterFor(this.model).stream(this.model, req)) {
+        for await (const ev of this.streamModel(req)) {
           onStream?.(ev);
           if (ev.type === 'done') message = ev.message;
         }
@@ -213,7 +226,7 @@ export class Agent {
         signal: this.controller.signal
       };
       let message: Message | undefined;
-      for await (const ev of adapterFor(this.model).stream(this.model, req)) {
+      for await (const ev of this.streamModel(req)) {
         onStream?.(ev);
         if (ev.type === 'done') message = ev.message;
       }
@@ -285,7 +298,7 @@ export class Agent {
       maxTokens: 4000,
       signal: this.controller?.signal
     };
-    for await (const ev of adapterFor(this.model).stream(this.model, req)) {
+    for await (const ev of this.streamModel(req)) {
       if (ev.type === 'done') {
         summary = ev.message.content
           .filter((b) => b.type === 'text')
@@ -376,7 +389,7 @@ export class Agent {
       signal: this.controller?.signal
     };
     let brief = '';
-    for await (const ev of adapterFor(this.model).stream(this.model, req)) {
+    for await (const ev of this.streamModel(req)) {
       if (ev.type === 'done')
         brief = ev.message.content
           .filter((b) => b.type === 'text')

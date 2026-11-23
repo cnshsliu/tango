@@ -83,16 +83,17 @@ test('anthropic usage.input includes cache reads and writes', async () => {
   }
 });
 
-test('postJson retries a gateway 502 once, then reports upstream failure', async () => {
+test('postJson retries 502 with backoff up to `retries`, announcing each retry', async () => {
   const { postJson } = await import('../src/core/models/util.js');
   let hits = 0;
   let failTimes = 1;
+  let status = 502;
   const server = createServer((req, res) => {
     req.resume();
     req.on('end', () => {
       hits++;
       if (hits <= failTimes) {
-        res.writeHead(502, { 'content-type': 'application/json' });
+        res.writeHead(status, { 'content-type': 'application/json' });
         res.end('{"error":{"message":"Stream failed"}}');
       } else {
         res.writeHead(200, { 'content-type': 'text/plain' });
@@ -103,15 +104,64 @@ test('postJson retries a gateway 502 once, then reports upstream failure', async
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
   const spec = { id: 'mock/mock', apiKey: 'X' } as unknown as ModelSpec;
+  const seen: { attempt: number; max: number; reason: string }[] = [];
+  const opts = { baseMs: 1, onRetry: (i: { attempt: number; max: number; reason: string }) => void seen.push(i) };
   try {
-    const res = await postJson(spec, url, {}, {});
+    const res = await postJson(spec, url, {}, {}, undefined, opts);
     assert.equal(res.status, 200);
     assert.equal(hits, 2);
+    assert.deepEqual(seen.map((i) => [i.attempt, i.max, i.reason]), [[1, 3, 'HTTP 502']]);
 
     hits = 0;
-    failTimes = 5;
-    await assert.rejects(postJson(spec, url, {}, {}), /HTTP 502[\s\S]*retried once/);
-    assert.equal(hits, 2);
+    failTimes = 99;
+    seen.length = 0;
+    await assert.rejects(postJson(spec, url, {}, {}, undefined, opts), /HTTP 502[\s\S]*gave up after 3 retries/);
+    assert.equal(hits, 4, 'one try plus 3 retries');
+    assert.deepEqual(seen.map((i) => i.attempt), [1, 2, 3]);
+
+    hits = 0;
+    await assert.rejects(postJson(spec, url, {}, {}, undefined, { ...opts, retries: 0 }), /HTTP 502/);
+    assert.equal(hits, 1, 'retries: 0 turns retrying off');
+
+    hits = 0;
+    await assert.rejects(postJson({ ...spec, retries: 1 }, url, {}, {}, undefined, opts), /gave up after 1 retry\b/);
+    assert.equal(hits, 2, 'a model spec `retries` overrides the default');
+
+    hits = 0;
+    status = 401;
+    await assert.rejects(postJson(spec, url, {}, {}, undefined, opts), /HTTP 401/);
+    assert.equal(hits, 1, 'auth errors are not retried');
+  } finally {
+    server.close();
+  }
+});
+
+test('postJson retries a reset connection, and an abort stops the backoff wait', async () => {
+  const { postJson } = await import('../src/core/models/util.js');
+  let hits = 0;
+  const server = createServer((req) => {
+    hits++;
+    req.socket.destroy(); // ECONNRESET / "other side closed" for the client
+  });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
+  const spec = { id: 'mock/mock', apiKey: 'X' } as unknown as ModelSpec;
+  try {
+    const seen: number[] = [];
+    await assert.rejects(
+      postJson(spec, url, {}, {}, undefined, { retries: 2, baseMs: 1, onRetry: (i) => void seen.push(i.attempt) }),
+      /cannot reach 127\.0\.0\.1:\d+: .*gave up after 2 retries/
+    );
+    assert.equal(hits, 3);
+    assert.deepEqual(seen, [1, 2]);
+
+    hits = 0;
+    const ctl = new AbortController();
+    const t0 = Date.now();
+    const p = postJson(spec, url, {}, {}, ctl.signal, { baseMs: 60_000, onRetry: () => ctl.abort() });
+    await assert.rejects(p, (e: any) => e?.name === 'AbortError');
+    assert.ok(Date.now() - t0 < 5_000, 'abort cuts the backoff short');
+    assert.equal(hits, 1);
   } finally {
     server.close();
   }

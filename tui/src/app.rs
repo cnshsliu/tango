@@ -7638,6 +7638,18 @@ impl App {
                     }
                 }
             }
+            // a model request failed before any output; serve retries it with backoff
+            "retry" => {
+                let text = v["text"].as_str().map(String::from).unwrap_or_else(|| {
+                    format!(
+                        "⟳ retry {}/{}: {}",
+                        v["attempt"].as_u64().unwrap_or(0),
+                        v["max"].as_u64().unwrap_or(0),
+                        v["reason"].as_str().unwrap_or("?")
+                    )
+                });
+                self.push(text, Tone::Muted);
+            }
             "error" => self.push(
                 format!("error: {}", v["message"].as_str().unwrap_or("?")),
                 Tone::Error,
@@ -13261,6 +13273,20 @@ mod tests {
             &mut serve,
         );
         assert!(app.lines.iter().any(|l| l.text.contains("另一个会话")));
+    }
+
+    #[test]
+    fn retry_frames_show_attempt_progress() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.frame(
+            json!({"type": "retry", "attempt": 1, "max": 3, "reason": "connection reset [ECONNRESET]",
+                "delayMs": 1000, "text": "⟳ 请求失败（connection reset [ECONNRESET]），1 秒后第 1/3 次重试…"}),
+            &mut serve,
+        );
+        app.frame(json!({"type": "retry", "attempt": 2, "max": 3, "reason": "HTTP 503"}), &mut serve);
+        assert!(app.lines.iter().any(|l| l.text.contains("第 1/3 次重试")));
+        assert!(app.lines.iter().any(|l| l.text.contains("retry 2/3: HTTP 503")));
     }
 
     #[test]

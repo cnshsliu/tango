@@ -44,6 +44,9 @@ export async function runJson(agent: Agent, input: string, sessionId: string, em
         isError: result.isError === true, ms
       });
     }),
+    agent.events.on('retry', ({ attempt, max, reason, delayMs }) => {
+      emit({ type: 'retry', step, attempt, max, reason, delayMs });
+    }),
     agent.events.on('turn_end', ({ stopReason, usage, costUsd }) => {
       total.input += usage.input;
       total.output += usage.output;

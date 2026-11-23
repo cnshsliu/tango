@@ -85,6 +85,8 @@ export interface ModelSpec {
   reasoning?: boolean;
   /** accepts image input (vision). Unset = unknown: images are still sent, with a heads-up notice */
   vision?: boolean;
+  /** per-model override of config `retries` (failed requests retried before giving up) */
+  retries?: number;
   /** streaming field carrying reasoning deltas; defaults to "reasoning_content" (qwen/dashscope/deepseek style) */
   reasoningField?: string;
   /**
@@ -117,6 +119,19 @@ export interface CompletionRequest {
   signal?: AbortSignal;
   /** reasoning effort for supporting adapters (/effort) */
   effort?: 'low' | 'medium' | 'high';
+  /** retries for a request that fails before any output (network error, 429, 5xx); default 3 */
+  retries?: number;
+  /** told before each retry, so the user sees "retrying n/max" instead of silence */
+  onRetry?: (info: RetryInfo) => void;
+}
+
+export interface RetryInfo {
+  /** 1-based retry number */
+  attempt: number;
+  max: number;
+  /** why the previous try failed, e.g. "connection reset [ECONNRESET]" or "HTTP 503" */
+  reason: string;
+  delayMs: number;
 }
 
 /** Streaming events from a model adapter */
@@ -185,6 +200,8 @@ export interface TangoEvents {
   before_tool: { call: ToolCallBlock; tool: Tool };
   after_tool: { call: ToolCallBlock; result: ToolResult; ms: number };
   turn_end: { stopReason: StopReason; usage: Usage; costUsd: number };
+  /** a model request failed before any output and is about to be retried */
+  retry: RetryInfo;
   error: { error: Error };
 }
 
