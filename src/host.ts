@@ -205,6 +205,8 @@ export interface HostArgs {
   cwd?: string;
   resume?: string;
   continue?: boolean;
+  /** --max-tool-rounds: beats config maxTurns for this process */
+  maxToolRounds?: number;
 }
 
 export interface Opened {
@@ -242,6 +244,7 @@ export async function openAgent(args: HostArgs, perm: PermState): Promise<Opened
   // honour a model switch made earlier in a resumed session unless the user asked explicitly
   const stored = !args.model && !cfg.model ? store.lastModel() : undefined;
   const effective = stored ? models.find((m) => m.id === stored) ?? model : model;
-  const agent = makeAgent(effective, store, cwd, perm, { ...cfg, projectDir: resolved.project?.root });
+  const maxTurns = args.maxToolRounds ?? cfg.maxTurns;
+  const agent = makeAgent(effective, store, cwd, perm, { ...cfg, maxTurns, projectDir: resolved.project?.root });
   return { agent, store, cwd, warning: keyProblem(effective), resolved };
 }

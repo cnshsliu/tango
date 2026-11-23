@@ -25,7 +25,7 @@
 - [ ] **4. Hooks 第二期：stdout JSON 和更多事件**
   - grok：hook 可在 stdout 输出 JSON：`decision: approve|block`、`additionalContext`（追加给模型看的上下文）、`continue: false`。共 17 种事件，我们还缺 `PostToolUseFailure`、`SessionStart`、`SessionEnd`、`StopFailure`、`SubagentStart`、`SubagentStop`、`TaskCreated`、`TaskCompleted`、`PreCompact`、`PostCompact`、`Notification`、`InstructionsLoaded`、`CwdChanged`。见 `src/hooks/types.ts:150`、`src/hooks/executor.ts:165`。
   - tango：只认退出码和 stderr，只有 4 种事件。按 hook-guard 的规则，每加一个事件都要补 e2e 测试。
-- [ ] **5. 无界面运行的 JSON 事件流和轮数上限**
+- [x] **5. 无界面运行的 JSON 事件流和轮数上限**
   - grok：`--format json` 逐行输出 `step_start`、`text`、`tool_use`（含耗时）、`step_finish`（含 token 用量）、`error`。`--max-tool-rounds N` 按次设上限。见 `src/headless/output.ts`。
   - tango：一次性运行只输出给人看的文字。`maxTurns` 只能在 config.json 里改。
 
