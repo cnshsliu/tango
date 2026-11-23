@@ -489,7 +489,9 @@ shade in the light theme) with a left bar colored by risk — plan orange, auto 
 ask blue (plan wins) — the draft, and an info row `mode · model provider` (e.g.
 `ask · claude-opus-5-5 apikeyfan`; a narrow screen drops the provider, then clips the model).
 Clicking the model there opens the model picker (same as `/model`) with the current model selected;
-clicking the mode label opens the mode picker (same as `/mode`) on the current mode.
+clicking the mode label opens the mode picker (same as `/mode`) on the current mode. Clicking the
+same label again closes its picker, clicking the other one swaps to that picker, and a click on a
+picker row picks it.
 The draft starts right under the rule, with no blank padding rows around it. Under the block, on
 terminals of 24+ rows, a footer shows `~/dir:branch` on the left (refreshed by `/cd`) and key hints
 (`shift+tab plan`, `ctrl+p commands`) on the right when they fit. The bottom status bar (cost ·

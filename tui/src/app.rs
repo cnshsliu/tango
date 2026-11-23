@@ -5418,6 +5418,28 @@ impl App {
                         _ => {}
                     }
                 } else if self.picker.is_some() {
+                    let pos = Position::new(m.column, m.row);
+                    let kind = self.picker.as_ref().unwrap().kind;
+                    // the info row's mode / model labels toggle their picker; the other
+                    // label swaps to its own picker (only one is ever open)
+                    if let MouseEventKind::Down(MouseButton::Left) = m.kind
+                        && !self.picker_area.contains(pos)
+                    {
+                        if self.mode_area.width > 0 && self.mode_area.contains(pos) {
+                            self.picker = None;
+                            if kind != PickerKind::Mode {
+                                self.open_mode_picker();
+                            }
+                            return false;
+                        }
+                        if self.model_area.width > 0 && self.model_area.contains(pos) {
+                            self.picker = None;
+                            if kind != PickerKind::Model {
+                                self.run_slash("/model", serve);
+                            }
+                            return false;
+                        }
+                    }
                     match m.kind {
                         MouseEventKind::ScrollUp => {
                             let p = self.picker.as_mut().unwrap();
@@ -13220,6 +13242,17 @@ mod tests {
                 serve,
             );
         };
+        let click_at = |app: &mut App, serve: &mut Serve, x: u16, y: u16| {
+            app.handle(
+                Event::Mouse(crossterm::event::MouseEvent {
+                    kind: crossterm::event::MouseEventKind::Down(MouseButton::Left),
+                    column: x,
+                    row: y,
+                    modifiers: KeyModifiers::NONE,
+                }),
+                serve,
+            );
+        };
         // the mode label beside it opens the mode picker instead, on the current mode
         let mode = app.mode_area;
         assert_eq!((mode.x, mode.y, mode.width), (INPUT_X, area.y, 4), "covers `auto`");
@@ -13244,6 +13277,47 @@ mod tests {
         let p = app.picker.as_ref().expect("model picker opens");
         assert!(p.kind == PickerKind::Model);
         assert_eq!(p.items[p.sel].id, "apikeyfan/claude-opus-5-5", "current model is selected");
+        // a second click on the model closes it again
+        terminal.draw(|f| app.draw(f)).unwrap();
+        click(&mut app, &mut serve, area.x + 3);
+        assert!(app.picker.is_none(), "second click closes the model picker");
+        // clicking the mode while the model picker is open swaps to the mode picker
+        app.run_slash("/model", &mut serve);
+        let sent: Value = serde_json::from_str(serve.sent.last().unwrap()).unwrap();
+        let models = json!({"type":"result","id":sent["id"],"ok":true,"data":{"current":"apikeyfan/claude-opus-5-5","models":[
+            {"id":"zhipu-plan/glm-5.4","platform":"zhipu","keyed":true},
+            {"id":"apikeyfan/claude-opus-5-5","platform":"apikeyfan","keyed":true}
+        ]}});
+        app.frame(models.clone(), &mut serve);
+        terminal.draw(|f| app.draw(f)).unwrap();
+        click(&mut app, &mut serve, mode.x + 1);
+        assert!(app.picker.as_ref().is_some_and(|p| p.kind == PickerKind::Mode), "mode replaces model");
+        terminal.draw(|f| app.draw(f)).unwrap();
+        click(&mut app, &mut serve, mode.x + 1);
+        assert!(app.picker.is_none(), "second click closes the mode picker");
+        // …and the other way round
+        click(&mut app, &mut serve, mode.x + 1);
+        terminal.draw(|f| app.draw(f)).unwrap();
+        let n = serve.sent.len();
+        click(&mut app, &mut serve, area.x + 3);
+        assert!(app.picker.is_none() && serve.sent.len() == n + 1, "model click asks for the model list");
+        let sent: Value = serde_json::from_str(serve.sent.last().unwrap()).unwrap();
+        assert_eq!(sent["cmd"], "models");
+        let mut models = models;
+        models["id"] = sent["id"].clone();
+        app.frame(models, &mut serve);
+        // a click on a model row in the picker picks it
+        terminal.draw(|f| app.draw(f)).unwrap();
+        let b = terminal.backend().buffer();
+        let pop = app.picker_area;
+        let row = (pop.y..pop.y + pop.height)
+            .find(|&y| (pop.x..pop.x + pop.width).map(|x| b[(x, y)].symbol()).collect::<String>().contains("glm-5.4"))
+            .expect("glm-5.4 row drawn");
+        click_at(&mut app, &mut serve, pop.x + 6, row);
+        assert!(app.picker.is_none(), "picking closes the picker");
+        let sent: Value = serde_json::from_str(serve.sent.last().unwrap()).unwrap();
+        assert_eq!(sent["cmd"], "set_model");
+        assert_eq!(sent["modelId"], "zhipu-plan/glm-5.4");
     }
 
     #[test]

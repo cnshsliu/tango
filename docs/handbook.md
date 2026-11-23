@@ -346,9 +346,9 @@ while a turn is running unless noted. `/help` prints a short list inside the TUI
 
 | Command | What it does |
 | --- | --- |
-| `/model [id]` | Switch model and save it as the default. Bare: open the model picker (its filter is fuzzy too); clicking the model name in the input box's info row opens the same picker, the current model selected. The id matches fuzzily, case-insensitive: `glm54` → `zhipu-plan/glm-5.4`; with several words each must match (`zp glm5.4`); several matches list the candidates instead of guessing. `-m` on the command line uses the same matching |
+| `/model [id]` | Switch model and save it as the default. Bare: open the model picker (its filter is fuzzy too); clicking the model name in the input box's info row opens the same picker, the current model selected (click it again to close; click a row to pick). The id matches fuzzily, case-insensitive: `glm54` → `zhipu-plan/glm-5.4`; with several words each must match (`zp glm5.4`); several matches list the candidates instead of guessing. `-m` on the command line uses the same matching |
 | `/agents [role model]` | Show or set role models: `driver`, `subagent` (`/bg`, `/subtask`), `longContext` (`/bg --long`) |
-| `/mode [confirm\|ask\|auto\|readonly]` | Show or set the permission mode. Bare: a picker with all modes (clicking the mode label in the input box's info row opens it too, the current mode selected); switching to auto asks for the risk acknowledgement first |
+| `/mode [confirm\|ask\|auto\|readonly]` | Show or set the permission mode. Bare: a picker with all modes (clicking the mode label in the input box's info row opens it too, the current mode selected; click it again to close, or click the model name to swap to the model picker); switching to auto asks for the risk acknowledgement first |
 | `/plan` | Toggle plan mode: writes refused, the model produces a plan |
 | `/effort [low\|medium\|high\|off]` | Show or set reasoning effort for this session |
 | `/goal <text>` | Keep working toward a goal. After each turn tango checks whether it's done and continues if not |
