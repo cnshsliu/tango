@@ -26,6 +26,13 @@ export interface BgProcess {
   exited: Promise<void>;
 }
 
+/**
+ * How long `bash background: true` waits before returning, so a command that fails right away
+ * (typo, port in use) reports its error. A login shell alone takes ~0.8 s on a busy profile.
+ * Mutable so tests on a loaded machine can wait longer without slowing every real call.
+ */
+export const startup = { graceMs: 2000 };
+
 const procs = new Map<string, BgProcess>();
 let seq = 0;
 let hooked = false;

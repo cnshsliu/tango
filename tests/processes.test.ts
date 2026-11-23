@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 
 import { bashTool } from '../src/core/tools/bash.js';
 import { processListTool, processLogsTool, processStopTool } from '../src/core/tools/process.js';
-import { MAX_RUNNING, _resetProcesses, getProcess, startProcess, stopProcess } from '../src/core/processes.js';
+import { MAX_RUNNING, _resetProcesses, getProcess, startProcess, startup, stopProcess } from '../src/core/processes.js';
 import { decide } from '../src/core/permissions.js';
 
 const ctx = () => ({ cwd: tmpdir(), signal: new AbortController().signal });
@@ -40,7 +40,16 @@ test('stop escalates to SIGKILL when SIGTERM is ignored, and reaches grandchildr
 });
 
 test('a command that fails right away reports the error', async () => {
-  const r = await bashTool.execute({ command: 'echo boom >&2; exit 3', background: true }, ctx());
+  // under load the login shell alone can outlast the 2 s default; the command exits at once,
+  // so a long grace costs nothing here and keeps the test from racing shell startup
+  const grace = startup.graceMs;
+  startup.graceMs = 30_000;
+  let r;
+  try {
+    r = await bashTool.execute({ command: 'echo boom >&2; exit 3', background: true }, ctx());
+  } finally {
+    startup.graceMs = grace;
+  }
   assert.equal(r.isError, true);
   assert.match(out(r), /exited 3/);
   assert.match(out(r), /boom/);

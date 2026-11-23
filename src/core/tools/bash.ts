@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import type { Tool } from '../types.js';
-import { describe, startProcess, tail } from '../processes.js';
+import { describe, startProcess, startup, tail } from '../processes.js';
 import { error, text, truncate } from './registry.js';
 
 export const bashTool: Tool<{ command: string; timeout?: number; background?: boolean }> = {
@@ -27,9 +27,8 @@ export const bashTool: Tool<{ command: string; timeout?: number; background?: bo
       } catch (e) {
         return error((e as Error).message);
       }
-      // a short grace period catches commands that fail right away (typo, port in use);
-      // a login shell alone can take ~0.8 s to start on a busy profile, so 1 s was too tight
-      await Promise.race([p.exited, new Promise((r) => setTimeout(r, 2000))]);
+      // a short grace period catches commands that fail right away (see startup.graceMs)
+      await Promise.race([p.exited, new Promise((r) => setTimeout(r, startup.graceMs))]);
       const head = tail(p, 20);
       return {
         content: [{ type: 'text', text: `started ${describe(p)}` + (head ? `\n${head}` : '') }],
