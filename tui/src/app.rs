@@ -164,9 +164,11 @@ fn asciify(s: &str) -> String {
         .collect()
 }
 
-/// What a thinking line shows: short blocks in full; long ones as a preview
-/// plus a hint while collapsed, or in full plus a collapse hint when expanded.
-fn thinking_view(text: &str, expanded: bool) -> String {
+/// What a thinking line shows: short blocks in full; long ones as a preview with the
+/// hint glued after its …, or in full plus a collapse hint when expanded. `teach`: the
+/// first collapsed block of the run names the gesture; later ones only say how much
+/// is hidden — the double-click is learned once, repeating it on every block is noise.
+fn thinking_view(text: &str, expanded: bool, teach: bool) -> String {
     let chars = text.chars().count();
     let lines = text.lines().count();
     if lines <= THINK_PREVIEW_LINES && chars <= THINK_PREVIEW_CHARS {
@@ -184,7 +186,11 @@ fn thinking_view(text: &str, expanded: bool) -> String {
     }
     let preview: String = preview.chars().take(THINK_PREVIEW_CHARS).collect();
     let hidden = chars.saturating_sub(preview.chars().count());
-    format!("{preview} …\n双击展开思考（还有 {hidden} 字 · 共 {lines} 行）")
+    if teach {
+        format!("{preview} … 双击展开思考（还有 {hidden} 字 · 共 {lines} 行）")
+    } else {
+        format!("{preview} …（还有 {hidden} 字 · 共 {lines} 行）")
+    }
 }
 
 /// Cut `s` to at most `width` columns, ending in … when anything was dropped.
@@ -8482,6 +8488,13 @@ impl App {
     /// the chat exactly as drawn — scroll math and mouse hit testing use the same lines
     fn chat_lines(&self) -> Vec<ChatLine> {
         let wordmark = self.kept_wordmark();
+        // the expand hint is spelled out on the first collapsed long thinking block only
+        let first_folded = self.lines.iter().position(|l| {
+            l.tone == Tone::Thinking
+                && !l.expanded
+                && (l.text.lines().count() > THINK_PREVIEW_LINES
+                    || l.text.chars().count() > THINK_PREVIEW_CHARS)
+        });
         let mut lines: Vec<ChatLine> = self.lines
             .iter()
             .enumerate()
@@ -8492,7 +8505,7 @@ impl App {
             })
             .map(|(source_index, line)| {
                 let mut text = if line.tone == Tone::Thinking {
-                    thinking_view(&line.text, line.expanded)
+                    thinking_view(&line.text, line.expanded, first_folded == Some(source_index))
                 } else {
                     line.text.clone()
                 };
@@ -12851,8 +12864,15 @@ mod tests {
         let line = app.lines.last().unwrap();
         assert_eq!(line.text, format!("{THINK_ICON} {body}"), "no 400-char truncation");
         let shown = app.chat_lines().last().unwrap().text.clone();
-        assert_eq!(shown.lines().count(), 4, "3 preview lines + hint: {shown}");
-        assert!(shown.contains("双击展开思考"), "{shown}");
+        assert_eq!(shown.lines().count(), 3, "3 preview lines, the hint rides after the …: {shown}");
+        assert!(shown.lines().last().unwrap().ends_with("… 双击展开思考（还有 42 字 · 共 10 行）"), "{shown}");
+        // a second long block: only the count, glued to the …
+        app.thinking = body.clone();
+        app.commit_stream();
+        let second = app.chat_lines().last().unwrap().text.clone();
+        assert!(!second.contains("双击"), "taught once, not on every block: {second}");
+        assert!(second.ends_with("…（还有 42 字 · 共 10 行）"), "{second}");
+        app.lines.pop();
         assert!(!shown.contains("第9步推理"));
         app.lines.last_mut().unwrap().expanded = true; // what a double-click does
         let shown = app.chat_lines().last().unwrap().text.clone();

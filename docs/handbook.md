@@ -66,8 +66,9 @@ the same line becomes `⚙ bash <command> · <ms>` (double-click it or press ctr
 
 Reasoning the model streamed shows as a block headed by an upright `🤖` (the text after it is dim
 italic), with a `┃` bar on its left. The whole
-text is kept: short reasoning shows in full, a long block collapses to its first 3 lines plus
-`双击展开思考（还有 N 字 · 共 M 行）`. Double-click any block to expand or collapse it; Ctrl+T's transcript always shows thinking in full. While the
+text is kept: short reasoning shows in full, a long block collapses to its first 3 lines, the last one ending in
+`… 双击展开思考（还有 N 字 · 共 M 行）` (no line of its own). Only the first collapsed block names
+the double-click; the rest just end in `…（还有 N 字 · 共 M 行）`. Double-click any block to expand or collapse it; Ctrl+T's transcript always shows thinking in full. While the
 turn runs, that bar's color scrolls down the newest thinking block (in 256 colors on
 terminals without 24-bit color; once idle, or with `/animations off`, it is a flat dim bar).
 

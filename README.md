@@ -261,8 +261,9 @@ tools and checkpoints follow live); `/add_dir <dir>` registers an extra writable
 - **Thinking blocks**: committed reasoning is kept whole (no truncation) as a block headed by `🤖`
   (the icon upright, the reasoning in dim italics)
   (an emoji, 2 cells; terminals without an emoji font can switch to `/ascii`).
-  Up to 3 lines / 240 chars show in full; longer blocks show a 3-line preview plus
-  `双击展开思考（还有 N 字 · 共 M 行）`. A double-click on the block expands / collapses it
+  Up to 3 lines / 240 chars show in full; longer blocks show a 3-line preview ending in
+  `… 双击展开思考（还有 N 字 · 共 M 行）` on its last line — the gesture is named on the first
+  collapsed block only, later ones end in just `…（还有 N 字 · 共 M 行）`. A double-click on the block expands / collapses it
   in place; Ctrl+T's transcript always has the full text.
 - **ASCII mode** (`/ascii`, config `ascii`): 🤖 becomes `*` and emoji in chat, the ❓ panel,
   `/todo` and the status bar become ASCII (`❓`→`?`, `➕`→`+`, `📋`→`#`, `📂`→`>`, other emoji →`*`),
