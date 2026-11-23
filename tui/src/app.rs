@@ -3234,10 +3234,12 @@ impl App {
     /// whitespace-delimited token containing the cursor
     fn token_at_cursor(&self) -> (String, usize, usize) {
         let s: String = self.input.iter().collect();
+        // step past the whole whitespace char: a full-width space (U+3000) is 3 bytes
         let start = s[..self.cursor_byte()]
-            .rfind(char::is_whitespace)
-            .map(|i| i + 1)
-            .unwrap_or(0);
+            .char_indices()
+            .rev()
+            .find(|(_, c)| c.is_whitespace())
+            .map_or(0, |(i, c)| i + c.len_utf8());
         let rel_end = s[start..]
             .find(char::is_whitespace)
             .map(|i| start + i)
@@ -13623,6 +13625,61 @@ mod tests {
             "@target.txt must resolve against the serve cwd, got: {}",
             sent["text"]
         );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn full_width_space_in_the_input_is_a_token_boundary_not_a_panic() {
+        // a pasted HK01 headline: 「崛起　香港」 holds U+3000, whitespace 3 bytes wide
+        let text = "23日，于承忠博士于香港01发文《来稿｜深圳靠「试错」崛起\u{3000}香港「敢拼」的勇气去了哪里？》，文章写到：";
+        // bracketed paste: the whole text lands, then the popup refresh scans the token
+        let mut app = App::new();
+        app.insert_paste(text);
+        app.refresh_popup();
+        assert!(app.popup.is_none());
+        // typed one char at a time (an IME commit): every key refreshes the popup as well
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        for c in text.chars() {
+            app.key(
+                crossterm::event::KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE),
+                &mut serve,
+            );
+        }
+        let s: String = app.input.iter().collect();
+        assert_eq!(s, text);
+        assert_eq!(app.cursor, app.input.len());
+        // after the full-width space the token is the rest of the line
+        let (tok, start, end) = app.token_at_cursor();
+        assert_eq!(&s[start..end], "香港「敢拼」的勇气去了哪里？》，文章写到：");
+        assert_eq!(tok, s[start..end]);
+        // before it, the token ends at the full-width space
+        app.cursor = 5;
+        let (tok, start, end) = app.token_at_cursor();
+        assert_eq!(&s[start..end], "23日，于承忠博士于香港01发文《来稿｜深圳靠「试错」崛起");
+        assert_eq!(tok, s[start..end]);
+    }
+
+    #[test]
+    fn at_file_popup_after_multi_byte_whitespace_replaces_the_token() {
+        let mut app = App::new();
+        let base = std::env::temp_dir().join("tango-fw-space");
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::write(base.join("target.txt"), "content\n").unwrap();
+        app.serve_cwd = Some(base.clone());
+        // an NBSP (2 bytes) earlier in the line, a full-width space right before the token
+        let text = "深圳\u{00a0}靠「试错」崛起\u{3000}@targ";
+        app.input = text.chars().collect();
+        app.cursor = app.input.len();
+        app.refresh_popup();
+        let items = app.popup.as_ref().map(|p| p.items.clone());
+        assert_eq!(items, Some(vec!["@target.txt".to_string()]));
+        app.accept_popup();
+        assert_eq!(
+            app.input.iter().collect::<String>(),
+            "深圳\u{00a0}靠「试错」崛起\u{3000}@target.txt"
+        );
+        assert_eq!(app.cursor, app.input.len());
         let _ = std::fs::remove_dir_all(&base);
     }
 
