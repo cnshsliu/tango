@@ -42,7 +42,9 @@ async function readAll(): Promise<BgTask[]> {
 
 async function writeAll(tasks: BgTask[]): Promise<void> {
   await mkdir(tangoDir(), { recursive: true });
-  const tmp = registryFile() + '.tmp';
+  // unique per write: two reconciles in flight (the 2s TaskCompleted poll and a `tasks`
+  // command) must not rename each other's temp file away
+  const tmp = `${registryFile()}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
   await writeFile(tmp, JSON.stringify(tasks, null, 2), 'utf8');
   await rename(tmp, registryFile());
 }

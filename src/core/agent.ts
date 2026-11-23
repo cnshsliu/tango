@@ -1,4 +1,4 @@
-import { buildContext } from './context.js';
+import { buildContext, findAgentsFiles } from './context.js';
 import { EventBus } from './events.js';
 import { adapterFor, costUsd } from './models/registry.js';
 import { SUMMARY_OPEN, type SessionStore } from './session.js';
@@ -80,6 +80,11 @@ export class Agent {
   private hookContext: string[] = [];
   /** a hook's continue: false — the turn ends at the next safe point with this reason */
   private hookStop?: string;
+  /** the AGENTS.md set last announced as instructions_loaded (joined paths) */
+  private instructionsKey?: string;
+  /** prompt() ran at least once; session_end only fires for sessions that did something */
+  private prompted = false;
+  private ended = false;
   private readonly maxTurns: number;
   /** config `retries`; a model's own `retries` wins, undefined means the default (3) */
   retries?: number;
@@ -147,8 +152,20 @@ export class Agent {
   }
 
   /** move the working directory (/cd); everything downstream reads this live */
-  setCwd(dir: string): void {
+  async setCwd(dir: string): Promise<void> {
+    const oldCwd = this.cwd;
     this.cwd = dir;
+    if (oldCwd !== dir) await this.events.emit('cwd_changed', { oldCwd, newCwd: dir });
+  }
+
+  /**
+   * The session is closing (UI exit, EOF, end of a one-shot run): emit session_end once, for
+   * sessions that ran at least one prompt. Awaited, so SessionEnd hooks finish before exit.
+   */
+  async end(reason: string): Promise<void> {
+    if (this.ended || !this.prompted) return;
+    this.ended = true;
+    await this.events.emit('session_end', { reason });
   }
 
   contextTokenEstimate(): number {
@@ -157,6 +174,7 @@ export class Agent {
 
   /** Append a user message and loop (model → tools → model) until the model stops. */
   async prompt(text: string, onStream?: (ev: StreamEvent) => void, images?: ImageBlock[]): Promise<Message> {
+    this.prompted = true;
     const rejected = await this.events.emit('before_prompt', { text });
     if (rejected && rejected.block) throw new Error(`prompt blocked by hook: ${rejected.reason}`);
     const user: Message = {
@@ -171,6 +189,7 @@ export class Agent {
     let continued = 0; // times a Stop hook sent the model back this prompt (capped)
     try {
       for (let turn = 0; turn < this.maxTurns; turn++) {
+        await this.announceInstructions();
         await this.flushSupplements();
         await this.compactIfNeeded();
         // a hook during auto-compaction said continue: false
@@ -232,6 +251,15 @@ export class Agent {
       await this.events.emit('prompt_end', {});
       this.controller = undefined;
     }
+  }
+
+  /** instructions_loaded when the AGENTS.md set is first read and whenever it changes (/cd). */
+  private async announceInstructions(): Promise<void> {
+    const files = findAgentsFiles(this.cwd);
+    const key = files.join('\n');
+    if (key === this.instructionsKey) return;
+    this.instructionsKey = key;
+    await this.events.emit('instructions_loaded', { files });
   }
 
   /** End the turn for a hook's continue: false; the reason is the visible last word. */

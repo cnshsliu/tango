@@ -148,6 +148,67 @@ function installLifecycleHooks(
       if (r.stop) ctx.stop(r.stop);
     });
   }
+  if (hooks.PostToolUseFailure) {
+    // in addition to PostToolUse: only calls that failed (refused, crashed, or reported an error)
+    events.on('after_tool', async ({ call, result }) => {
+      if (!result.isError) return;
+      const error = result.content.map((b) => (b.type === 'text' ? b.text : '')).join('').slice(0, 20_000);
+      const r = await run('PostToolUseFailure', { tool_name: call.name, tool_input: call.input, error }, call.name);
+      if (r.block) result.content.push({ type: 'text', text: `\n[PostToolUseFailure hook] ${r.block}` });
+      for (const c of r.context ?? []) result.content.push({ type: 'text', text: `\n[PostToolUseFailure hook context] ${c}` });
+      if (r.stop) ctx.stop(r.stop);
+    });
+  }
+  if (hooks.StopFailure) {
+    // the turn died on an error (model/API failure, the tool-round cap): observe only
+    events.on('error', async ({ error }) => {
+      const r = await run('StopFailure', { error: String(error?.message ?? error).slice(0, 20_000) });
+      if (r.block) process.stderr.write(`[hook StopFailure] ${r.block}\n`.slice(0, 500));
+      later(r);
+    });
+  }
+  if (hooks.SessionEnd) {
+    events.on('session_end', async ({ reason }) => {
+      const r = await run('SessionEnd', { reason }, reason);
+      if (r.block) process.stderr.write(`[hook SessionEnd] ${r.block}\n`.slice(0, 500));
+    });
+  }
+  if (hooks.InstructionsLoaded) {
+    events.on('instructions_loaded', async ({ files }) => {
+      const r = await run('InstructionsLoaded', { files_loaded: files.length, files });
+      if (r.block) process.stderr.write(`[hook InstructionsLoaded] ${r.block}\n`.slice(0, 500));
+      later(r);
+      if (r.stop) ctx.stop(r.stop);
+    });
+  }
+  if (hooks.CwdChanged) {
+    events.on('cwd_changed', async ({ oldCwd, newCwd }) => {
+      const r = await run('CwdChanged', { old_cwd: oldCwd, new_cwd: newCwd });
+      if (r.block) process.stderr.write(`[hook CwdChanged] ${r.block}\n`.slice(0, 500));
+      later(r);
+    });
+  }
+  if (hooks.Notification) {
+    events.on('notification', async ({ message, type }) => {
+      const r = await run('Notification', { message, notification_type: type }, type);
+      if (r.block) process.stderr.write(`[hook Notification] ${r.block}\n`.slice(0, 500));
+    });
+  }
+  // /subtask and /bg: the Start/Created hooks can refuse the launch; the Stop/Completed ones observe
+  const launch = (ev: 'SubagentStart' | 'TaskCreated') => async ({ agentType, description }: { agentType: string; description: string }) => {
+    const r = await run(ev, { agent_type: agentType, description: description.slice(0, 20_000) }, agentType);
+    later(r);
+    if (r.block ?? r.stop) return { block: true as const, reason: (r.block ?? r.stop)! };
+  };
+  const finish = (ev: 'SubagentStop' | 'TaskCompleted') => async (p: { agentType: string; description: string; taskId: string; success: boolean; status: string }) => {
+    const r = await run(ev, { agent_type: p.agentType, description: p.description.slice(0, 20_000), task_id: p.taskId, success: p.success, status: p.status }, p.agentType);
+    if (r.block) process.stderr.write(`[hook ${ev}] ${r.block}\n`.slice(0, 500));
+    later(r);
+  };
+  if (hooks.SubagentStart) events.on('subagent_start', launch('SubagentStart'));
+  if (hooks.TaskCreated) events.on('task_created', launch('TaskCreated'));
+  if (hooks.SubagentStop) events.on('subagent_stop', finish('SubagentStop'));
+  if (hooks.TaskCompleted) events.on('task_completed', finish('TaskCompleted'));
   if (hooks.UserPromptSubmit) {
     events.on('before_prompt', async ({ text }) => {
       const r = await run('UserPromptSubmit', { prompt: text });
@@ -216,7 +277,12 @@ export function makeAgent(model: ModelSpec, store: SessionStore, cwd: string, pe
   installPermissionGate(events, {
     mode: () => perm.mode,
     cwd: () => agent.cwd,
-    ask: (c, r) => (perm.ask ? perm.ask(c, r) : Promise.resolve(false)),
+    ask: async (c, r) => {
+      if (!perm.ask) return false;
+      // the user is needed: Notification hooks (a desktop ping, a chat message) go first
+      await events.emit('notification', { message: `tango needs your permission to use ${c.name}: ${r}`.slice(0, 2000), type: 'permission_prompt' });
+      return perm.ask(c, r);
+    },
     rules: parsedRules,
     // managed worktrees (~/.tango/worktrees) are tango's own isolation checkouts:
     // writing there is the point of creating one, so it never asks

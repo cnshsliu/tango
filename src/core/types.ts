@@ -197,6 +197,20 @@ export interface TangoEvents {
   before_compact: { trigger: 'manual' | 'auto' };
   /** a compaction finished; summary is what replaced the older messages (PostCompact hooks) */
   after_compact: { trigger: 'manual' | 'auto'; summary: string };
+  /** a session that ran at least one prompt is closing (SessionEnd hooks) */
+  session_end: { reason: string };
+  /** the AGENTS.md files feeding the system prompt, on first load and whenever the set changes */
+  instructions_loaded: { files: string[] };
+  /** the working directory moved (/cd) */
+  cwd_changed: { oldCwd: string; newCwd: string };
+  /** tango wants the user's attention (a permission prompt) */
+  notification: { message: string; type: string };
+  /** a /subtask is about to start (a veto refuses it) or has finished */
+  subagent_start: { agentType: string; description: string; taskId?: string };
+  subagent_stop: { agentType: string; description: string; taskId: string; success: boolean; status: string };
+  /** a /bg task is about to start (a veto refuses it) or has finished */
+  task_created: { agentType: string; description: string };
+  task_completed: { agentType: string; description: string; taskId: string; success: boolean; status: string };
   /** the prompt turn ended (stop, abort or error); per-turn machinery closes out */
   prompt_end: Record<string, never>;
   /** may mutate req before it is sent */

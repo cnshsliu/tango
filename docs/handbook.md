@@ -292,8 +292,12 @@ prompt (`UserPromptSubmit`), or sends the model back to work instead of finishin
 Whatever the script prints to stderr is the reason the model sees. A `Stop` hook gets
 `"stop_hook_active": true` once it has already sent the model back, so it can let it finish. tango stops honoring it after 3 sends per prompt.
 
-Three more events: `SessionStart` runs once before a session's first prompt, `PreCompact` runs
-before a compaction (exit 2 skips it) and `PostCompact` after one. Instead of an exit code, a
+More events cover the rest of a session: `SessionStart` / `SessionEnd`, `PreCompact` (exit 2
+skips the compaction) / `PostCompact`, `PostToolUseFailure` (only failed calls), `StopFailure`
+(the turn died on an error), `InstructionsLoaded` (AGENTS.md read), `CwdChanged` (`/cd`),
+`Notification` (a permission prompt is waiting: good for a desktop ping), and `SubagentStart` /
+`SubagentStop` / `TaskCreated` / `TaskCompleted` around `/subtask` and `/bg` (exit 2 on the start
+events refuses the launch). README "Hooks" has the full table. Instead of an exit code, a
 script can print JSON on stdout: `{"additionalContext": "…"}` hands the model extra text,
 `{"decision": "block", "reason": "…"}` works like exit 2, and `{"continue": false, "stopReason": "…"}`
 ends the turn. For example, a `SessionStart` hook that prints

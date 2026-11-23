@@ -149,6 +149,10 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
     }
   }
   process.on('exit', () => mcpServers.forEach((s) => s.stop()));
+  // a polite kill (not the UI's SIGKILL fallback) still lets SessionEnd hooks run
+  process.once('SIGTERM', () => {
+    void agent.end('sigterm').catch(() => {}).finally(() => process.exit(0));
+  });
   const pricedModels = await loadModels();
   let sessionCostUsd = store.allMessages().reduce((sum, m) => {
     if (m.role !== 'assistant' || !m.usage) return sum;
@@ -172,14 +176,29 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
   const goal = { text: null as string | null, paused: false, rounds: 0, maxRounds: 5 };
 
   // pending subtask write-backs: checked lazily on each command, skipped while a turn runs (RF#4)
-  const subtasks: { taskId: string; name: string }[] = [];
+  const subtasks: { taskId: string; name: string; prompt: string }[] = [];
+  // /bg tasks this serve started: TaskCompleted hooks fire when each one stops running
+  const bgWatch: { taskId: string; prompt: string }[] = [];
+  const checkBgTasks = async (): Promise<void> => {
+    if (!bgWatch.length) return;
+    const tasks = await reconcileTasks();
+    for (const w of [...bgWatch]) {
+      const t = tasks.find((x) => x.id === w.taskId);
+      if (t && t.status === 'running') continue;
+      bgWatch.splice(bgWatch.indexOf(w), 1);
+      const status = t?.status ?? 'failed';
+      await agent.events.emit('task_completed', { agentType: 'bg', description: w.prompt, taskId: w.taskId, success: status === 'done', status });
+    }
+  };
   const checkSubtasks = async (): Promise<void> => {
+    void checkBgTasks().catch(() => {});
     if (promptInFlight || !subtasks.length) return;
     const tasks = await reconcileTasks();
     for (const pending of [...subtasks]) {
       const t = tasks.find((x) => x.id === pending.taskId);
       if (!t || t.status === 'running') continue;
       subtasks.splice(subtasks.indexOf(pending), 1);
+      await agent.events.emit('subagent_stop', { agentType: 'subtask', description: pending.prompt, taskId: t.id, success: t.status === 'done', status: t.status });
       if (t.status === 'done' && t.sessionId) {
         try {
           const sub = await SessionStore.open(sessionsDir(), t.sessionId);
@@ -404,6 +423,7 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
   // idle poll for /send mail (declared here: the callback reads promptInFlight)
   const mailTimer = setInterval(() => {
     if (!promptInFlight) void receiveMail();
+    void checkBgTasks().catch(() => {}); // TaskCompleted needs no idle moment: it writes nothing
   }, 2000);
   mailTimer.unref?.();
   // warming state: keep provider prompt caches warm between real prompts (opencode parity).
@@ -828,6 +848,8 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
         // a subagent: a bg task whose final summary is written back into the main session
         const prompt = String(cmd.prompt ?? '');
         if (!prompt.trim()) return reply(cmd, false, undefined, 'subtask: empty prompt');
+        const veto = await agent.events.emit('subagent_start', { agentType: 'subtask', description: prompt });
+        if (veto && veto.block) return reply(cmd, false, undefined, `subtask blocked by hook: ${veto.reason}`);
         try {
           const roles = (await effectiveConfig()).config.roles;
           const task = await startBgTask({
@@ -837,7 +859,7 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
             mainCwd: cwd,
             currentModel: agent.model.id
           });
-          subtasks.push({ taskId: task.id, name: task.name || task.worktreeName });
+          subtasks.push({ taskId: task.id, name: task.name || task.worktreeName, prompt });
           reply(cmd, true, { task });
         } catch (e: any) {
           reply(cmd, false, undefined, String(e?.message ?? e));
@@ -878,6 +900,8 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
       case 'bg': {
         const prompt = String(cmd.prompt ?? '');
         if (!prompt.trim()) return reply(cmd, false, undefined, 'bg: empty prompt');
+        const veto = await agent.events.emit('task_created', { agentType: 'bg', description: prompt });
+        if (veto && veto.block) return reply(cmd, false, undefined, `bg blocked by hook: ${veto.reason}`);
         try {
           const roles = (await effectiveConfig()).config.roles;
           const roleModel = cmd.long === true ? roles?.longContext : roles?.subagent;
@@ -888,6 +912,7 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
             mainCwd: cwd,
             currentModel: agent.model.id
           });
+          bgWatch.push({ taskId: task.id, prompt });
           reply(cmd, true, { task });
         } catch (e: any) {
           reply(cmd, false, undefined, String(e?.message ?? e));
@@ -1095,7 +1120,7 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
         } catch {}
         if (!isDir) return reply(cmd, false, undefined, `cd: not a directory: ${target}`);
         cwd = target;
-        agent.setCwd(target);
+        await agent.setCwd(target);
         await store.append({ kind: 'meta', id: store.id, createdAt: store.meta()?.createdAt ?? new Date().toISOString(), cwd: target, name: store.meta()?.name });
         // the TUI footer shows `dir:branch`: report the branch of the new cwd ('' outside git)
         const branch = String(spawnSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: target, encoding: 'utf8' }).stdout ?? '').trim();
@@ -1941,6 +1966,23 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
         reply(cmd, true, { ...r.data, prompt });
       })();
     }
+    if (cmd.cmd === 'shutdown') {
+      // the UI is closing this session (quit, /restart, /new, /resume): run SessionEnd hooks,
+      // answer, then leave. A running turn is aborted first; the UI kills us after a grace period.
+      denyPending();
+      queuedTexts.length = 0;
+      interruptGen++;
+      goal.text = null;
+      stopLoop();
+      stopWarming();
+      agent.abort();
+      void (async () => {
+        await agent.end(String(cmd.reason ?? 'exit')).catch(() => {});
+        if (cmd.id !== undefined) out({ type: 'result', id: cmd.id, ok: true, data: {} });
+        process.exit(0);
+      })();
+      return;
+    }
     if (cmd.cmd === 'interrupt') {
       // drop the queued prompts (they never run) and abort the running turn; the
       // running turn's own settle path clears runningText/promptInFlight, so time
@@ -2011,6 +2053,9 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
     // stdin EOF (a pipe, not a UI): finish queued work, then leave; never cut a running prompt short
     stopLoop(); // no orphan timers
     stopWarming();
-    void queue.then(() => process.exit(0));
+    void queue.then(async () => {
+      await agent.end('eof').catch(() => {});
+      process.exit(0);
+    });
   });
 }

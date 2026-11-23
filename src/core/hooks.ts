@@ -8,11 +8,29 @@ import { spawn } from 'node:child_process';
  * object on stdout can say more: { decision: "block", reason } blocks like exit 2,
  * { additionalContext } adds text for the model, { continue: false, stopReason } ends the turn.
  */
-export const HOOK_EVENTS = ['PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'SessionStart', 'PreCompact', 'PostCompact'] as const;
+export const HOOK_EVENTS = [
+  'PreToolUse',
+  'PostToolUse',
+  'PostToolUseFailure',
+  'UserPromptSubmit',
+  'Stop',
+  'StopFailure',
+  'SessionStart',
+  'SessionEnd',
+  'PreCompact',
+  'PostCompact',
+  'InstructionsLoaded',
+  'CwdChanged',
+  'Notification',
+  'SubagentStart',
+  'SubagentStop',
+  'TaskCreated',
+  'TaskCompleted'
+] as const;
 export type HookEvent = (typeof HOOK_EVENTS)[number];
 
 export interface HookCommand {
-  /** regex over the tool name (tool events only); missing, '' or '*' = every tool */
+  /** regex over the event's match field (tool name, trigger, source, …); missing, '' or '*' = all */
   matcher?: string;
   command: string;
   /** seconds, default 10 */

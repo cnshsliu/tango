@@ -342,6 +342,8 @@ fn run(
             } else {
                 None
             };
+            // the old session ends here: let its SessionEnd hooks run before the new one starts
+            serve.shutdown(if target.is_none() { "new" } else { "resume" });
             let next = Serve::spawn(
                 tx.clone(),
                 serve.epoch + 1,
@@ -355,9 +357,11 @@ fn run(
     if let Some(e) = app.err {
         Err(e.into())
     } else if let Some((session, mode)) = app.restart.take() {
+        serve.shutdown("restart");
         drop(serve); // kill + reap the old serve so its session lock is free for the new one
         Ok(Exit::Restart(session, mode))
     } else {
+        serve.shutdown("exit");
         // hand the user the way back before the process goes away
         Ok(Exit::Quit(app.exit_note()))
     }

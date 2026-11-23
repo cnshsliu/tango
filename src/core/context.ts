@@ -56,27 +56,28 @@ export async function discoverSkills(cwd: string): Promise<SkillInfo[]> {
   return skills;
 }
 
-/** AGENTS.md from cwd upward to the filesystem root, plus global ~/.tango/AGENTS.md. Global first, nearest last. */
-export async function loadAgentsFiles(cwd: string): Promise<string[]> {
+/** Paths of the AGENTS.md files loadAgentsFiles reads, in the same order (global first, nearest last). */
+export function findAgentsFiles(cwd: string): string[] {
   const local: string[] = [];
   let dir = cwd;
   while (true) {
     const f = join(dir, 'AGENTS.md');
-    if (existsSync(f)) {
-      const body = (await readFile(f, 'utf8')).trim();
-      if (body) local.unshift(body);
-    }
+    if (existsSync(f)) local.unshift(f);
     const parent = dirname(dir);
     if (parent === dir) break;
     dir = parent;
   }
-  const out: string[] = [];
   const global = join(tangoDir(), 'AGENTS.md');
-  if (existsSync(global)) {
-    const body = (await readFile(global, 'utf8')).trim();
+  return existsSync(global) ? [global, ...local] : local;
+}
+
+/** AGENTS.md from cwd upward to the filesystem root, plus global ~/.tango/AGENTS.md. Global first, nearest last. */
+export async function loadAgentsFiles(cwd: string): Promise<string[]> {
+  const out: string[] = [];
+  for (const f of findAgentsFiles(cwd)) {
+    const body = (await readFile(f, 'utf8').catch(() => '')).trim();
     if (body) out.push(body);
   }
-  out.push(...local);
   return out;
 }
 

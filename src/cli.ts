@@ -268,6 +268,7 @@ async function runOnce(agent: Agent, input: string): Promise<void> {
     }
   });
   process.stdout.write('\n');
+  await agent.end('exit');
   if (!streamed && msg.stopReason !== 'aborted') console.error(dim('[model returned no text]'));
   if (msg.stopReason === 'aborted') {
     console.error(dim('[interrupted]'));
@@ -480,6 +481,7 @@ async function interactive(agent: Agent, store: SessionStore, resolved: Resolved
     else await new Promise((r) => setImmediate(r));
   }
   if (running) agent.abort();
+  await agent.end('exit');
   console.log(dim(`bye ($${agent.totalCostUsd.toFixed(4)} this session)`));
 }
 
@@ -531,6 +533,7 @@ async function runTask(t: Task, args: Args): Promise<{ ok: boolean; output: stri
   perm.mode = t.mode === 'auto' ? 'auto' : 'readonly'; // headless: nothing can answer "ask"
   const { agent } = await openReplAgent({ ...args, input: undefined, resume: undefined, continue: false, cwd: t.cwd ?? args.cwd, yes: t.mode === 'auto' });
   const msg = await agent.prompt(t.prompt, () => {});
+  await agent.end('exit');
   const output = summarizeOutput(textOf(msg) || `[no text; stopReason=${msg.stopReason}]`);
   const hook = await feishuWebhook();
   if (hook) {
@@ -591,6 +594,7 @@ async function main(): Promise<void> {
     if (warning) console.error(`⚠ ${warning}`);
     for (const src of resolved.sources) if (src.error) console.error(`⚠ 配置文件已跳过：${src.path}（${src.error}）`);
     process.exitCode = await runJson(agent, args.input, store.id);
+    await agent.end('exit');
     return;
   }
   const { agent, store, resolved } = await openReplAgent(args);

@@ -2791,3 +2791,84 @@ test('project config: plain keys apply at once, a project hook waits for trust, 
     await rm(work, { recursive: true, force: true });
   }
 });
+
+test('serve hooks: /bg and /subtask fire TaskCreated/SubagentStart (exit 2 refuses), TaskCompleted, /cd fires CwdChanged, shutdown fires SessionEnd', async () => {
+  const mock = await startMock();
+  const home = await mkdtemp(join(tmpdir(), 'tango-serve-home-'));
+  const work = await mkdtemp(join(tmpdir(), 'tango-serve-work-'));
+  const log = join(work, '..', `${work.split('/').pop()}-hooks.jsonl`); // outside the repo: worktrees stay clean
+  const rec = `cat >> '${log}'; echo >> '${log}'`;
+  await writeFile(join(home, 'models.json'), JSON.stringify([
+    { id: 'mock/mock', provider: 'mock', model: 'm', api: 'openai-completions', baseUrl: `http://127.0.0.1:${(mock.server.address() as AddressInfo).port}/v1`, apiKey: 'MOCK_SERVE_KEY', contextWindow: 8000 }
+  ]));
+  await writeFile(join(home, 'config.json'), JSON.stringify({
+    hooks: {
+      TaskCreated: [{ command: `${rec}; grep -q REFUSE '${log}' && { echo 'no bg for REFUSE' >&2; exit 2; }; exit 0` }],
+      TaskCompleted: [{ command: rec }],
+      SubagentStart: [{ command: `cat > /dev/null; echo 'subtasks are off' >&2; exit 2` }],
+      CwdChanged: [{ command: rec }],
+      SessionEnd: [{ command: rec }]
+    }
+  }));
+  mock.setScript(() => SSE({ choices: [{ delta: { content: 'ok' } }] }) + SSE({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1 } }) + 'data: [DONE]\n\n');
+  const git = (args: string[]) => spawnSync('git', args, { cwd: work, encoding: 'utf8' });
+  git(['init', '-q']); git(['config', 'user.email', 't@t']); git(['config', 'user.name', 't']);
+  await writeFile(join(work, 'seed.txt'), 'seed\n'); git(['add', '.']); git(['commit', '-q', '-m', 'i']);
+  const events = async () => (existsSync(log) ? (await readFile(log, 'utf8')).split('\n').filter((l) => l.trim()).map((l) => JSON.parse(l)) : []);
+
+  const s = await startServe(home, work, 0);
+  try {
+    const hello = await s.next();
+    s.send({ id: 1, cmd: 'subtask', prompt: 'do X' });
+    const sub = await s.until((f: any) => f.type === 'result' && f.id === 1, 'subtask');
+    assert.equal(sub.ok, false);
+    assert.match(sub.error, /subtask blocked by hook: subtasks are off/);
+
+    s.send({ id: 2, cmd: 'bg', prompt: 'REFUSE me' });
+    const refused = await s.until((f: any) => f.type === 'result' && f.id === 2, 'bg refused');
+    assert.equal(refused.ok, false);
+    assert.match(refused.error, /bg blocked by hook: no bg for REFUSE/);
+
+    await rm(log, { force: true });
+    s.send({ id: 3, cmd: 'bg', prompt: 'quick job' });
+    const bg = await s.until((f: any) => f.type === 'result' && f.id === 3, 'bg');
+    assert.ok(bg.ok, JSON.stringify(bg));
+    let done: any;
+    for (let i = 0; i < 60 && !done; i++) {
+      await sleep(500);
+      done = (await events()).find((e) => e.hook_event_name === 'TaskCompleted');
+    }
+    assert.ok(done, 'TaskCompleted fired once the bg child exited');
+    assert.equal(done.task_id, bg.data.task.id);
+    assert.equal(done.description, 'quick job');
+    assert.equal(done.success, true);
+    const created = (await events()).find((e) => e.hook_event_name === 'TaskCreated');
+    assert.equal(created.agent_type, 'bg');
+
+    await mkdir(join(work, 'pkg'));
+    s.send({ id: 4, cmd: 'cd', dir: 'pkg' });
+    await s.until((f: any) => f.type === 'result' && f.id === 4, 'cd');
+    const cd = (await events()).find((e) => e.hook_event_name === 'CwdChanged');
+    assert.equal(cd.new_cwd, join(work, 'pkg'));
+
+    // SessionEnd only for a session that ran a prompt
+    s.send({ id: 5, cmd: 'prompt', text: 'hi' });
+    await s.until((f: any) => f.type === 'result' && f.id === 5, 'prompt');
+    s.send({ id: 6, cmd: 'shutdown', reason: 'exit' });
+    await s.until((f: any) => f.type === 'result' && f.id === 6, 'shutdown');
+    await new Promise((r) => s.child.once('exit', r));
+    // the bg child is a serve too: it ended its own session at stdin EOF (reason "eof")
+    const ends = (await events()).filter((e) => e.hook_event_name === 'SessionEnd');
+    assert.ok(ends.some((e) => e.session_id !== hello.sessionId && e.reason === 'eof'), 'the bg child ended its own session');
+    const end = ends.find((e) => e.session_id === hello.sessionId);
+    assert.ok(end, 'SessionEnd ran before serve exited');
+    assert.equal(end.reason, 'exit');
+  } finally {
+    s.child.kill();
+    spawnSync('git', ['worktree', 'prune'], { cwd: work });
+    mock.server.close();
+    await rm(log, { force: true });
+    await rm(home, { recursive: true, force: true });
+    await rm(work, { recursive: true, force: true });
+  }
+});

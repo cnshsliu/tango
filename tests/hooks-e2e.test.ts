@@ -31,8 +31,13 @@ async function fakeModel(replies: string[]) {
     req.on('data', (d) => (raw += d));
     req.on('end', () => {
       requests.push(JSON.parse(raw));
+      const reply = replies[requests.length - 1] ?? say('done');
+      if (reply === 'BROKEN') {
+        res.writeHead(400, { 'content-type': 'application/json' });
+        return res.end(JSON.stringify({ error: { message: 'bad request (test)' } }));
+      }
       res.writeHead(200, { 'content-type': 'text/event-stream' });
-      res.end(replies[requests.length - 1] ?? say('done'));
+      res.end(reply);
     });
   });
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
@@ -49,7 +54,7 @@ async function logged(file: string): Promise<any[]> {
 }
 
 /** A fresh workdir + isolated TANGO_HOME, an agent wired with `hooks`, and the fake model. */
-async function setup(hooks: Record<string, unknown>, replies: string[], plugins: Record<string, unknown> = {}) {
+async function setup(hooks: Record<string, unknown>, replies: string[], plugins: Record<string, unknown> = {}, permOver: Partial<PermState> = {}) {
   const work = await mkdtemp(join(tmpdir(), 'tango-hook-work-'));
   const home = await mkdtemp(join(tmpdir(), 'tango-hook-home-'));
   for (const [name, meta] of Object.entries(plugins)) {
@@ -60,7 +65,7 @@ async function setup(hooks: Record<string, unknown>, replies: string[], plugins:
   process.env.TANGO_HOME = home; // plugins are read from here at assembly
   const model = await fakeModel(replies);
   const store = await SessionStore.create(join(home, 'sessions'), work);
-  const perm: PermState = { mode: 'auto' };
+  const perm: PermState = { mode: 'auto', ...permOver };
   const agent = makeAgent(
     { id: 'fake/m', provider: 'fake', model: 'm', api: 'openai-completions', baseUrl: `http://127.0.0.1:${model.port}/v1`, apiKey: 'test' },
     store, work, perm, { checkpoint: 'off', hooks }
@@ -557,6 +562,322 @@ test('PostCompact: exit 2 cannot undo the compaction (only warns); additionalCon
     assert.equal(await t.agent.compact(), true, 'already compacted, exit 2 does not change that');
     await t.agent.prompt('third');
     assert.match(JSON.stringify(t.model.requests[3].messages), /\[hook context\] re-read AGENTS\.md/);
+  } finally {
+    await t.done();
+  }
+});
+
+// ---------- PostToolUseFailure ----------
+
+test('PostToolUseFailure: payload carries the failed call and its error; successful calls never fire it', async () => {
+  const t = await setup(
+    { PostToolUseFailure: [{ command: hook('record.sh', 'hook-log.jsonl') }] },
+    [toolCall('c1', 'bash', { command: 'echo fine' }), toolCall('c2', 'read', { path: 'missing.txt' })]
+  );
+  try {
+    await t.agent.prompt('go');
+    const evs = await logged(t.log);
+    assert.equal(evs.length, 1, 'only the failing call');
+    assert.equal(evs[0].hook_event_name, 'PostToolUseFailure');
+    assert.equal(evs[0].tool_name, 'read');
+    assert.deepEqual(evs[0].tool_input, { path: 'missing.txt' });
+    assert.match(evs[0].error, /missing\.txt|ENOENT|not found/i);
+  } finally {
+    await t.done();
+  }
+});
+
+test('PostToolUseFailure: exit 2 adds its reason to the failed result for the model', async () => {
+  const t = await setup(
+    { PostToolUseFailure: [{ command: hook('always-no.sh', 'failure') }] },
+    [toolCall('c1', 'read', { path: 'missing.txt' })]
+  );
+  try {
+    await t.agent.prompt('go');
+    const toolMsg = t.model.requests[1].messages.find((m: any) => m.role === 'tool');
+    assert.match(toolMsg.content, /\[PostToolUseFailure hook\] always-no failure/);
+  } finally {
+    await t.done();
+  }
+});
+
+// ---------- StopFailure ----------
+
+/** A model endpoint that always fails with HTTP 400 (not retried). */
+const broken = 'BROKEN';
+
+test('StopFailure: payload carries the error when the turn dies; a normal stop never fires it', async () => {
+  const ok = await setup({ StopFailure: [{ command: hook('record.sh', 'hook-log.jsonl') }] }, [say('fine')]);
+  try {
+    await ok.agent.prompt('hi');
+    assert.equal((await logged(ok.log)).length, 0);
+  } finally {
+    await ok.done();
+  }
+  const t = await setup({ StopFailure: [{ command: hook('record.sh', 'hook-log.jsonl') }] }, [broken]);
+  try {
+    await assert.rejects(t.agent.prompt('hi'));
+    const [ev] = await logged(t.log);
+    assert.equal(ev.hook_event_name, 'StopFailure');
+    assert.match(ev.error, /400|bad request/i);
+  } finally {
+    await t.done();
+  }
+});
+
+test('StopFailure: exit 2 cannot rescue the turn, the error still reaches the caller', async () => {
+  const t = await setup({ StopFailure: [{ command: hook('always-no.sh', 'sf') }] }, [broken]);
+  try {
+    await assert.rejects(t.agent.prompt('hi'), /400|bad request/i);
+  } finally {
+    await t.done();
+  }
+});
+
+// ---------- SessionEnd ----------
+
+test('SessionEnd: payload carries the reason; runs once, and only for a session that ran a prompt', async () => {
+  const idle = await setup({ SessionEnd: [{ command: hook('record.sh', 'hook-log.jsonl') }] }, []);
+  try {
+    await idle.agent.end('exit');
+    assert.equal((await logged(idle.log)).length, 0, 'an untouched session ends quietly');
+  } finally {
+    await idle.done();
+  }
+  const t = await setup({ SessionEnd: [{ command: hook('record.sh', 'hook-log.jsonl') }] }, [say('ok')]);
+  try {
+    await t.agent.prompt('hi');
+    await t.agent.end('exit');
+    await t.agent.end('exit');
+    const evs = await logged(t.log);
+    assert.equal(evs.length, 1, 'once');
+    assert.equal(evs[0].hook_event_name, 'SessionEnd');
+    assert.equal(evs[0].reason, 'exit');
+    assert.equal(evs[0].session_id, t.store.id);
+  } finally {
+    await t.done();
+  }
+});
+
+test('SessionEnd: exit 2 cannot keep the session open (only warns), and end() still resolves', async () => {
+  const t = await setup({ SessionEnd: [{ command: hook('always-no.sh', 'end') }] }, [say('ok')]);
+  try {
+    await t.agent.prompt('hi');
+    await t.agent.end('exit'); // resolves, no throw
+  } finally {
+    await t.done();
+  }
+});
+
+// ---------- InstructionsLoaded ----------
+
+test('InstructionsLoaded: payload lists the AGENTS.md files; fires on first load, not on every request', async () => {
+  const t = await setup(
+    { InstructionsLoaded: [{ command: hook('record.sh', 'hook-log.jsonl') }] },
+    [toolCall('c1', 'bash', { command: 'true' }), say('a'), say('b')]
+  );
+  try {
+    await writeFile(join(t.work, 'AGENTS.md'), '# rules\nbe nice\n');
+    await t.agent.prompt('one'); // two requests
+    await t.agent.prompt('two');
+    const evs = await logged(t.log);
+    assert.equal(evs.length, 1, 'same set: announced once');
+    assert.equal(evs[0].hook_event_name, 'InstructionsLoaded');
+    assert.ok(evs[0].files.some((f: string) => f.endsWith(join(t.work.split('/').pop()!, 'AGENTS.md'))), JSON.stringify(evs[0].files));
+    assert.equal(evs[0].files_loaded, evs[0].files.length);
+  } finally {
+    await t.done();
+  }
+});
+
+test('InstructionsLoaded: exit 2 cannot unload them (only warns); additionalContext reaches that same request', async () => {
+  const t = await setup(
+    { InstructionsLoaded: [{ command: json({ additionalContext: 'AGENTS.md checked' }) }, { command: hook('always-no.sh', 'il') }] },
+    [say('ok')]
+  );
+  try {
+    await t.agent.prompt('hi');
+    assert.equal(t.model.requests.length, 1);
+    assert.match(JSON.stringify(t.model.requests[0].messages), /\[hook context\] AGENTS\.md checked/);
+    assert.doesNotMatch(seen(t.model.requests), /always-no il/);
+  } finally {
+    await t.done();
+  }
+});
+
+// ---------- CwdChanged ----------
+
+test('CwdChanged: payload carries the old and new cwd; the hook runs in the new one', async () => {
+  const t = await setup({ CwdChanged: [{ command: hook('record.sh', 'hook-log.jsonl') }] }, []);
+  try {
+    const sub = join(t.work, 'pkg');
+    await mkdir(sub);
+    await t.agent.setCwd(sub);
+    await t.agent.setCwd(sub); // no move, no event
+    const [ev, more] = await logged(join(sub, 'hook-log.jsonl'));
+    assert.equal(more, undefined);
+    assert.equal(ev.hook_event_name, 'CwdChanged');
+    assert.equal(ev.old_cwd, t.work);
+    assert.equal(ev.new_cwd, sub);
+    assert.equal(ev.cwd, sub);
+  } finally {
+    await t.done();
+  }
+});
+
+test('CwdChanged: exit 2 cannot undo the move (only warns); additionalContext goes to the next request', async () => {
+  const t = await setup(
+    { CwdChanged: [{ command: json({ additionalContext: 'now in pkg: use its tsconfig' }) }, { command: hook('always-no.sh', 'cd') }] },
+    [say('ok')]
+  );
+  try {
+    const sub = join(t.work, 'pkg');
+    await mkdir(sub);
+    await t.agent.setCwd(sub);
+    assert.equal(t.agent.cwd, sub);
+    await t.agent.prompt('hi');
+    assert.match(JSON.stringify(t.model.requests[0].messages), /\[hook context\] now in pkg: use its tsconfig/);
+  } finally {
+    await t.done();
+  }
+});
+
+// ---------- Notification ----------
+
+test('Notification: a permission prompt pings the hook first, with the message and its type', async () => {
+  const asked: string[] = [];
+  const t = await setup(
+    { Notification: [{ command: hook('record.sh', 'hook-log.jsonl') }] },
+    [toolCall('c1', 'bash', { command: 'rm -f nothing.txt' })],
+    {},
+    { mode: 'confirm', ask: async (c) => (asked.push(c.name), true) }
+  );
+  try {
+    await t.agent.prompt('go');
+    assert.deepEqual(asked, ['bash'], 'the user was asked');
+    const [ev] = await logged(t.log);
+    assert.equal(ev.hook_event_name, 'Notification');
+    assert.equal(ev.notification_type, 'permission_prompt');
+    assert.match(ev.message, /permission to use bash/);
+  } finally {
+    await t.done();
+  }
+});
+
+test('Notification: exit 2 cannot answer for the user (only warns); the ask still happens', async () => {
+  let asked = 0;
+  const t = await setup(
+    { Notification: [{ command: hook('always-no.sh', 'note') }] },
+    [toolCall('c1', 'bash', { command: 'touch ran.txt' })],
+    {},
+    { mode: 'confirm', ask: async () => (asked++, true) }
+  );
+  try {
+    await t.agent.prompt('go');
+    assert.equal(asked, 1);
+    assert.ok(existsSync(join(t.work, 'ran.txt')), 'the user said yes, so it ran');
+  } finally {
+    await t.done();
+  }
+});
+
+// ---------- SubagentStart / SubagentStop / TaskCreated / TaskCompleted ----------
+// serve emits these around /subtask and /bg (tests/serve.test.ts drives the real commands);
+// here the agent's bus is driven directly, exactly as serve does it
+
+test('SubagentStart: exit 2 refuses the subtask; the veto carries the reason', async () => {
+  const t = await setup({ SubagentStart: [{ command: hook('always-no.sh', 'sub') }] }, []);
+  try {
+    const veto = await t.agent.events.emit('subagent_start', { agentType: 'subtask', description: 'do X' });
+    assert.deepEqual(veto, { block: true, reason: 'always-no sub' });
+  } finally {
+    await t.done();
+  }
+});
+
+test('SubagentStart: payload carries agent_type and description; the matcher selects the agent type', async () => {
+  const t = await setup({ SubagentStart: [{ matcher: 'subtask', command: hook('record.sh', 'hook-log.jsonl') }, { matcher: 'other', command: hook('always-no.sh', 'x') }] }, []);
+  try {
+    const veto = await t.agent.events.emit('subagent_start', { agentType: 'subtask', description: 'do X' });
+    assert.equal(veto, undefined);
+    const [ev] = await logged(t.log);
+    assert.equal(ev.hook_event_name, 'SubagentStart');
+    assert.equal(ev.agent_type, 'subtask');
+    assert.equal(ev.description, 'do X');
+  } finally {
+    await t.done();
+  }
+});
+
+test('SubagentStop: payload carries the outcome', async () => {
+  const t = await setup({ SubagentStop: [{ command: hook('record.sh', 'hook-log.jsonl') }] }, []);
+  try {
+    await t.agent.events.emit('subagent_stop', { agentType: 'subtask', description: 'do X', taskId: 't1', success: false, status: 'failed' });
+    const [ev] = await logged(t.log);
+    assert.equal(ev.hook_event_name, 'SubagentStop');
+    assert.equal(ev.task_id, 't1');
+    assert.equal(ev.success, false);
+    assert.equal(ev.status, 'failed');
+  } finally {
+    await t.done();
+  }
+});
+
+test('SubagentStop: exit 2 cannot undo a finished subtask (only warns); additionalContext reaches the next request', async () => {
+  const t = await setup({ SubagentStop: [{ command: json({ additionalContext: 'review the subtask diff' }) }, { command: hook('always-no.sh', 'ss') }] }, [say('ok')]);
+  try {
+    const veto = await t.agent.events.emit('subagent_stop', { agentType: 'subtask', description: 'do X', taskId: 't1', success: true, status: 'done' });
+    assert.equal(veto, undefined);
+    await t.agent.prompt('next');
+    assert.match(JSON.stringify(t.model.requests[0].messages), /\[hook context\] review the subtask diff/);
+  } finally {
+    await t.done();
+  }
+});
+
+test('TaskCreated: exit 2 refuses the bg task', async () => {
+  const t = await setup({ TaskCreated: [{ command: hook('always-no.sh', 'bg') }] }, []);
+  try {
+    const veto = await t.agent.events.emit('task_created', { agentType: 'bg', description: 'long job' });
+    assert.deepEqual(veto, { block: true, reason: 'always-no bg' });
+  } finally {
+    await t.done();
+  }
+});
+
+test('TaskCreated: payload carries agent_type and description; decision block refuses too', async () => {
+  const t = await setup({ TaskCreated: [{ command: hook('record.sh', 'hook-log.jsonl') }, { command: json({ decision: 'block', reason: 'no bg on fridays' }) }] }, []);
+  try {
+    const veto = await t.agent.events.emit('task_created', { agentType: 'bg', description: 'long job' });
+    assert.deepEqual(veto, { block: true, reason: 'no bg on fridays' });
+    const [ev] = await logged(t.log);
+    assert.equal(ev.hook_event_name, 'TaskCreated');
+    assert.equal(ev.agent_type, 'bg');
+    assert.equal(ev.description, 'long job');
+  } finally {
+    await t.done();
+  }
+});
+
+test('TaskCompleted: payload carries the outcome', async () => {
+  const t = await setup({ TaskCompleted: [{ command: hook('record.sh', 'hook-log.jsonl') }] }, []);
+  try {
+    await t.agent.events.emit('task_completed', { agentType: 'bg', description: 'long job', taskId: 'b1', success: true, status: 'done' });
+    const [ev] = await logged(t.log);
+    assert.equal(ev.hook_event_name, 'TaskCompleted');
+    assert.equal(ev.task_id, 'b1');
+    assert.equal(ev.success, true);
+    assert.equal(ev.status, 'done');
+  } finally {
+    await t.done();
+  }
+});
+
+test('TaskCompleted: exit 2 cannot undo a finished task (only warns)', async () => {
+  const t = await setup({ TaskCompleted: [{ command: hook('always-no.sh', 'tc') }] }, []);
+  try {
+    const veto = await t.agent.events.emit('task_completed', { agentType: 'bg', description: 'long job', taskId: 'b1', success: true, status: 'done' });
+    assert.equal(veto, undefined);
   } finally {
     await t.done();
   }

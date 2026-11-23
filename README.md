@@ -179,9 +179,9 @@ isolation), MCP server→client capabilities (sampling/roots), plugin marketplac
 
 ## Hooks
 
-Shell commands at seven points of a session, configured under `hooks` in `~/.tango/config.json`
-or a trusted project's `.tango/config.json` (see "Project config and trust"; Claude Code's format;
-global hooks run first, then project, then personal, then plugin hooks):
+Shell commands at 17 points of a session (the Claude Code / grok-cli event set), configured under
+`hooks` in `~/.tango/config.json` or a trusted project's `.tango/config.json` (see "Project config
+and trust"; Claude Code's format; global hooks run first, then project, then personal, then plugin hooks):
 
 ```json
 { "hooks": {
@@ -191,30 +191,47 @@ global hooks run first, then project, then personal, then plugin hooks):
   "Stop":             [{ "command": "./tests-green.sh" }],
   "SessionStart":     [{ "command": "./project-notes.sh" }],
   "PreCompact":       [{ "matcher": "auto", "command": "./save-transcript.sh" }],
-  "PostCompact":      [{ "command": "./log-summary.sh" }]
+  "Notification":     [{ "command": "osascript -e 'display notification \"tango needs you\"'" }]
 } }
 ```
 
-Each command runs as `sh -c` in the session's cwd with the event JSON on stdin (`hook_event_name`,
-`session_id`, `cwd`, plus `tool_name` / `tool_input` / `tool_response`, `prompt`,
-`stop_hook_active` / `last_assistant_message`, `source` (`startup` or `resume`) for SessionStart,
-or `trigger` (`manual` = `/compact`, `auto` = the context threshold) and, after compaction, `summary`).
-`matcher` is an anchored regex over the tool name, or over `trigger` for PreCompact / PostCompact;
-missing or `*` matches everything. SessionStart runs once per opened session, just before its
-first prompt. The nested `{matcher, hooks: [{type: "command", command}]}`
-form works too. `timeout` is in seconds (default 10) and a timed-out hook is killed.
+Each command runs as `sh -c` in the session's cwd with the event JSON on stdin: `hook_event_name`,
+`session_id`, `cwd`, plus the event's own fields below. `matcher` is an anchored regex over the
+event's match field; missing or `*` matches everything. The nested
+`{matcher, hooks: [{type: "command", command}]}` form works too. `timeout` is in seconds (default
+10) and a timed-out hook is killed.
+
+| Event | When | Fields (match field first) |
+| --- | --- | --- |
+| `PreToolUse` | before a tool call, ahead of the permission gate | `tool_name`, `tool_input` |
+| `PostToolUse` | after every tool call, refused ones included | `tool_name`, `tool_input`, `tool_response` (`text`, `is_error`) |
+| `PostToolUseFailure` | after a call that failed (refused, crashed, or reported an error), next to PostToolUse | `tool_name`, `tool_input`, `error` |
+| `UserPromptSubmit` | before your prompt is saved or sent | `prompt` |
+| `Stop` | the model is about to finish (no tool calls) | `stop_hook_active`, `last_assistant_message` |
+| `StopFailure` | the turn died on an error (model/API failure, the tool-round cap) | `error` |
+| `SessionStart` | once per opened session, just before its first prompt | `source` (`startup` or `resume`) |
+| `SessionEnd` | a session that ran a prompt closes (quit, `/new`, `/resume`, `/restart`, end of a one-shot or piped run) | `reason` (`exit`, `new`, `resume`, `restart`, `eof`, `sigterm`) |
+| `PreCompact` | before a compaction | `trigger` (`manual` = `/compact`, `auto` = the context threshold) |
+| `PostCompact` | after a compaction | `trigger`, `summary` |
+| `InstructionsLoaded` | the AGENTS.md set is first read, and whenever it changes (`/cd`) | `files_loaded`, `files` (paths, global first) |
+| `CwdChanged` | `/cd` moved the working directory; runs in the new one | `old_cwd`, `new_cwd` |
+| `Notification` | tango needs you: a permission prompt is about to show | `notification_type` (`permission_prompt`), `message` |
+| `SubagentStart` | before `/subtask` starts its worktree child | `agent_type` (`subtask`), `description` (the prompt) |
+| `SubagentStop` | a `/subtask` finished (seen at the next safe point) | `agent_type`, `description`, `task_id`, `success`, `status` (`done`, `failed`, `stopped`) |
+| `TaskCreated` | before `/bg` starts a background task | `agent_type` (`bg`), `description` |
+| `TaskCompleted` | a `/bg` task this session started stopped running (polled every 2s) | `agent_type`, `description`, `task_id`, `success`, `status` |
 
 Exit 0 means go on. Exit 2 acts on the event, with stderr as the reason:
 
 | Event | Exit 2 does |
 | --- | --- |
 | `PreToolUse` | the call is refused; the model sees `blocked: PreToolUse hook: <reason>` |
-| `PostToolUse` | the tool already ran; the reason is appended to its result for the model |
+| `PostToolUse`, `PostToolUseFailure` | the tool already ran; the reason is appended to its result for the model |
 | `UserPromptSubmit` | the prompt is rejected before it is saved or sent |
 | `Stop` | the model keeps going with the reason as a note; `stop_hook_active` is true on the next stop, so a hook can let it finish; at most 3 times per prompt |
-| `SessionStart` | nothing: a session cannot be refused; the reason is a warning on stderr |
 | `PreCompact` | the compaction is skipped (`/compact` reports nothing compacted) |
-| `PostCompact` | nothing: the compaction already happened; the reason is a warning on stderr |
+| `SubagentStart`, `TaskCreated` | `/subtask` or `/bg` is refused with the reason |
+| all others | nothing can be undone or refused there; the reason is a warning on stderr |
 
 Any other exit code warns on stderr and never blocks. The first block stops the chain of hooks
 for that event.
@@ -224,8 +241,11 @@ On exit 0 a hook can print one JSON object on stdout (other output is ignored):
 | Field | Effect |
 | --- | --- |
 | `"decision": "block"`, `"reason"` | same as exit 2 with `reason` as stderr; `"approve"` is accepted and changes nothing |
-| `"additionalContext": "…"` | text for the model: PostToolUse appends it to the tool result, every other event adds it as a `[hook context]` note before the next model request |
-| `"continue": false`, `"stopReason"` | ends the turn after the current step; the turn's last message is `[hook] <stopReason>` (from UserPromptSubmit it rejects the prompt, from PreToolUse it also refuses the call; from Stop it lets the model finish) | The older `beforeTool` / `afterTool` string
+| `"additionalContext": "…"` | text for the model: PostToolUse / PostToolUseFailure append it to the tool result, other events add it as a `[hook context]` note before the next model request (SessionEnd and Notification ignore it) |
+| `"continue": false`, `"stopReason"` | ends the turn after the current step; the turn's last message is `[hook] <stopReason>` (from UserPromptSubmit it rejects the prompt, from PreToolUse it also refuses the call, from SubagentStart / TaskCreated it refuses the launch; from Stop it lets the model finish) |
+
+The TUI sends serve a `shutdown` frame before it closes a session and waits up to 3s for
+SessionEnd hooks; a killed serve (SIGKILL) skips them. The older `beforeTool` / `afterTool` string
 keys still work as before (notify only, never block).
 
 ## Lean by design (token plans)
@@ -441,7 +461,8 @@ a summary, or full hunks per file.
 
 `tango serve` speaks JSONL over stdin/stdout (the only transport today): one JSON command per
 stdin line, one JSON frame per stdout line. Human logs go to stderr; stdout is protocol-only.
-Commands: `prompt`, `btw` (ephemeral, tool-free side question), `interrupt`, `permission`
+Commands: `prompt`, `btw` (ephemeral, tool-free side question), `interrupt`, `shutdown` (`reason`:
+abort any turn, run SessionEnd hooks, reply, exit — sent by the TUI before it closes a session), `permission`
 (answers a `permission_request` frame by request id), `models` (list presets with key availability),
 `set_model` (also saved as the default), `set_mode`, `set_nvim_viewer` (persist `ask`/`readonly`),
 `set_theme`, `set_mouse`, `diff` (read-only working-tree/staged patch), `timeline` (turn list with

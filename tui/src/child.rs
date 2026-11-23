@@ -154,6 +154,24 @@ impl Serve {
     }
 }
 
+impl Serve {
+    /// Ask serve to close the session (SessionEnd hooks run there), then wait a short grace
+    /// period for it to exit. Drop still kills whatever is left.
+    pub fn shutdown(&mut self, reason: &str) {
+        self.write_line(&json!({ "cmd": "shutdown", "reason": reason }).to_string());
+        #[cfg(not(test))]
+        {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(3000);
+            while std::time::Instant::now() < deadline {
+                if matches!(self.child.try_wait(), Ok(Some(_))) {
+                    return;
+                }
+                thread::sleep(std::time::Duration::from_millis(20));
+            }
+        }
+    }
+}
+
 impl Drop for Serve {
     fn drop(&mut self) {
         let _ = self.child.kill();
