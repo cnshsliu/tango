@@ -128,8 +128,37 @@ pub fn display_width(s: &str) -> usize {
     s.width()
 }
 
-/// A ⚙ line shows at most this many chars of its call (bash command) on one line.
+/// A ⚙ line's call is cut to fit the chat width at draw time; this is the width
+/// used before the first draw (and for the stored line text).
 const BRIEF_CHARS: usize = 160;
+
+/// The call part of a ⚙ line, fitted into `avail` columns: the first line, cut
+/// with `…` when it is too wide, plus `（共 N 行）` when the call has more lines.
+fn fit_call(call: &str, avail: usize) -> String {
+    use unicode_width::UnicodeWidthChar;
+    let n = call.lines().count();
+    let first = call.lines().next().unwrap_or("").trim_end();
+    let more = if n > 1 { format!("（共 {n} 行）") } else { String::new() };
+    if n <= 1 && display_width(first) <= avail {
+        return first.to_string();
+    }
+    // on a very narrow screen the command may shrink to just "…": one row still wins
+    let room = avail.saturating_sub(1 + display_width(&more));
+    let mut out = String::new();
+    let mut w = 0;
+    for c in first.chars() {
+        let cw = c.width().unwrap_or(0);
+        if w + cw > room {
+            break;
+        }
+        out.push(c);
+        w += cw;
+    }
+    if out.len() < first.len() || n > 1 {
+        out.push('…');
+    }
+    out + &more
+}
 
 /// Collapsed thinking shows this many lines / chars before the expand hint.
 const THINK_PREVIEW_LINES: usize = 3;
@@ -312,9 +341,12 @@ struct ChatLine {
     notice: bool,
     /// a thinking block shown in full instead of its collapsed preview
     expanded: bool,
-    /// a ⚙ line's full call detail (e.g. the whole bash command) when the line
-    /// itself only shows a one-line brief; the viewer and transcript show it
+    /// a ⚙ line's full call detail (e.g. the whole bash command); the line shows
+    /// it fitted to one row, the viewer and transcript show it whole
     call: Option<String>,
+    /// the ⚙ line around its call — (`⚙ bash `, ` · 7ms · 已中断`) — so chat_lines
+    /// can refit the call to the current width
+    frame: Option<(String, String)>,
     /// the splash wordmark kept in the chat once the conversation starts: its 5 rows,
     /// drawn with the gradient instead of the wrapped text; never persisted
     wordmark: bool,
@@ -2654,6 +2686,7 @@ impl App {
                 notice: false,
                 expanded: false,
                 call: None,
+                frame: None,
                 wordmark: false,
             });
         }
@@ -2671,6 +2704,7 @@ impl App {
             notice: false,
             expanded: false,
             call: None,
+            frame: None,
             wordmark: false,
         });
     }
@@ -2899,7 +2933,7 @@ impl App {
                 .flatten()
                 .unwrap_or_else(|| line.text.clone());
             // a ⚙ line cut to a brief: the transcript carries the whole call
-            if let Some(call) = &line.call {
+            if let Some(call) = line.call.as_ref().filter(|c| !full.contains(c.as_str())) {
                 for part in call.lines() {
                     full.push_str("\n  $ ");
                     full.push_str(part);
@@ -2956,19 +2990,9 @@ impl App {
     /// The ⚙ line's text for a call, plus the full detail when the line had to cut
     /// it: a bash command longer than one line or BRIEF_CHARS shows its first line
     /// and how much was left out; the rest lives in the viewer and transcript.
-    fn call_brief(input: &Value) -> (String, Option<String>) {
+    fn call_brief(input: &Value) -> (String, String) {
         let full = Self::call_summary(input);
-        let n = full.lines().count();
-        let first = full.lines().next().unwrap_or("").trim_end();
-        if n <= 1 && first.chars().count() <= BRIEF_CHARS {
-            return (full, None);
-        }
-        let mut brief: String = first.chars().take(BRIEF_CHARS).collect();
-        brief.push('…');
-        if n > 1 {
-            brief.push_str(&format!("（共 {n} 行）"));
-        }
-        (brief, Some(full))
+        (fit_call(&full, BRIEF_CHARS), full)
     }
 
     /// What a ⚙ line's viewer shows: the full call (as `$ command`) above its output.
@@ -6916,17 +6940,20 @@ impl App {
                     .lines
                     .iter()
                     .rposition(|l| !id.is_empty() && l.tool_id.as_deref() == Some(id.as_str()));
+                let frame = Some((format!("⚙ {name} "), format!(" · {ms}ms{note}")));
                 if let Some(i) = hit {
                     let line = &mut self.lines[i];
                     line.text = text;
                     line.tone = style;
                     line.output = full;
                     line.tool_id = None;
-                    line.call = call;
+                    line.call = Some(call);
+                    line.frame = frame;
                 } else {
                     self.push_tool(text, style, full);
                     if let Some(line) = self.lines.last_mut() {
-                        line.call = call;
+                        line.call = Some(call);
+                        line.frame = frame;
                     }
                 }
             }
@@ -8482,7 +8509,8 @@ impl App {
                     let (brief, call) = Self::call_brief(&it["input"]);
                     self.push_tool(format!("⚙ {name} {brief}"), style, out);
                     if let Some(line) = self.lines.last_mut() {
-                        line.call = call;
+                        line.call = Some(call);
+                        line.frame = Some((format!("⚙ {name} "), String::new()));
                     }
                 }
                 _ => {}
@@ -8580,6 +8608,18 @@ impl App {
             .map(|(source_index, line)| {
                 let mut text = if line.tone == Tone::Thinking {
                     thinking_view(&line.text, line.expanded, first_folded == Some(source_index))
+                } else if let (Some(call), Some((head, tail))) = (&line.call, &line.frame) {
+                    // one row, whatever the width: the call gets what head, tail and
+                    // the optional [HH:MM] leave (1 spare column for … under /ascii)
+                    let width = if self.chat_inner_w > 0 {
+                        self.chat_inner_w as usize
+                    } else {
+                        BRIEF_CHARS + display_width(head) + display_width(tail)
+                    };
+                    let ts = if self.timestamps { 8 } else { 0 };
+                    let avail = width
+                        .saturating_sub(display_width(head) + display_width(tail) + ts + 1);
+                    format!("{head}{}{tail}", fit_call(call, avail))
                 } else {
                     line.text.clone()
                 };
@@ -8632,6 +8672,7 @@ impl App {
                     notice: line.notice,
                     expanded: line.expanded,
                     call: line.call.clone(),
+                    frame: line.frame.clone(),
                     wordmark: false,
                 }
             })
@@ -8651,6 +8692,7 @@ impl App {
                     notice: false,
                     expanded: false,
                     call: None,
+                    frame: None,
                     wordmark: true,
                 },
             );
@@ -12848,6 +12890,7 @@ mod tests {
 
     #[test]
     fn long_bash_commands_show_a_one_line_brief_and_interrupts_are_warnings() {
+        use ratatui::{Terminal, backend::TestBackend};
         let mut app = App::new();
         let mut serve = Serve::mock();
         let long = format!("for p in a b; do\n  curl {}\ndone", "x".repeat(300));
@@ -12866,12 +12909,30 @@ mod tests {
         let text = App::line_viewer_text(line).unwrap();
         assert!(text.starts_with("$ for p in a b; do\n  curl xxx"), "{text}");
         assert!(text.ends_with("/a\n[interrupted]"), "{text}");
-        // one long line: cut at BRIEF_CHARS
-        let (brief, call) = App::call_brief(&serde_json::json!({"command": "y".repeat(200)}));
-        assert_eq!(brief.chars().count(), BRIEF_CHARS + 1);
-        assert!(brief.ends_with('…') && call.is_some());
-        // short commands stay whole, with nothing extra kept
-        assert_eq!(App::call_brief(&serde_json::json!({"command":"ls"})), ("ls".into(), None));
+        // drawn, the line is refitted to the chat width: always exactly one row
+        for w in [40u16, 60, 100, 150] {
+            let mut t = Terminal::new(TestBackend::new(w, 12)).unwrap();
+            t.draw(|f| app.draw(f)).unwrap();
+            let shown = app.chat_lines().last().unwrap().text.clone();
+            assert!(display_width(&shown) <= w as usize, "{w}: {shown}");
+            assert!(shown.ends_with("…（共 3 行） · 7ms · 已中断"), "{w}: {shown}");
+            assert_eq!(app.chat_rows.iter().filter(|r| r.text.starts_with("⚙")).count(), 1);
+        }
+        let long_one = format!("echo {}", "y".repeat(300));
+        app.handle(
+            Event::Server(
+                0,
+                serde_json::json!({"type":"tool_result","call":{"id":"t8","name":"bash","input":{"command":long_one}},"ms":3,"isError":false,"output":"y"}),
+            ),
+            &mut serve,
+        );
+        let mut t = Terminal::new(TestBackend::new(80, 12)).unwrap();
+        t.draw(|f| app.draw(f)).unwrap();
+        let shown = app.chat_lines().last().unwrap().text.clone();
+        assert!(display_width(&shown) <= 80 && shown.ends_with("y… · 3ms"), "{shown}");
+        // fit_call: short calls stay whole, CJK counts 2 columns
+        assert_eq!(fit_call("ls", 10), "ls");
+        assert_eq!(fit_call("一二三四五六七八九十", 12), "一二三四五…");
         // a real failure stays red; old sessions' [exit null] reads as interrupted
         assert!(!App::interrupted_output(Some("boom\n[exit 1]")));
         assert!(App::interrupted_output(Some("[exit null]")));

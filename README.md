@@ -275,8 +275,9 @@ tools and checkpoints follow live); `/add_dir <dir>` registers an extra writable
 - **Running tools**: while a bash/other tool call is in flight its `⚙ …` line keeps the
   gear cycling through the same cyan wave (~2.5 steps/s); when the result lands, that same
   line freezes into `⚙ <tool> <summary> · <ms>` in place — one line per call, never a
-  duplicate. Without truecolor the same wave runs in xterm 256 colors. A command longer than
-  one line or 160 chars shows only its first line, cut at 160 chars, plus `…（共 N 行）`; the
+  duplicate. Without truecolor the same wave runs in xterm 256 colors. The command is fitted
+  to one row of the current chat width (refitted when the terminal resizes): its first line, cut
+  with `…` when it doesn't fit, plus `（共 N 行）` for multi-line commands; the
   viewer (double-click / Ctrl+O) shows the whole command as `$ <command>` above the output,
   and Ctrl+T's transcript keeps it too. A call killed by your interrupt (Esc / Ctrl+C) ends
   in `[interrupted]` (not `[exit null]`) and shows in the warning tone with `· 已中断`, not red.

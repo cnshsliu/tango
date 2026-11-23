@@ -63,8 +63,8 @@ git diff | tango "review this patch"
 
 A tool call in flight shows as `⚙ bash …` with the gear color cycling; when it finishes
 the same line becomes `⚙ bash <command> · <ms>` (double-click it or press ctrl+o for the output).
-Long or multi-line commands (heredocs, loops) show only their first line, cut at 160 chars, with
-`…（共 N 行）`; the viewer shows the full command above the output. Interrupting a running command
+A tool line always takes one row: long or multi-line commands (heredocs, loops) show their first
+line, cut to the terminal width, with `…（共 N 行）`; the viewer shows the full command above the output. Interrupting a running command
 (Esc / Ctrl+C) marks its line `· 已中断` in the warning color instead of a red error.
 
 Reasoning the model streamed shows as a block headed by an upright `🤖` (the text after it is dim
