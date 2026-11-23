@@ -279,7 +279,9 @@ tools and checkpoints follow live); `/add_dir <dir>` registers an extra writable
   text), the highlight clearing on the next key; the permission modal takes `c` to copy the pending command before
   answering y/n/a. `/mouse off` still hands selection back to the terminal natively.
 - **Clipboard** (`/clipboard auto|osc52|native`, config `clipboard`): every copy (selection,
-  `/copy`, viewer `c`, prompt menu, session id) goes through one path. `auto` (default) sends an
+  `/copy`, viewer `c`, prompt menu, session id) goes through one path and confirms with a toast
+  (`✓ 已复制 N 个字符到剪贴板`) in the chat's top-right corner that disappears after 2 seconds; only a
+  failed copy is written into the chat. `auto` (default) sends an
   OSC 52 escape (`ESC ]52;c;<base64> BEL`) when `$SSH_TTY`/`$SSH_CONNECTION` is set, so text lands in
   the clipboard of the machine you're sitting at; locally it runs `pbcopy` (or `wl-copy`/`xclip`/`xsel`)
   and falls back to OSC 52 if none works. Inside tmux the sequence is wrapped in tmux's DCS

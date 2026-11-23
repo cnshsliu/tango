@@ -306,7 +306,7 @@ while a turn is running unless noted. `/help` prints a short list inside the TUI
 | `/takeover [session] [note]` | Pull a brief of another session's work into this one |
 | `/export [md\|html]` | Write the full transcript to `~/.tango/exports/` |
 | `/transcript` | View the raw transcript, including abandoned futures |
-| `/copy [N]` | Copy the last (or Nth-last) assistant reply to the clipboard |
+| `/copy [N]` | Copy the last (or Nth-last) assistant reply to the clipboard. A copy is confirmed by a toast in the chat's top-right corner that goes away after 2 seconds; it never adds a chat line |
 | `/recap` | One-line summary of the conversation. Not saved to the session |
 | `/restart` | Restart the TUI and serve (picks up a new build) and reopen this session. Not during a turn |
 | `/exit` (`/quit`) | Leave tango |

@@ -543,6 +543,9 @@ struct InputLayout {
 /// Adding, renaming or removing a run_slash arm? Update this table, the reference section of
 /// docs/handbook.md and README's command list; `slash_commands_stay_in_sync_with_help_and_docs`
 /// fails until they agree.
+/// how long a toast stays up
+const TOAST_MS: u128 = 2000;
+
 const SLASH: &[(&str, &str)] = &[
     (
         "/branch",
@@ -1296,6 +1299,8 @@ enum EditMode {
 
 pub struct App {
     theme: Theme,
+    /// transient confirmation ("已复制 …") drawn over the chat's top-right corner, never a chat line
+    toast: Option<(String, std::time::Instant)>,
     mouse: bool,
     pub mouse_capture: Option<bool>,
     keys: Keymap,
@@ -1485,6 +1490,7 @@ impl App {
     pub fn new() -> Self {
         Self {
             theme: Theme::dark(),
+            toast: None,
             mouse: true,
             mouse_capture: None,
             keys: Keymap::from_json(None),
@@ -1852,7 +1858,7 @@ impl App {
                 .take(40)
                 .collect();
             match self.copy_to_clipboard(&original) {
-                Ok(()) => self.push(format!("已复制原文：{head}"), Tone::Success),
+                Ok(()) => self.toast(format!("已复制原文：{head}")),
                 Err(e) => self.push(format!("复制失败：{e}"), Tone::Error),
             }
         }
@@ -2000,7 +2006,7 @@ impl App {
             match self.copy_to_clipboard(&text) {
                 Ok(()) => {
                     let n = text.chars().filter(|c| *c != '\n').count();
-                    self.push(format!("已复制 {n} 个字符到剪贴板"), Tone::Success);
+                    self.toast(format!("已复制 {n} 个字符到剪贴板"));
                 }
                 Err(e) => self.push(format!("复制失败：{e}"), Tone::Error),
             }
@@ -2050,11 +2056,25 @@ impl App {
         self.input[from..to].iter().collect()
     }
 
+    /// Show `text` as a toast for TOAST_MS (replaces any current one). The 1s idle tick redraws,
+    /// so it disappears within a second after expiring.
+    fn toast(&mut self, text: impl Into<String>) {
+        self.toast = Some((text.into(), std::time::Instant::now()));
+    }
+
+    /// The toast still on screen, if any (expired ones are dropped).
+    fn live_toast(&mut self) -> Option<&str> {
+        if self.toast.as_ref().is_some_and(|(_, at)| at.elapsed().as_millis() >= TOAST_MS) {
+            self.toast = None;
+        }
+        self.toast.as_ref().map(|(t, _)| t.as_str())
+    }
+
     fn input_copy(&mut self, text: &str) {
         match self.copy_to_clipboard(text) {
             Ok(()) => {
                 let n = text.chars().filter(|c| *c != '\n').count();
-                self.push(format!("已复制 {n} 个字符到剪贴板"), Tone::Success);
+                self.toast(format!("已复制 {n} 个字符到剪贴板"));
             }
             Err(e) => self.push(format!("复制失败：{e}"), Tone::Error),
         }
@@ -3991,7 +4011,7 @@ impl App {
                 if let Some(text) = pick {
                     let text = text.clone();
                     match self.copy_to_clipboard(&text) {
-                        Ok(()) => self.push(format!("已复制助手回复（{n}）",), Tone::Success),
+                        Ok(()) => self.toast(format!("已复制助手回复（{n}）")),
                         Err(error) => self.push(format!("复制失败：{error}"), Tone::Error),
                     }
                 } else {
@@ -4994,7 +5014,7 @@ impl App {
                                 let id = self.session_full.clone();
                                 match self.copy_to_clipboard(&id) {
                                     Ok(()) => {
-                                        self.push(format!("已复制会话 id：{id}"), Tone::Success)
+                                        self.toast(format!("已复制会话 id：{id}"))
                                     }
                                     Err(e) => self.push(format!("复制失败：{e}"), Tone::Error),
                                 }
@@ -5391,7 +5411,7 @@ impl App {
                 let text = self.viewer.as_ref().unwrap().text.clone();
                 let result = self.copy_to_clipboard(&text);
                 match result {
-                    Ok(()) => self.push("已复制查看器全文", Tone::Success),
+                    Ok(()) => self.toast("已复制查看器全文"),
                     Err(error) => self.push(format!("复制失败：{error}"), Tone::Error),
                 }
                 return;
@@ -5462,7 +5482,7 @@ impl App {
                     if let Some(p) = self.permission.as_ref() {
                         let text = format!("{} {}", p.name, p.detail);
                         match self.copy_to_clipboard(&text) {
-                            Ok(()) => self.push("命令已复制（y/n/a 待选）", Tone::Success),
+                            Ok(()) => self.toast("命令已复制（y/n/a 待选）"),
                             Err(e) => self.push(format!("复制失败：{e}"), Tone::Error),
                         }
                     }
@@ -8218,6 +8238,25 @@ impl App {
                 area,
             );
             self.prompt_header = Some((area, back));
+        }
+        // toast: top-right of the chat, one row below the prompt header (which owns row 0
+        // while scrolled back), so neither covers the other
+        let toast_row = u16::from(self.prompt_header.is_some());
+        let success = self.theme.style(Tone::Success);
+        if let Some(text) = self.live_toast()
+            && chat_a.height > toast_row
+            && chat_a.width > 4
+        {
+            // clip_to_width pads to the full width: trim so the toast hugs the right edge
+            let label = clip_to_width(&format!(" ✓ {text}"), chat_a.width as usize - 3).trim_end().to_string() + " ";
+            let w = display_width(&label) as u16;
+            let area = Rect {
+                x: chat_a.x + chat_a.width.saturating_sub(w + 1),
+                y: chat_a.y + toast_row,
+                width: w,
+                height: 1,
+            };
+            f.render_widget(Paragraph::new(label).style(success.reversed()), area);
         }
         self.jump_area = Rect::default();
         if jump_h == 1 {
@@ -11462,9 +11501,7 @@ mod tests {
         assert_eq!(app.input_sel, Some((6, 11)));
         assert_eq!(app.input_raw_text(6, 11), "brave");
         assert!(
-            app.lines
-                .iter()
-                .any(|l| l.text == "已复制 5 个字符到剪贴板")
+            app.toast.as_ref().is_some_and(|(t, _)| t == "已复制 5 个字符到剪贴板")
         );
         // the selection stays highlighted until the next key
         let b = {
@@ -11501,7 +11538,7 @@ mod tests {
         assert_eq!(app.cursor, 3, "before the newline");
         assert_eq!(app.input_sel, None);
         assert!(
-            !app.lines.iter().any(|l| l.text.contains("已复制")),
+            app.toast.is_none(),
             "a click copies nothing"
         );
     }
@@ -11538,9 +11575,7 @@ mod tests {
         assert!(raw.contains("line three"));
         let n = raw.chars().filter(|c| *c != '\n').count();
         assert!(
-            app.lines
-                .iter()
-                .any(|l| l.text == format!("已复制 {n} 个字符到剪贴板")),
+            app.toast.as_ref().is_some_and(|(t, _)| *t == format!("已复制 {n} 个字符到剪贴板")),
             "the paste label expands to the full text on the clipboard"
         );
     }
@@ -11880,9 +11915,7 @@ mod tests {
             &mut serve,
         );
         assert!(
-            app.lines
-                .iter()
-                .any(|l| l.text.contains("已复制会话 id") && l.text.contains("a1b2c3d4e5f67890")),
+            app.toast.as_ref().is_some_and(|(t, _)| t.contains("已复制会话 id") && t.contains("a1b2c3d4e5f67890")),
             "click confirms the copy"
         );
     }
@@ -13276,6 +13309,27 @@ mod tests {
     }
 
     #[test]
+    fn copy_confirmation_is_a_toast_not_a_chat_line_and_expires() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut app = App::new();
+        let before = app.lines.len();
+        app.toast("已复制 66 个字符到剪贴板");
+        assert_eq!(app.lines.len(), before, "nothing lands in the chat");
+        let mut term = Terminal::new(TestBackend::new(60, 20)).unwrap();
+        term.draw(|f| app.draw(f)).unwrap();
+        // wide chars occupy two cells (the second is blank): compare the symbols without spaces
+        let row0: String = (0..60).map(|x| term.backend().buffer()[(x, 0)].symbol().to_string()).collect();
+        assert!(row0.starts_with("      "), "right-aligned, not at the left: {row0:?}");
+        assert!(row0.replace(' ', "").ends_with("✓已复制66个字符到剪贴板"), "top-right: {row0:?}");
+        // expired: gone on the next draw
+        app.toast = Some(("old".into(), std::time::Instant::now() - std::time::Duration::from_millis(TOAST_MS as u64 + 10)));
+        term.draw(|f| app.draw(f)).unwrap();
+        let row0: String = (0..60).map(|x| term.backend().buffer()[(x, 0)].symbol().to_string()).collect();
+        assert!(!row0.contains("old"));
+        assert!(app.toast.is_none());
+    }
+
+    #[test]
     fn retry_frames_show_attempt_progress() {
         let mut app = App::new();
         let mut serve = Serve::mock();
@@ -13432,9 +13486,7 @@ mod tests {
         // 1 复制原文: ⏎ restored, ❯ stripped — the flattened form is what chat holds
         app.prompt_menu_copy(&mut serve);
         assert!(
-            app.lines
-                .iter()
-                .any(|l| l.text.contains("已复制") && l.text.contains("第一行")),
+            app.toast.as_ref().is_some_and(|(t, _)| t.contains("已复制") && t.contains("第一行")),
             "copy confirms with the original text"
         );
         // 3 原样重发: submits the restored original
@@ -13651,7 +13703,7 @@ mod tests {
             &mut serve,
         );
         assert!(app.permission.is_some(), "modal stays open after copy");
-        assert!(app.lines.iter().any(|l| l.text.contains("命令已复制")));
+        assert!(app.toast.as_ref().is_some_and(|(t, _)| t.contains("命令已复制")));
         assert!(serve.sent.is_empty(), "no answer was sent");
     }
 
@@ -13756,7 +13808,7 @@ mod tests {
         app.sel_end_pos = Some((0, 9));
         app.chat_release(0, 0, 9);
         assert!(app.sel_anchor_pos.is_none());
-        assert!(app.lines.iter().any(|l| l.text.contains("已复制 5 个字符")));
+        assert!(app.toast.as_ref().is_some_and(|(t, _)| t.contains("已复制 5 个字符")));
     }
 
     #[test]
@@ -13836,7 +13888,7 @@ mod tests {
         app.chat_release(0, 0, 20);
         assert!(app.viewer.is_none(), "a drag is a selection, not a click");
         assert!(
-            app.lines.iter().any(|l| l.text.contains("已复制")),
+            app.toast.as_ref().is_some_and(|(t, _)| t.contains("已复制")),
             "dragged text was copied"
         );
         let _ = std::fs::remove_dir_all(&dir);
