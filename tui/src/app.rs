@@ -1488,8 +1488,6 @@ pub struct App {
     chat_area: Rect,
     /// input box rect, captured each draw so chip clicks map back to image ids
     input_area: Rect,
-    /// padding rows above and below the draft in the input block (tall terminals)
-    input_pad: u16,
     picker_area: Rect,
     /// visible picker window rows → item index (None = group header row)
     picker_rows: Vec<Option<usize>>,
@@ -1679,7 +1677,6 @@ impl App {
             viewer: None,
             chat_area: Rect::default(),
             input_area: Rect::default(),
-            input_pad: 0,
             picker_area: Rect::default(),
             picker_rows: Vec::new(),
             popup_area: Rect::default(),
@@ -8500,11 +8497,11 @@ impl App {
 
     // ---------- rendering ----------
 
-    /// Input box rows: the work rule, the tinted block (pad, text rows, pad, the
-    /// mode · model info row). Pads only on tall terminals (`input_pad`, set per draw).
+    /// Input box rows: the work rule, the tinted block (text rows, then the
+    /// mode · model info row). No blank padding rows: the draft sits right under the rule.
     fn input_height(&self, width: u16) -> u16 {
         let text = self.input_layout(Self::input_text_w(width)).lines.len().min(8) as u16;
-        text + 2 + 2 * self.input_pad
+        text + 2
     }
 
     /// Width the draft wraps at: the block's left bar + gap take INPUT_X columns.
@@ -8512,14 +8509,14 @@ impl App {
         width.saturating_sub(INPUT_X).max(1)
     }
 
-    /// First screen row of the draft text (under the rule and the top pad).
+    /// First screen row of the draft text (right under the rule).
     fn input_text_top(&self) -> u16 {
-        self.input_area.y + 1 + self.input_pad
+        self.input_area.y + 1
     }
 
     /// Draft rows visible in the block.
     fn input_visible(&self) -> usize {
-        self.input_area.height.saturating_sub(2 + 2 * self.input_pad).max(1) as usize
+        self.input_area.height.saturating_sub(2).max(1) as usize
     }
 
     fn chat_height(&self, area: Rect, input_h: u16) -> usize {
@@ -8749,9 +8746,6 @@ impl App {
 
     pub fn draw(&mut self, f: &mut Frame) {
         let area = f.area();
-        // the OpenCode-style breathing room above/below the draft costs 2 chat rows:
-        // only on terminals tall enough to spare them
-        self.input_pad = u16::from(area.height >= 30);
         // short terminals give the rows to the conversation: no wordmark in the chat
         self.chat_roomy = area.height >= 20;
         let input_h = self.input_height(area.width);
@@ -14235,12 +14229,12 @@ mod tests {
 
         let mut tall = Terminal::new(TestBackend::new(80, 40)).unwrap();
         tall.draw(|f| app.draw(f)).unwrap();
-        // rule, pad, 1 text row, pad, info row
-        assert_eq!(app.input_area.height, 5);
+        // rule, 1 text row, info row — no blank pads around the draft
+        assert_eq!(app.input_area.height, 3);
         let top = app.input_area.y;
-        assert_eq!(app.input_text_top(), top + 2);
-        assert!(text(&tall, top + 4).starts_with("▌ auto · claude-opus-5-5 apikeyfan"));
-        let footer = text(&tall, top + 5);
+        assert_eq!(app.input_text_top(), top + 1);
+        assert!(text(&tall, top + 2).starts_with("▌ auto · claude-opus-5-5 apikeyfan"));
+        let footer = text(&tall, top + 3);
         assert!(footer.starts_with("/work/x:tango/x"), "footer: {footer}");
         assert!(footer.contains("shift+tab plan"), "footer: {footer}");
         let b = tall.backend().buffer();
@@ -14249,7 +14243,7 @@ mod tests {
 
         let mut short = Terminal::new(TestBackend::new(80, 20)).unwrap();
         short.draw(|f| app.draw(f)).unwrap();
-        assert_eq!(app.input_area.height, 3, "no pads under 30 rows");
+        assert_eq!(app.input_area.height, 3, "same block on short terminals");
         assert_eq!(app.input_area.y + 3 + 1, 20, "no footer under 24 rows");
     }
 

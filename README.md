@@ -487,7 +487,7 @@ durations, a centered permission modal (y/n/a), and an input block: a tinted bac
 shade in the light theme) with a left bar colored by risk — plan orange, auto red, readonly gray,
 ask blue (plan wins) — the draft, and an info row `mode · model provider` (e.g.
 `ask · claude-opus-5-5 apikeyfan`; a narrow screen drops the provider, then clips the model).
-Terminals of 30+ rows get one blank row of padding above and below the draft. Under the block, on
+The draft starts right under the rule, with no blank padding rows around it. Under the block, on
 terminals of 24+ rows, a footer shows `~/dir:branch` on the left (refreshed by `/cd`) and key hints
 (`shift+tab plan`, `ctrl+p commands`) on the right when they fit. The bottom status bar (cost ·
 session · ctx, fitted to the terminal width — on a narrow screen ctx and sess go first, then the
