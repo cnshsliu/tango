@@ -498,7 +498,7 @@ wordmark as the first line of the chat, pinned to the top with blank rows under 
 holds both the logo and the first exchange; it scrolls away as the chat grows. It is display-only (not
 in the session file, transcript or exports), cannot be selected or clicked, and is skipped on terminals
 under 20 rows or 30 columns.
-A custom `/statusline` template can still place `{work}` in the status bar. A prompt that starts with an existing file or directory path is sent as `文件：<path>` (or `目录：`) plus the rest of the text, or a request to read it when nothing follows; known slash commands still win. The input is multi-line with Tab-completed `/` commands (also while a turn runs) and `@file` inlining (contents ride along in the
+A custom `/statusline` template can still place `{work}` in the status bar. A prompt that starts with an existing file or directory path is sent as `文件：<path>` (or `目录：`) plus the rest of the text, or a request to read it when nothing follows; known slash commands still win. The input is multi-line with Tab-completed `/` commands (also while a turn runs) and arguments (`/mode`, `/effort`, `/model`, `/send`, `/resume`: Tab inserts the first match, each further Tab the next one, Shift+Tab goes back, zsh-style) and `@file` inlining (contents ride along in the
 prompt, 6KB cap), fences render as indented gray blocks, and long pasted prompts collapse to a
 short summary (over 600 chars or 8 lines). Ctrl+O opens the latest full prompt/tool output in an
 independent scrollable viewer; double-clicking a specific summary/tool line opens that item. Closing the
@@ -542,7 +542,7 @@ staged: with text in the input it clears the input first; with an empty input it
 running turn (as often as you like, it never quits mid-turn); when idle, the first press shows
 "再按一次 Ctrl+C 退出" on the input rule and a second one within 2s quits (any other key cancels);
 Esc closes popups, else does the same (OpenCode-style). `TANGO_BIN` overrides the server binary (e.g. `TANGO_BIN="node bin/tango.js"`
-for dev builds). Bare `/model` and `/resume` open centered pickers; picking a session kills the
+for dev builds). Bare `/model` and `/resume` open centered pickers (`/resume <id or prefix>` switches directly); picking a session kills the
 serve child and respawns it with `TANGO_RESUME`, so both the model context and the visible
 transcript come back. `/new` starts fresh while keeping the current model and permission mode.
 `/restart` quits and re-execs the TUI (and with it a fresh serve), so a rebuilt `tango-tui` or

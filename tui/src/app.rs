@@ -394,6 +394,9 @@ enum Pending {
     PluginsList,
     Trust,
     TrustStatus,
+    /// quiet fetches for argument completion: never print, never open a picker
+    ArgModels,
+    ArgSessions,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -587,6 +590,8 @@ impl Picker {
 enum PopKind {
     Slash,
     File,
+    /// an argument of /mode /model /send /resume /effort: Tab cycles zsh-style
+    Arg,
 }
 
 struct Popup {
@@ -594,6 +599,10 @@ struct Popup {
     descs: Vec<String>,
     sel: usize,
     kind: PopKind,
+    /// Arg only: the text Tab inserts per item (a session's full id behind its short label)
+    inserts: Vec<String>,
+    /// Arg only: a Tab already inserted items[sel]; the next Tab moves on (menu-complete)
+    cycling: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -1428,6 +1437,11 @@ pub struct App {
     theme: Theme,
     /// transient confirmation ("已复制 …") drawn over the chat's top-right corner, never a chat line
     toast: Option<(String, std::time::Instant)>,
+    /// argument completion candidates, fetched quietly on hello (models) and after each
+    /// turn (sessions: new ones appear while this one runs)
+    arg_models: Vec<String>,
+    /// (id, label, current)
+    arg_sessions: Vec<(String, String, bool)>,
     mouse: bool,
     pub mouse_capture: Option<bool>,
     keys: Keymap,
@@ -1622,6 +1636,8 @@ impl App {
         Self {
             theme: Theme::dark(),
             toast: None,
+            arg_models: Vec::new(),
+            arg_sessions: Vec::new(),
             mouse: true,
             mouse_capture: None,
             keys: Keymap::from_json(None),
@@ -3281,9 +3297,21 @@ impl App {
                     descs: items.iter().map(|(_, d)| d.to_string()).collect(),
                     sel: 0,
                     kind: PopKind::Slash,
+                    inserts: Vec::new(),
+                    cycling: false,
                 });
             }
             return;
+        }
+        // argument palette: "/mode a", "/model gl" … (one argument, cursor at the end)
+        if self.pastes.is_empty() && self.cursor == self.input.len() {
+            if let Some((cmd, arg)) = text.split_once(' ')
+                && !arg.contains(char::is_whitespace)
+                && let Some(pop) = self.arg_popup(cmd, arg)
+            {
+                self.popup = Some(pop);
+                return;
+            }
         }
         // @file palette: cursor sits inside an @token
         let (tok, _, _) = self.token_at_cursor();
@@ -3297,11 +3325,107 @@ impl App {
                     descs: vec![String::new(); items.len()],
                     sel: 0,
                     kind: PopKind::File,
+                    inserts: Vec::new(),
+                    cycling: false,
                 });
             }
             return;
         }
         self.popup = None;
+    }
+
+    /// candidates for the argument of `cmd`, filtered by the typed prefix `arg`:
+    /// prefix matches first, then in-order subsequence ("glm54" → zhipu-plan/glm-5.4)
+    fn arg_popup(&self, cmd: &str, arg: &str) -> Option<Popup> {
+        // (shown, desc, inserted)
+        let all: Vec<(String, String, String)> = match cmd {
+            "/mode" => [
+                ("plan", "编辑前先出计划"),
+                ("confirm", "改文件、跑命令前都先问"),
+                ("ask", "有风险时才问（默认）"),
+                ("auto", "全部直接执行（需确认）"),
+                ("readonly", "只看不改"),
+            ]
+            .iter()
+            .map(|(m, d)| (m.to_string(), d.to_string(), m.to_string()))
+            .collect(),
+            "/effort" => ["low", "medium", "high", "off"]
+                .iter()
+                .map(|e| (e.to_string(), String::new(), e.to_string()))
+                .collect(),
+            "/model" => self
+                .arg_models
+                .iter()
+                .map(|m| (m.clone(), String::new(), m.clone()))
+                .collect(),
+            "/send" | "/resume" => self
+                .arg_sessions
+                .iter()
+                .filter(|(_, _, current)| !current)
+                .map(|(id, label, _)| {
+                    let short: String = id.chars().take(8).collect();
+                    // /send's message follows the id
+                    let ins = if cmd == "/send" { format!("{short} ") } else { short.clone() };
+                    (short, label.clone(), ins)
+                })
+                .collect(),
+            _ => return None,
+        };
+        let needle = arg.to_lowercase();
+        let subseq = |hay: &str| {
+            let mut it = needle.chars().peekable();
+            for c in hay.chars() {
+                if it.peek() == Some(&c) {
+                    it.next();
+                }
+            }
+            it.peek().is_none()
+        };
+        let mut hits: Vec<&(String, String, String)> =
+            all.iter().filter(|(s, _, _)| s.to_lowercase().starts_with(&needle)).collect();
+        if hits.is_empty() {
+            hits = all
+                .iter()
+                .filter(|(s, d, _)| subseq(&s.to_lowercase()) || subseq(&d.to_lowercase()))
+                .collect();
+        }
+        // nothing to offer, or the argument is already exactly the only candidate
+        if hits.is_empty() || (hits.len() == 1 && hits[0].2.trim_end() == arg) {
+            return None;
+        }
+        Some(Popup {
+            items: hits.iter().map(|h| h.0.clone()).collect(),
+            descs: hits.iter().map(|h| h.1.clone()).collect(),
+            sel: 0,
+            kind: PopKind::Arg,
+            inserts: hits.iter().map(|h| h.2.clone()).collect(),
+            cycling: false,
+        })
+    }
+
+    /// Tab on an argument popup, zsh menu-complete: a single candidate is inserted and
+    /// the popup closes; several: the first Tab inserts the selected one and keeps the
+    /// menu open, each further Tab (Shift+Tab backwards) swaps in the next
+    fn cycle_arg(&mut self, step: isize) {
+        let Some(p) = self.popup.as_mut() else { return };
+        let n = p.items.len();
+        if n == 0 {
+            return;
+        }
+        if p.cycling {
+            p.sel = ((p.sel as isize + step).rem_euclid(n as isize)) as usize;
+        }
+        p.cycling = true;
+        let ins: Vec<char> = p.inserts[p.sel].chars().collect();
+        let single = n == 1;
+        let text: String = self.input.iter().collect();
+        let start = text.split_once(' ').map_or(0, |(c, _)| c.chars().count() + 1);
+        let end = self.input.len();
+        self.replace_input_range(start, end, &ins);
+        self.cursor = self.input.len();
+        if single {
+            self.popup = None;
+        }
     }
 
     fn file_candidates(token: &str, base: Option<&Path>) -> Vec<String> {
@@ -3366,6 +3490,13 @@ impl App {
                 let eb: usize = s[..min(end, s.len())].chars().count();
                 let replacement: Vec<char> = item.chars().collect();
                 self.replace_input_range(sb, eb, &replacement);
+            }
+            PopKind::Arg => {
+                // a click: insert that one and close (Tab cycles instead, see cycle_arg)
+                if let Some(pp) = self.popup.as_mut() {
+                    pp.cycling = false;
+                }
+                self.cycle_arg(1);
             }
         }
         self.popup = None;
@@ -4502,8 +4633,15 @@ impl App {
                 self.pending.push((id, Pending::Compact));
             }
             "/resume" => {
-                let id = serve.command("sessions", vec![]);
-                self.pending.push((id, Pending::Sessions));
+                let target = rest.trim();
+                if target.is_empty() {
+                    let id = serve.command("sessions", vec![]);
+                    self.pending.push((id, Pending::Sessions));
+                } else {
+                    // a Tab-completed (or typed) id/prefix: serve resolves it on respawn
+                    self.push(format!("↻ resuming session {target} …"), Tone::Muted);
+                    self.switch_session(Some(target.to_string()));
+                }
             }
             "/status" => {
                 let id = serve.command("status", vec![]);
@@ -5238,7 +5376,9 @@ impl App {
                         MouseEventKind::Down(MouseButton::Left)
                             if self.popup_area.contains(Position::new(m.column, m.row)) =>
                         {
-                            let row = m.row.saturating_sub(self.popup_area.y + 1) as usize;
+                            // + the scroll offset the draw applied (selection kept in view)
+                            let skip = self.popup.as_ref().unwrap().sel.saturating_sub(5);
+                            let row = m.row.saturating_sub(self.popup_area.y + 1) as usize + skip;
                             if row < self.popup.as_ref().unwrap().items.len() {
                                 self.popup.as_mut().unwrap().sel = row;
                                 self.accept_popup();
@@ -5311,6 +5451,10 @@ impl App {
                 if v["type"] == "hello" {
                     let id = serve.command("history", vec![]);
                     self.pending.push((id, Pending::History));
+                    let id = serve.command("models", vec![]);
+                    self.pending.push((id, Pending::ArgModels));
+                    let id = serve.command("sessions", vec![]);
+                    self.pending.push((id, Pending::ArgSessions));
                 }
                 self.frame(v, serve)
             }
@@ -6126,11 +6270,26 @@ impl App {
             match k.code {
                 KeyCode::Up if p.sel > 0 => {
                     p.sel -= 1;
+                    p.cycling = false; // the next Tab inserts the row moved to
                     return;
                 }
                 KeyCode::Down => {
                     p.sel = min(p.sel + 1, p.items.len().saturating_sub(1));
+                    p.cycling = false;
                     return;
+                }
+                KeyCode::Tab | KeyCode::Right if p.kind == PopKind::Arg => {
+                    self.cycle_arg(1);
+                    return;
+                }
+                KeyCode::BackTab if p.kind == PopKind::Arg => {
+                    self.cycle_arg(-1);
+                    return;
+                }
+                // Enter runs what is typed, as with command completion (serve fuzzy-
+                // matches /model itself); the menu just closes
+                KeyCode::Enter if p.kind == PopKind::Arg => {
+                    self.popup = None;
                 }
                 KeyCode::Tab | KeyCode::Right => {
                     self.accept_popup();
@@ -6302,6 +6461,17 @@ impl App {
             KeyCode::Enter => {}
             KeyCode::Char(c) if !ctrl && (!self.vim || self.edit_mode == EditMode::Insert) => {
                 self.insert_char(c);
+                // other sessions start while this one runs: refetch the /send /resume
+                // candidates as the argument begins (the popup fills in on the reply)
+                if c == ' ' {
+                    let t: String = self.input.iter().collect();
+                    if (t == "/send " || t == "/resume ")
+                        && !self.pending.iter().any(|(_, k)| matches!(k, Pending::ArgSessions))
+                    {
+                        let id = serve.command("sessions", vec![]);
+                        self.pending.push((id, Pending::ArgSessions));
+                    }
+                }
                 self.refresh_popup();
             }
             KeyCode::Backspace => {
@@ -6782,6 +6952,43 @@ impl App {
                             d["contextWindow"].as_u64().unwrap_or(self.context_window);
                     }
                     match (kind, ok) {
+                        (Pending::ArgModels, ok) => {
+                            if ok {
+                                self.arg_models = d["models"]
+                                    .as_array()
+                                    .map(|a| {
+                                        a.iter()
+                                            .filter_map(|m| m["id"].as_str().map(String::from))
+                                            .collect()
+                                    })
+                                    .unwrap_or_default();
+                            }
+                        }
+                        (Pending::ArgSessions, ok) => {
+                            if ok {
+                                self.arg_sessions = d["sessions"]
+                                    .as_array()
+                                    .map(|a| {
+                                        a.iter()
+                                            .filter_map(|s| {
+                                                let id = s["id"].as_str()?.to_string();
+                                                let name = s["name"].as_str().unwrap_or("");
+                                                let topic = s["topic"].as_str().unwrap_or("");
+                                                let what = if name.is_empty() { topic } else { name };
+                                                let label = format!(
+                                                    "{} · {}",
+                                                    s["ago"].as_str().unwrap_or(""),
+                                                    what.chars().take(40).collect::<String>()
+                                                );
+                                                Some((id, label, s["current"].as_bool().unwrap_or(false)))
+                                            })
+                                            .collect()
+                                    })
+                                    .unwrap_or_default();
+                                // fresh list while "/send " is still being typed: show it
+                                self.refresh_popup();
+                            }
+                        }
                         (Pending::Models, true) => {
                             let cur = d["current"].as_str().unwrap_or("").to_string();
                             let items: Vec<PickItem> = d["models"]
@@ -9191,13 +9398,22 @@ impl App {
             let title = match p.kind {
                 PopKind::Slash => "命令补全",
                 PopKind::File => "文件引用",
+                PopKind::Arg => "参数补全",
             };
             self.popup_area = pop;
-            let inner = render_dialog(f, pop, title, "tab/enter 选择 · esc 关闭", self.theme);
+            let hint = if p.kind == PopKind::Arg {
+                "tab 下一个 · shift+tab 上一个 · enter 执行 · esc 关闭"
+            } else {
+                "tab/enter 选择 · esc 关闭"
+            };
+            let inner = render_dialog(f, pop, title, hint, self.theme);
+            // keep the selection in view: 6 rows show, a long list (models) scrolls
+            let skip = p.sel.saturating_sub(5);
             let rows: Vec<Line> = p
                 .items
                 .iter()
                 .enumerate()
+                .skip(skip)
                 .map(|(i, item)| {
                     let style = if i == p.sel {
                         self.theme.style(Tone::Badge)
@@ -14862,6 +15078,86 @@ mod tests {
         app.key(KeyCode::Tab.into(), &mut serve);
         let typed: String = app.input.iter().collect();
         assert_eq!(typed, "/model ", "tab completes to the first match while busy");
+    }
+
+    fn typed(app: &App) -> String {
+        app.input.iter().collect()
+    }
+
+    fn type_str(app: &mut App, serve: &mut Serve, s: &str) {
+        for ch in s.chars() {
+            app.key(KeyCode::Char(ch).into(), serve);
+        }
+    }
+
+    #[test]
+    fn tab_cycles_argument_candidates_zsh_style() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        type_str(&mut app, &mut serve, "/mode ");
+        assert_eq!(app.popup.as_ref().unwrap().items.len(), 5, "all modes offered after the space");
+        app.key(KeyCode::Tab.into(), &mut serve);
+        assert_eq!(typed(&app), "/mode plan", "first tab inserts the first candidate");
+        app.key(KeyCode::Tab.into(), &mut serve);
+        assert_eq!(typed(&app), "/mode confirm", "next tab swaps in the next one");
+        app.key(KeyCode::BackTab.into(), &mut serve);
+        assert_eq!(typed(&app), "/mode plan", "shift+tab goes back");
+        app.key(KeyCode::BackTab.into(), &mut serve);
+        assert_eq!(typed(&app), "/mode readonly", "and wraps around");
+        app.key(KeyCode::Esc.into(), &mut serve);
+        assert!(app.popup.is_none());
+
+        // one match: inserted and the menu closes
+        app.clear_input();
+        type_str(&mut app, &mut serve, "/mode a");
+        let items = app.popup.as_ref().unwrap().items.clone();
+        assert_eq!(items, vec!["ask", "auto"], "prefix filter");
+        app.clear_input();
+        type_str(&mut app, &mut serve, "/mode re");
+        app.key(KeyCode::Tab.into(), &mut serve);
+        assert_eq!(typed(&app), "/mode readonly");
+        assert!(app.popup.is_none(), "a single candidate completes and closes");
+
+        app.clear_input();
+        type_str(&mut app, &mut serve, "/effort h");
+        app.key(KeyCode::Tab.into(), &mut serve);
+        assert_eq!(typed(&app), "/effort high");
+    }
+
+    #[test]
+    fn model_send_and_resume_complete_from_quiet_fetches() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.arg_models = vec!["zhipu-plan/glm-5.3".into(), "zhipu-plan/glm-5.4".into(), "apikeyfan/claude-opus-5-5".into()];
+        app.arg_sessions = vec![
+            ("c81e407d-aaaa".into(), "1 小时前 · 信箱".into(), true),
+            ("d7d868f3-bbbb".into(), "2 小时前 · 投稿".into(), false),
+        ];
+        type_str(&mut app, &mut serve, "/model glm54");
+        app.key(KeyCode::Tab.into(), &mut serve);
+        assert_eq!(typed(&app), "/model zhipu-plan/glm-5.4", "subsequence match like the picker");
+
+        app.clear_input();
+        type_str(&mut app, &mut serve, "/send ");
+        assert_eq!(app.popup.as_ref().unwrap().items, vec!["d7d868f3"], "the current session is never a target");
+        app.key(KeyCode::Tab.into(), &mut serve);
+        assert_eq!(typed(&app), "/send d7d868f3 ", "a space follows: the message comes next");
+        assert!(app.popup.is_none());
+
+        app.clear_input();
+        type_str(&mut app, &mut serve, "/resume d");
+        app.key(KeyCode::Tab.into(), &mut serve);
+        assert_eq!(typed(&app), "/resume d7d868f3");
+
+        // the frames that fill the caches
+        app.pending.push((7, Pending::ArgSessions));
+        app.frame(
+            serde_json::json!({"type":"result","id":7,"ok":true,"data":{"sessions":[
+                {"id":"e1","name":"","topic":"t","ago":"刚刚","current":false}]}}),
+            &mut serve,
+        );
+        assert_eq!(app.arg_sessions, vec![("e1".to_string(), "刚刚 · t".to_string(), false)]);
+        assert!(app.lines.iter().all(|l| !l.text.contains("e1")), "quiet: nothing printed");
     }
 
     #[test]
