@@ -75,6 +75,11 @@ picks a row, Enter merges it, `d` deletes it, `a` merges all, `c` clears, Esc cl
 running turn, and the model sees it on its next request. Ctrl+C (or Esc) stops the current
 reply and keeps the queue.
 
+If you'd rather have every Enter during a turn join it, run `/queue auto append`. From then on
+Enter while busy works like Alt+Enter, and nothing queues. `/queue auto off` brings queueing
+back, and `/queue auto` shows which mode is on. The setting lasts until you quit Tango; it is
+not saved to config.
+
 ## Everyday workflows
 
 ### Sessions
@@ -357,7 +362,7 @@ while a turn is running unless noted. `/help` prints a short list inside the TUI
 | `/cost` | This session's cost and message count |
 | `/usage` (`/stats`) | Requests and cost across all sessions, by model and by session |
 | `/insights` | Write the same data as an offline HTML report to `~/.tango/exports/` |
-| `/queue` | Manage queued prompts: `rm <n>`, `all` (merge all into the running turn), `clear` |
+| `/queue` | Manage queued prompts: `rm <n>`, `all` (merge all into the running turn), `clear`. `auto append` makes Enter during a turn join the running turn like Alt+Enter; `auto off` goes back to queueing; bare `auto` shows which is on. Lasts until you quit |
 | `/interrupt` | Stop the current turn (same as Ctrl+C) |
 | `/mcp` | MCP servers and the tools they provide |
 | `/plugins` | Installed local plugins |

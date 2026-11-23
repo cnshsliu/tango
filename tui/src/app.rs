@@ -673,8 +673,8 @@ const SLASH: &[(&str, &str)] = &[
     ),
     ("/security-review", "对工作区 diff 做安全评审"),
     (
-        "/queue [rm <n>|clear]",
-        "本地排队管理 · Alt+Enter 补充到正在处理的回合",
+        "/queue [rm <n>|clear|auto append|auto off]",
+        "本地排队管理 · Alt+Enter 补充到正在处理的回合 · auto append 让忙碌时回车也并入",
     ),
     (
         "/preset <name>|save <name>",

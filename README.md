@@ -271,7 +271,10 @@ tools and checkpoints follow live); `/add_dir <dir>` registers an extra writable
 - **Prompt queue** (while a turn runs): Enter enqueues locally (sent in order when the turn
   ends); `/queue` opens a clickable dialog (per-item [并入当前]/[删], footer [全部并入]/[清空]);
   it also works from the keyboard: ↑↓/`j` `k` or `1`–`9` select a row, Enter/`m` merges it, `d`/Delete
-  removes it, `a` merges all, `c` clears, Esc/`q` closes. `/queue` also accepts `rm <n>`/`all`/`clear`; **Ctrl+C interrupts only the current reply and keeps the queue**; **Alt+Enter appends the typed
+  removes it, `a` merges all, `c` clears, Esc/`q` closes. `/queue` also accepts `rm <n>`/`all`/`clear`;
+  `/queue auto append` makes busy-Enter supplement the running turn instead of queueing (Alt+Enter
+  semantics), `/queue auto off` restores queueing, bare `/queue auto` prints the current mode; the
+  switch lives in the TUI process (not persisted, kept across serve respawns until you quit); **Ctrl+C interrupts only the current reply and keeps the queue**; **Alt+Enter appends the typed
   text to the RUNNING turn** ("forgot to mention…") — it rides the same turn's next model
   request as a `（补充）…` user message. The status bar pins the active ask (▶) and each
   finished turn leaves a `✓ 本轮：…` recap line.
