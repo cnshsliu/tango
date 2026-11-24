@@ -1,5 +1,5 @@
 use crate::child::{Event, Serve};
-use crate::dialog::render_dialog;
+use crate::dialog::{HintButton, render_dialog_buttons};
 use crate::keys::{Action, Keymap};
 use crate::nvim::{EditResolution, Neovim, NvimRequest, NvimTarget, edit_submission};
 use crate::theme::{Theme, Tone};
@@ -223,6 +223,20 @@ fn thinking_view(text: &str, expanded: bool, teach: bool) -> String {
     } else {
         format!("{preview} …（还有 {hidden} 字 · 共 {lines} 行）")
     }
+}
+
+/// `render_dialog`, also keeping its hint keys as click targets (topmost dialog last).
+fn dialog_frame(
+    buttons: &mut Vec<HintButton>,
+    f: &mut Frame,
+    area: Rect,
+    title: &str,
+    hint: &str,
+    theme: Theme,
+) -> Rect {
+    let (inner, mut found) = render_dialog_buttons(f, area, title, hint, theme);
+    buttons.append(&mut found);
+    inner
 }
 
 /// A session id as people type it: a uuid's last '-' part (12 hex digits, which
@@ -1653,6 +1667,9 @@ pub struct App {
     /// the mode label), `ctrl+p commands` the command palette (like ctrl+p)
     footer_mode_area: Rect,
     footer_palette_area: Rect,
+    /// every open dialog's bottom-hint keys as buttons, drawn this frame: a click on
+    /// one is handled as that key press, so every dialog key is also clickable
+    hint_buttons: Vec<HintButton>,
     /// user-message style: true = right-positioned bubble (default),
     /// false = Claude Code style (same theme, left, full-width bg) — /bubble
     user_bubble: bool,
@@ -1801,6 +1818,7 @@ impl App {
             mode_area: Rect::default(),
             footer_mode_area: Rect::default(),
             footer_palette_area: Rect::default(),
+            hint_buttons: Vec::new(),
             user_bubble: true,
             animations: true,
             ascii: false,
@@ -5374,6 +5392,17 @@ impl App {
                 }
             }
             Event::Mouse(m) => {
+                // a dialog's hint key ("y 允许", "esc 关闭" …) is a button: the click is that
+                // key press, routed exactly as typing it (the topmost dialog is drawn last)
+                if let MouseEventKind::Down(MouseButton::Left) = m.kind {
+                    let pos = Position::new(m.column, m.row);
+                    if let Some((_, key)) =
+                        self.hint_buttons.iter().rev().find(|(r, _)| r.contains(pos)).copied()
+                    {
+                        self.key(key, serve);
+                        return false;
+                    }
+                }
                 // the /queue dialog's clickable buttons come first
                 if self.queue_dialog
                     && let MouseEventKind::Down(MouseButton::Left) = m.kind
@@ -8932,6 +8961,7 @@ impl App {
 
     pub fn draw(&mut self, f: &mut Frame) {
         let area = f.area();
+        self.hint_buttons.clear();
         // short terminals give the rows to the conversation: no wordmark in the chat
         self.chat_roomy = area.height >= 20;
         let input_h = self.input_height(area.width);
@@ -9358,8 +9388,7 @@ impl App {
                 width: w,
                 height: h,
             };
-            let inner = render_dialog(
-                f,
+            let inner = dialog_frame(&mut self.hint_buttons, f,
                 pop,
                 "提示队列",
                 "↑↓ 选择 · enter 并入 · d 删 · a 全部并入 · c 清空 · 点击按钮 · esc 关闭",
@@ -9454,8 +9483,7 @@ impl App {
                 width: w,
                 height: h,
             };
-            let inner = render_dialog(
-                f,
+            let inner = dialog_frame(&mut self.hint_buttons, f,
                 pop,
                 "待定 · To be considered",
                 "点击逐条处理 · esc 关闭",
@@ -9541,7 +9569,7 @@ impl App {
                 width: w,
                 height: h,
             };
-            let inner = render_dialog(f, pop, "这条消息", "数字键或点击 · esc 关闭", self.theme);
+            let inner = dialog_frame(&mut self.hint_buttons, f, pop, "这条消息", "数字键或点击 · esc 关闭", self.theme);
             self.prompt_menu_buttons.clear();
             let mut y = inner.y;
             for (n, label) in [
@@ -9575,11 +9603,11 @@ impl App {
                 width: 72u16.min(panel_a.width),
                 height: panel_h,
             };
-            let inner = render_dialog(
-                f,
+            let title = self.choice_title();
+            let inner = dialog_frame(&mut self.hint_buttons, f,
                 pop,
-                &self.choice_title(),
-                "↑↓/点击 选择 · enter 确认（或输编号+enter）· tab 改写自答 · esc 收起",
+                &title,
+                "↑↓/点击 选择 · enter 确认（或输编号+enter） · tab 改写自答 · esc 收起",
                 self.theme,
             );
             // the question wraps at the dialog width — long asks stay fully readable
@@ -9706,7 +9734,7 @@ impl App {
             } else {
                 "tab/enter 选择 · esc 关闭"
             };
-            let inner = render_dialog(f, pop, title, hint, self.theme);
+            let inner = dialog_frame(&mut self.hint_buttons, f, pop, title, hint, self.theme);
             // keep the selection in view: 6 rows show, a long list (models) scrolls
             let skip = p.sel.saturating_sub(5);
             let rows: Vec<Line> = p
@@ -9932,7 +9960,7 @@ impl App {
                     _ => "↑↓ 选择 · enter 确认 · esc 取消",
                 }
             };
-            let inner = render_dialog(f, pop, title, hint, self.theme);
+            let inner = dialog_frame(&mut self.hint_buttons, f, pop, title, hint, self.theme);
             let label_w = (inner.width as usize).saturating_sub(28);
             let sel_row = display
                 .iter()
@@ -10079,7 +10107,7 @@ impl App {
                     hint
                 );
             }
-            let inner = render_dialog(f, popup, &p.name, &hint, self.theme);
+            let inner = dialog_frame(&mut self.hint_buttons, f, popup, &p.name, &hint, self.theme);
             let mut body = Vec::new();
             if !p.brief.is_empty() {
                 body.push(Line::from(Span::styled(
@@ -10111,7 +10139,7 @@ impl App {
             } else {
                 "空格 勾选了解风险 · esc 取消".to_string()
             };
-            let inner = render_dialog(f, popup, "⚠ 要启用完全访问吗？", &hint, self.theme);
+            let inner = dialog_frame(&mut self.hint_buttons, f, popup, "⚠ 要启用完全访问吗？", &hint, self.theme);
             let mut body = vec![
                 Line::from(Span::styled(
                     "启用后，任务可以直接执行以下操作，无需逐次请求你确认：",
@@ -10160,7 +10188,7 @@ impl App {
             } else {
                 "y 复制 · esc 关闭 · ↑↓/滚轮滚动 · ctrl+e 用 nvim 打开"
             };
-            let inner = render_dialog(f, pop, &title, hint, self.theme);
+            let inner = dialog_frame(&mut self.hint_buttons, f, pop, &title, hint, self.theme);
             let inner_width = inner.width.max(1) as usize;
             let search_rows =
                 usize::from(viewer.transcript && (viewer.search_input || !viewer.query.is_empty()));
@@ -15076,6 +15104,67 @@ mod tests {
         app.frame(json!({"type": "retry", "attempt": 2, "max": 3, "reason": "HTTP 503"}), &mut serve);
         assert!(app.lines.iter().any(|l| l.text.contains("第 1/3 次重试")));
         assert!(app.lines.iter().any(|l| l.text.contains("retry 2/3: HTTP 503")));
+    }
+
+    #[test]
+    fn every_dialog_hint_key_is_a_clickable_button() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        let perm = |request| Permission {
+            request,
+            name: "bash".into(),
+            detail: "rm -rf build".into(),
+            reason: "deletes files".into(),
+            brief: String::new(),
+        };
+        let click = |app: &mut App, serve: &mut Serve, r: Rect| {
+            app.handle(
+                Event::Mouse(crossterm::event::MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    column: r.x + r.width - 1, // the label end counts too
+                    row: r.y,
+                    modifiers: KeyModifiers::NONE,
+                }),
+                serve,
+            );
+        };
+        let button = |app: &App, code: KeyCode| {
+            app.hint_buttons.iter().find(|(_, k)| k.code == code).map(|(r, _)| *r)
+        };
+        // permission: "n 拒绝" denies, like pressing n
+        app.permission = Some(perm(1));
+        term.draw(|f| app.draw(f)).unwrap();
+        for code in [KeyCode::Char('y'), KeyCode::Char('n'), KeyCode::Char('a'), KeyCode::Char('c')] {
+            assert!(button(&app, code).is_some(), "{code:?} has a button");
+        }
+        let r = button(&app, KeyCode::Char('n')).unwrap();
+        click(&mut app, &mut serve, r);
+        let sent: Value = serde_json::from_str(serve.sent.last().unwrap()).unwrap();
+        assert_eq!((sent["request"].as_u64(), sent["allow"].as_bool()), (Some(1), Some(false)));
+        assert!(app.permission.is_none());
+        // "y 允许" allows
+        app.permission = Some(perm(2));
+        term.draw(|f| app.draw(f)).unwrap();
+        let r = button(&app, KeyCode::Char('y')).unwrap();
+        click(&mut app, &mut serve, r);
+        let sent: Value = serde_json::from_str(serve.sent.last().unwrap()).unwrap();
+        assert_eq!((sent["request"].as_u64(), sent["allow"].as_bool()), (Some(2), Some(true)));
+        // a viewer's "esc 关闭" closes it; with no dialog open nothing is clickable
+        app.viewer = Some(Viewer::read_only("看看", "正文"));
+        term.draw(|f| app.draw(f)).unwrap();
+        let r = button(&app, KeyCode::Esc).unwrap();
+        click(&mut app, &mut serve, r);
+        assert!(app.viewer.is_none());
+        term.draw(|f| app.draw(f)).unwrap();
+        assert!(app.hint_buttons.is_empty());
+        // pickers too: "esc 取消" closes the command palette
+        app.open_command_palette();
+        term.draw(|f| app.draw(f)).unwrap();
+        let r = button(&app, KeyCode::Esc).unwrap();
+        click(&mut app, &mut serve, r);
+        assert!(app.picker.is_none());
     }
 
     #[test]

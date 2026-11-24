@@ -532,7 +532,9 @@ prompt; terminals that don't know the sequence ignore it. A `?choice` block from
 pick panel (↑↓/click, Enter, or an option number + Enter); Tab answers in your own words — it fills
 the input with the ask as a lead-in ending in `": "` (关于…，模型在等你选择: …) in the conversation's
 language, and only what you write after it is sent. Also: mouse wheel scrolling, streaming answers, thinking lines, tool status lines with
-durations, a centered permission modal (y/n/a), and an input block: a tinted background (its own
+durations, a centered permission modal (y/n/a), and an input block. Every dialog's bottom hint is
+clickable: each key in it (`y 允许`, `esc 关闭`, `enter 确认`, `↑`/`↓`, `ctrl+e` …) is a button that does
+what pressing the key does; words that aren't keys (`输入`, `滚轮`) stay plain. The input block has a tinted background (its own
 shade in the light theme) with a left bar colored by risk — plan orange, auto red, readonly gray,
 ask blue (plan wins) — the draft, and an info row `mode · model provider` (e.g.
 `ask · claude-opus-5-5 apikeyfan`; a narrow screen drops the provider, then clips the model).
