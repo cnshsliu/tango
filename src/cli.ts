@@ -19,7 +19,7 @@ import type { Config } from './core/config.js';
 import { listDrafts, promoteDraft, saveDraft } from './core/skills.js';
 import { keyEnvName, retryText } from './core/models/util.js';
 import { groupModels } from './core/models/registry.js';
-import { SessionStore, type SessionSummary } from './core/session.js';
+import { SessionStore, shortId, type SessionSummary } from './core/session.js';
 import { resolveConfig, updateLocalConfig, type Resolved } from './core/project-config.js';
 import { suggestRules, type AskFn, type PermissionMode } from './core/permissions.js';
 import { addTask, daemonLoop, feishuWebhook, lastRunAt, loadTasks, parseInterval, removeTask, runDueOnce, sendFeishu, summarizeOutput } from './core/scheduler.js';
@@ -237,7 +237,7 @@ function printModels(models: ModelSpec[], current?: string): void {
 function printSessions(sessions: SessionSummary[]): void {
   if (!sessions.length) return console.log(dim('no sessions yet'));
   for (const s of sessions) {
-    console.log(`${s.id.slice(0, 8)}  ${s.createdAt.slice(0, 16)}  ${String(s.messages).padStart(4)} msgs  ${s.cwd}  ${s.name ?? ''}`);
+    console.log(`${shortId(s.id).padEnd(12)}  ${s.createdAt.slice(0, 16)}  ${String(s.messages).padStart(4)} msgs  ${s.cwd}  ${s.name ?? ''}`);
   }
 }
 
@@ -277,7 +277,7 @@ async function runOnce(agent: Agent, input: string): Promise<void> {
 }
 
 async function interactive(agent: Agent, store: SessionStore, resolved: Resolved): Promise<void> {
-  console.log(dim(`tango ${VERSION} · ${agent.model.id} · ${perm.mode} · session ${store.id.slice(0, 8)} · ${store.meta()?.cwd ?? ''}`));
+  console.log(dim(`tango ${VERSION} · ${agent.model.id} · ${perm.mode} · session ${shortId(store.id)} · ${store.meta()?.cwd ?? ''}`));
   console.log(dim('/help for commands\n'));
 
   const cfg = await loadConfig();
@@ -419,7 +419,7 @@ async function interactive(agent: Agent, store: SessionStore, resolved: Resolved
         store = await SessionStore.create(sessionsDir(), process.cwd());
         const r = await resolveConfig(process.cwd());
         agent = replAgent(agent.model, store, process.cwd(), { ...r.config, projectDir: r.project?.root });
-        console.log(dim(`new session ${store.id.slice(0, 8)}`));
+        console.log(dim(`new session ${shortId(store.id)}`));
         return true;
       }
       default:

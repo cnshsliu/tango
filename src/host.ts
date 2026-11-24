@@ -15,7 +15,7 @@ import { mergeHookConfigs, runHooks, type HookConfig, type HookOutcome } from '.
 import { resolveConfig, type Resolved } from './core/project-config.js';
 import { worktreeRoot } from './core/worktrees.js';
 import { installPermissionGate, parseRule, type AllowRule, type AskFn, type PermissionMode } from './core/permissions.js';
-import { SessionStore } from './core/session.js';
+import { SessionStore, shortId } from './core/session.js';
 import { ToolRegistry } from './core/tools/registry.js';
 import { bashTool } from './core/tools/bash.js';
 import { diffTool } from './core/tools/diff.js';
@@ -315,7 +315,7 @@ export async function resolveSessionId(prefix: string): Promise<string> {
   );
   if (hits.length === 1) return hits[0].id;
   if (!hits.length) throw new Error(`no session matches "${prefix}" (tango --sessions)`);
-  throw new Error(`ambiguous "${prefix}": ${hits.map((s) => s.id.slice(0, 8)).join(', ')}`);
+  throw new Error(`ambiguous "${prefix}": ${hits.map((s) => shortId(s.id)).join(', ')}`);
 }
 
 export interface HostArgs {

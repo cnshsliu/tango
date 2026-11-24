@@ -66,7 +66,7 @@ test('send: A mails live B, B gets it while idle, it reaches B\'s next prompt, n
     // B idle: the 2s poll shows it without any prompt
     const note = await B.until((f) => f.type === 'notice' && String(f.text).includes('✉'), 'B mail notice', 6000);
     assert.match(note.text, /测试跑完了/);
-    assert.match(note.text, new RegExp(ha.sessionId.slice(0, 8)));
+    assert.match(note.text, new RegExp(ha.sessionId.split('-').at(-1)));
     assert.equal(requests.length, 0, 'receiving mail must not start a turn (no auto-reply)');
 
     B.send({ id: 11, cmd: 'history' });

@@ -545,7 +545,9 @@ terminals of 24+ rows, a footer shows `~/dir:branch` on the left (refreshed by `
 (`shift+tab plan`, `ctrl+p commands`) on the right when they fit. Both hints are clickable: `shift+tab plan`
 opens the mode picker (like clicking the mode label), `ctrl+p commands` the command palette (like ctrl+p). The bottom status bar (cost ·
 session · ctx, fitted to the terminal width — on a narrow screen ctx and sess go first, then the
-pinned ▶, while cost and the ❓ badge stay) no longer repeats the model and mode. The rule above the input
+pinned ▶, while cost and the ❓ badge stay) no longer repeats the model and mode. Session ids are shown
+short everywhere (status bar, `/send`, handoff/takeover, mail notices, `/tasks`, `tango --sessions`): a uuid's
+last `-` part, e.g. `0ad2040a8182`, which every id-taking command accepts; clicking `sess …` copies the full id. The rule above the input
 carries the work state on its left end — `idle`, or the elapsed time and
 received characters behind a steady `●` — and
 a rotating tip on its right end during long turns; on a narrow terminal the tip goes first, then the

@@ -1908,7 +1908,7 @@ impl App {
             to.push(self.session_full.clone());
         }
         let arrow = if forward { "→" } else { "←" };
-        let short: String = id.chars().take(8).collect();
+        let short = short_session(&id).to_string();
         self.push(format!("{arrow} switching to session {short} …"), Tone::Muted);
         self.respawn_into(Some(id));
     }
@@ -3512,7 +3512,7 @@ impl App {
                 .iter()
                 .filter(|(_, _, current)| !current)
                 .map(|(id, label, _)| {
-                    let short: String = id.chars().take(8).collect();
+                    let short = short_session(id).to_string();
                     // /send's message follows the id
                     let ins = if cmd == "/send" { format!("{short} ") } else { short.clone() };
                     (short, label.clone(), ins)
@@ -6948,12 +6948,7 @@ impl App {
                 self.model = v["model"].as_str().unwrap_or("?").into();
                 self.mode = v["mode"].as_str().unwrap_or("?").into();
                 self.serve_cwd = v["cwd"].as_str().map(Into::into);
-                self.session = v["sessionId"]
-                    .as_str()
-                    .unwrap_or("?")
-                    .chars()
-                    .take(8)
-                    .collect();
+                self.session = short_session(v["sessionId"].as_str().unwrap_or("?")).to_string();
                 self.session_full = v["sessionId"].as_str().unwrap_or("").to_string();
                 self.serve_branch = v["branch"].as_str().unwrap_or("").to_string();
                 self.session_name = v["sessionName"].as_str().unwrap_or("").to_string();
@@ -6975,7 +6970,7 @@ impl App {
                     Tone::Muted,
                 );
                 if let Some(prev) = self.nav_back.last() {
-                    let short: String = prev.chars().take(8).collect();
+                    let short = short_session(prev).to_string();
                     self.push(format!("← /back 返回会话 {short}"), Tone::Muted);
                 }
             }
@@ -7615,7 +7610,7 @@ impl App {
                             }
                         }
                         (Pending::Send, true) => {
-                            let to: String = d["to"].as_str().unwrap_or("?").chars().take(8).collect();
+                            let to = short_session(d["to"].as_str().unwrap_or("?")).to_string();
                             let live = d["targetLive"]["pid"].as_u64().is_some();
                             self.push(
                                 if live {
@@ -7656,7 +7651,7 @@ impl App {
                             }
                             for h in &list {
                                 let short = |k: &str| -> String {
-                                    h[k].as_str().unwrap_or("?").chars().take(8).collect()
+                                    short_session(h[k].as_str().unwrap_or("?")).to_string()
                                 };
                                 let at: String = h["queuedAt"]
                                     .as_str()
@@ -7713,7 +7708,7 @@ impl App {
                         }
                         (Pending::Takeover, true) => {
                             let from: String =
-                                d["from"].as_str().unwrap_or("?").chars().take(8).collect();
+                                short_session(d["from"].as_str().unwrap_or("?")).to_string();
                             self.push(format!("⇠ 已接管会话 {from} · 摘要："), Tone::Success);
                             if let Some(pid) = d["sourceLive"]["pid"].as_u64() {
                                 self.push(
@@ -7758,7 +7753,12 @@ impl App {
                             self.viewer = Some(Viewer::read_only("会话分叉树", text));
                         }
                         (Pending::Find, true) => {
-                            let cur = self.session.clone();
+                            // the full id when serve handshook; `session` alone in old tests
+                            let cur = if self.session_full.is_empty() {
+                                self.session.clone()
+                            } else {
+                                self.session_full.clone()
+                            };
                             let items: Vec<PickItem> = d["hits"]
                                 .as_array()
                                 .map(|a| {
@@ -8629,14 +8629,14 @@ impl App {
                 }
                 Some("mail") => {
                     let short: String =
-                        it["from"].as_str().unwrap_or("?").chars().take(8).collect();
+                        short_session(it["from"].as_str().unwrap_or("?")).to_string();
                     self.push(format!("✉ 来自会话 {short} 的消息："), Tone::Muted);
                     self.stream = it["text"].as_str().unwrap_or("").to_string();
                     self.commit_stream();
                 }
                 Some("handoff") => {
                     let short: String =
-                        it["from"].as_str().unwrap_or("?").chars().take(8).collect();
+                        short_session(it["from"].as_str().unwrap_or("?")).to_string();
                     let head = if it["via"] == "takeover" {
                         format!("⇠ 已接管会话 {short} · 摘要：")
                     } else {
@@ -12378,11 +12378,11 @@ mod tests {
         app.load_history(&json!({
             "items": [
                 {"kind": "user", "text": "问点别的"},
-                {"kind": "mail", "from": "ffff0000aaaa", "text": "测试跑完了"}
+                {"kind": "mail", "from": "ffff0000-1111-4222-8333-0123456789ab", "text": "测试跑完了"}
             ],
             "total": 2
         }));
-        assert!(app.lines.iter().any(|l| l.text.contains("✉ 来自会话 ffff0000 的消息")));
+        assert!(app.lines.iter().any(|l| l.text.contains("✉ 来自会话 0123456789ab 的消息")));
         assert!(app.lines.iter().any(|l| l.text.contains("测试跑完了")));
     }
 
@@ -15773,8 +15773,8 @@ mod tests {
         let mut serve = Serve::mock();
         app.arg_models = vec!["zhipu-plan/glm-5.3".into(), "zhipu-plan/glm-5.4".into(), "apikeyfan/claude-opus-5-5".into()];
         app.arg_sessions = vec![
-            ("c81e407d-aaaa".into(), "1 小时前 · 信箱".into(), true),
-            ("d7d868f3-bbbb".into(), "2 小时前 · 投稿".into(), false),
+            ("c81e407d-1111-4222-8333-aaaaaaaaaaaa".into(), "1 小时前 · 信箱".into(), true),
+            ("d7d868f3-1111-4222-8333-bbbbbbbbbbbb".into(), "2 小时前 · 投稿".into(), false),
         ];
         type_str(&mut app, &mut serve, "/model glm54");
         app.key(KeyCode::Tab.into(), &mut serve);
@@ -15782,15 +15782,15 @@ mod tests {
 
         app.clear_input();
         type_str(&mut app, &mut serve, "/send ");
-        assert_eq!(app.popup.as_ref().unwrap().items, vec!["d7d868f3"], "the current session is never a target");
+        assert_eq!(app.popup.as_ref().unwrap().items, vec!["bbbbbbbbbbbb"], "the current session is never a target");
         app.key(KeyCode::Tab.into(), &mut serve);
-        assert_eq!(typed(&app), "/send d7d868f3 ", "a space follows: the message comes next");
+        assert_eq!(typed(&app), "/send bbbbbbbbbbbb ", "a space follows: the message comes next");
         assert!(app.popup.is_none());
 
         app.clear_input();
-        type_str(&mut app, &mut serve, "/resume d");
+        type_str(&mut app, &mut serve, "/resume bb");
         app.key(KeyCode::Tab.into(), &mut serve);
-        assert_eq!(typed(&app), "/resume d7d868f3");
+        assert_eq!(typed(&app), "/resume bbbbbbbbbbbb");
 
         // the frames that fill the caches
         app.pending.push((7, Pending::ArgSessions));

@@ -24,7 +24,7 @@ import { type Config, hasKey, keyProblem, loadConfig, loadModels, pickModel, sav
 import { loadImages } from './core/images.js';
 import { listDrafts, promoteDraft, saveDraft } from './core/skills.js';
 import { join, resolve } from 'node:path';
-import { SessionStore, relativeTime } from './core/session.js';
+import { SessionStore, relativeTime, shortId } from './core/session.js';
 import { cancelHandoff, drainHandoffs, listHandoffs, purgeExpiredHandoffs, queueHandoff } from './core/handoff.js';
 import { drainMail, sendMail } from './core/mail.js';
 import { holdSessionLock, sessionHolder } from './core/session-lock.js';
@@ -102,7 +102,7 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
           // violation, not a protocol failure
           out({
             type: 'notice',
-            text: `⚠ 另一个 tango 会话正在此目录运行（pid ${prev.pid}${prev.sessionId ? ', session ' + String(prev.sessionId).slice(0, 8) : ''}）— 主工作区是单写者约定，回滚/快照可能互相冲突；建议在不同 worktree 里并行（/worktree、/bg）`
+            text: `⚠ 另一个 tango 会话正在此目录运行（pid ${prev.pid}${prev.sessionId ? ', session ' + shortId(String(prev.sessionId)) : ''}）— 主工作区是单写者约定，回滚/快照可能互相冲突；建议在不同 worktree 里并行（/worktree、/bg）`
           });
         } catch {}
       }
@@ -295,9 +295,9 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
   const mergeInbox = async () => {
     const got = await drainHandoffs(store).catch(() => ({ merged: [], expired: [] }));
     for (const h of got.merged)
-      out({ type: 'notice', text: `⇠ 收到来自会话 ${h.from.slice(0, 8)} 的交接摘要，已并入上下文` });
+      out({ type: 'notice', text: `⇠ 收到来自会话 ${shortId(h.from)} 的交接摘要，已并入上下文` });
     for (const h of got.expired)
-      out({ type: 'notice', text: `⌛ 丢弃来自会话 ${h.from.slice(0, 8)} 的过期交接摘要（排队于 ${h.queuedAt.slice(0, 10)}，超过 7 天）` });
+      out({ type: 'notice', text: `⌛ 丢弃来自会话 ${shortId(h.from)} 的过期交接摘要（排队于 ${h.queuedAt.slice(0, 10)}，超过 7 天）` });
   };
   await mergeInbox();
 
@@ -308,10 +308,10 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
     const got = await drainMail(store).catch(() => ({ received: [], expired: [] }));
     for (const m of got.received) {
       const head = m.text.split('\n')[0].slice(0, 160);
-      out({ type: 'notice', text: `✉ 来自会话 ${m.from.slice(0, 8)} 的消息：${head}${m.text.length > head.length ? '…' : ''}（下次提问时并入上下文 · /send ${m.from.slice(0, 8)} 可回复）` });
+      out({ type: 'notice', text: `✉ 来自会话 ${shortId(m.from)} 的消息：${head}${m.text.length > head.length ? '…' : ''}（下次提问时并入上下文 · /send ${shortId(m.from)} 可回复）` });
     }
     for (const m of got.expired)
-      out({ type: 'notice', text: `⌛ 丢弃来自会话 ${m.from.slice(0, 8)} 的过期消息（排队于 ${m.queuedAt.slice(0, 10)}，超过 7 天）` });
+      out({ type: 'notice', text: `⌛ 丢弃来自会话 ${shortId(m.from)} 的过期消息（排队于 ${m.queuedAt.slice(0, 10)}，超过 7 天）` });
   };
   await receiveMail();
 
@@ -730,7 +730,7 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
           const html = `<!doctype html><meta charset="utf-8"><title>tango insights</title><style>body{font-family:ui-sans-serif,system-ui;margin:2em auto;max-width:52em;padding:0 1em;line-height:1.5}h1,h2{color:#333}table{border-collapse:collapse;width:100%;margin-bottom:1.5em}td,th{border-bottom:1px solid #ddd;padding:6px 10px;text-align:left}td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}.bar{background:#6b8dd6;height:10px}</style>
 <h1>tango 使用报告</h1><p>总花费 <b>$${totalCostUsd.toFixed(4)}</b> · 会话数 ${data.bySession.length}</p>
 ${rows('按模型', '<tr><th>模型</th><th class=num>请求</th><th class=num>输入 tok</th><th class=num>输出 tok</th><th class=num>花费</th></tr>' + data.byModel.map((m) => `<tr><td>${esc(m.model)}</td><td class=num>${m.requests}</td><td class=num>${m.input}</td><td class=num>${m.output}</td><td class=num>$${m.costUsd.toFixed(4)}</td></tr>`).join(''))}
-${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th><th class=num>花费</th><th></th></tr>' + data.bySession.map((x) => `<tr><td>${x.id.slice(0, 8)}</td><td>${x.name || ''}</td><td class=num>${x.messages}</td><td class=num>$${x.costUsd.toFixed(4)}</td><td><div class=bar style="width:${Math.round((x.costUsd / maxCost) * 100)}px"></div></td></tr>`).join(''))}`;
+${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th><th class=num>花费</th><th></th></tr>' + data.bySession.map((x) => `<tr><td>${shortId(x.id)}</td><td>${x.name || ''}</td><td class=num>${x.messages}</td><td class=num>$${x.costUsd.toFixed(4)}</td><td><div class=bar style="width:${Math.round((x.costUsd / maxCost) * 100)}px"></div></td></tr>`).join(''))}`;
           const { writeFile: wf } = await import('node:fs/promises');
           const exportsDir = join(tangoDir(), 'exports');
           await (await import('node:fs/promises')).mkdir(exportsDir, { recursive: true });
@@ -1825,7 +1825,7 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
         if (purged.length)
           out({
             type: 'notice',
-            text: `⌛ 已删除 ${purged.length} 条过期交接摘要（超过 7 天未并入）：${purged.map((h) => `${h.queueId} ⇢ ${h.target.slice(0, 8)}`).join('，')}`
+            text: `⌛ 已删除 ${purged.length} 条过期交接摘要（超过 7 天未并入）：${purged.map((h) => `${h.queueId} ⇢ ${shortId(h.target)}`).join('，')}`
           });
         const items = await listHandoffs();
         reply(cmd, true, {

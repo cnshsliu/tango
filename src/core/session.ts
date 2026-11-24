@@ -20,6 +20,13 @@ export interface SessionSummary extends SessionMeta {
   topic: string;
 }
 
+/** A session id as people type it: a uuid's last '-' part (12 hex digits, which every
+ * id-taking command resolves); any other id (e.g. `task-…`) stays whole. */
+export function shortId(id: string): string {
+  const m = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-([0-9a-f]{12})$/i.exec(id);
+  return m ? m[1] : id;
+}
+
 /** "3 小时前"-style relative time for session lists (Claude Code /resume look). */
 export function relativeTime(iso: string, now: Date = new Date()): string {
   const t = Date.parse(iso);

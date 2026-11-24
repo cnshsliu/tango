@@ -2669,7 +2669,7 @@ test('handoff/takeover: briefs merge into existing sessions without switching', 
     // live B merges on its next prompt: keeps its own history, gains the brief
     mock.setScript(say('ok'));
     b.send({ id: 6, cmd: 'prompt', text: 'B-NEXT' });
-    await b.until((f: any) => f.type === 'notice' && String(f.text).includes(aId.slice(0, 8)), 'merge notice');
+    await b.until((f: any) => f.type === 'notice' && String(f.text).includes(aId.split('-').at(-1)), 'merge notice');
     await result(b, 6, 'b turn 2');
     const bReq = JSON.stringify(mock.requests.at(-1));
     assert.ok(bReq.includes('B-OWN-WORK') && bReq.includes('A-BRIEF'), 'target keeps its history and gets the brief');
