@@ -101,7 +101,7 @@ Every conversation is a session, stored as an append-only JSONL file in
 | Task | Command |
 | --- | --- |
 | Continue the latest session | `tango -c` |
-| Open a specific session | `tango -r <id or prefix>`, or `/resume` inside the TUI for a picker |
+| Open a specific session | `tango -r <id or prefix>` (the id's last `-` part also works, e.g. `tango -r 0ad2040a8182`), or `/resume` inside the TUI for a picker |
 | Start fresh, same model and mode | `/new` |
 | Name the session | `/rename <name>` |
 | Search all past conversations | `/find <text>` |
@@ -332,7 +332,7 @@ while a turn is running unless noted. `/help` prints a short list inside the TUI
 | Command | What it does |
 | --- | --- |
 | `/new` | Start a new session with the same model and permission mode |
-| `/resume` (`/sessions`) | Open the session picker and switch to the one you pick; `/resume <id or prefix>` switches directly (Tab completes the id). An id that matches no session, or a prefix that matches several, prints an error and keeps the current session |
+| `/resume` (`/sessions`) | Open the session picker and switch to the one you pick; `/resume <id or prefix>` switches directly (Tab completes the id; the id's last `-` part, e.g. `0ad2040a8182`, works too). An id that matches no session, or a prefix that matches several, prints an error and keeps the current session |
 | `/rename [name]` (`/name`) | Show or set the session name. In the picker, Ctrl+R renames any session |
 | `/editlast` (Alt+E) | Interrupt the running turn, roll the conversation **and code** back to before your last prompt, and load that prompt verbatim into the input box for editing. Two presses: the first arms (rollback touches code), the second executes; Esc cancels |
 | `/find [text]` | Search all sessions, including abandoned turns, and jump to a hit |

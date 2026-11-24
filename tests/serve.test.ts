@@ -736,6 +736,11 @@ test('serve: find orphaned futures, export, transcript, rename, recap', async ()
     const rs = await s.until((f: any) => f.type === 'result' && f.id === 3071, 'resolve hit');
     assert.ok(rs.ok);
     assert.equal(rs.data.id, cur);
+    // …or by the uuid's last '-' part
+    s.send({ id: 3073, cmd: 'session_resolve', session: cur.split('-').at(-1) });
+    const tail = await s.until((f: any) => f.type === 'result' && f.id === 3073, 'resolve tail');
+    assert.ok(tail.ok);
+    assert.equal(tail.data.id, cur);
     s.send({ id: 3072, cmd: 'session_resolve', session: '/resume nope' });
     const miss = await s.until((f: any) => f.type === 'result' && f.id === 3072, 'resolve miss');
     assert.equal(miss.ok, false);

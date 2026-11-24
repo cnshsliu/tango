@@ -225,6 +225,19 @@ fn thinking_view(text: &str, expanded: bool, teach: bool) -> String {
     }
 }
 
+/// A session id as people type it: a uuid's last '-' part (12 hex digits, which
+/// `/resume`, `--resume` and `/send` accept); any other id stays whole.
+fn short_session(id: &str) -> &str {
+    match id.rsplit_once('-') {
+        Some((_, tail))
+            if id.len() == 36 && tail.len() == 12 && tail.bytes().all(|b| b.is_ascii_hexdigit()) =>
+        {
+            tail
+        }
+        _ => id,
+    }
+}
+
 /// Cut `s` to at most `width` columns, ending in … when anything was dropped.
 fn clip_to_width(s: &str, width: usize) -> String {
     use unicode_width::UnicodeWidthChar;
@@ -1630,6 +1643,10 @@ pub struct App {
     /// the mode label (`auto`, `plan` …) at the start of that row: a click opens
     /// the mode picker
     mode_area: Rect,
+    /// the footer's key hints: `shift+tab plan` opens the mode picker (like a click on
+    /// the mode label), `ctrl+p commands` the command palette (like ctrl+p)
+    footer_mode_area: Rect,
+    footer_palette_area: Rect,
     /// user-message style: true = right-positioned bubble (default),
     /// false = Claude Code style (same theme, left, full-width bg) — /bubble
     user_bubble: bool,
@@ -1774,6 +1791,8 @@ impl App {
             session_id_area: Rect::default(),
             model_area: Rect::default(),
             mode_area: Rect::default(),
+            footer_mode_area: Rect::default(),
+            footer_palette_area: Rect::default(),
             user_bubble: true,
             animations: true,
             ascii: false,
@@ -5433,10 +5452,21 @@ impl App {
                     if let MouseEventKind::Down(MouseButton::Left) = m.kind
                         && !self.picker_area.contains(pos)
                     {
-                        if self.mode_area.width > 0 && self.mode_area.contains(pos) {
+                        if self.mode_area.width > 0 && self.mode_area.contains(pos)
+                            || self.footer_mode_area.width > 0 && self.footer_mode_area.contains(pos)
+                        {
                             self.picker = None;
                             if kind != PickerKind::Mode {
                                 self.open_mode_picker();
+                            }
+                            return false;
+                        }
+                        if self.footer_palette_area.width > 0
+                            && self.footer_palette_area.contains(pos)
+                        {
+                            self.picker = None;
+                            if kind != PickerKind::Command {
+                                self.open_command_palette();
                             }
                             return false;
                         }
@@ -5529,9 +5559,21 @@ impl App {
                                 self.run_slash("/model", serve);
                                 return false;
                             }
-                            // …and the mode label opens the mode picker on the current mode
-                            if self.mode_area.width > 0 && self.mode_area.contains(pos) {
+                            // …and the mode label (or the footer's shift+tab hint) opens the
+                            // mode picker on the current mode
+                            if self.mode_area.width > 0 && self.mode_area.contains(pos)
+                                || self.footer_mode_area.width > 0
+                                    && self.footer_mode_area.contains(pos)
+                            {
                                 self.open_mode_picker();
+                                return false;
+                            }
+                            // the footer's ctrl+p hint opens the command palette
+                            if self.footer_palette_area.width > 0
+                                && self.footer_palette_area.contains(pos)
+                                && self.viewer.is_none()
+                            {
+                                self.open_command_palette();
                                 return false;
                             }
                             // a click on an input-box image chip opens the image
@@ -8311,7 +8353,7 @@ impl App {
                                         .chars()
                                         .take(40)
                                         .collect();
-                                    let sess = t["sessionId"].as_str().unwrap_or("");
+                                    let sess = short_session(t["sessionId"].as_str().unwrap_or(""));
                                     text.push_str(&format!(
                                         "  {mark} {} [{}] {} · {}\n      /resume {} 可查看 · /stop {}\n",
                                         t["id"].as_str().unwrap_or("?"),
@@ -8867,8 +8909,36 @@ impl App {
             Constraint::Length(1),
         ])
         .areas(area);
+        self.footer_mode_area = Rect::default();
+        self.footer_palette_area = Rect::default();
         if footer_h > 0 {
-            f.render_widget(Paragraph::new(self.footer_line(footer_a.width as usize)), footer_a);
+            let line = self.footer_line(footer_a.width as usize);
+            // each hint is a "  key" span + a " desc" span: the clickable rect covers both
+            let mut x = 0u16;
+            let mut spans = line.spans.iter().peekable();
+            while let Some(sp) = spans.next() {
+                let mut w = display_width(sp.content.as_ref()) as u16;
+                let start = x;
+                let hit = match sp.content.trim() {
+                    "shift+tab" => Some(true),
+                    "ctrl+p" => Some(false),
+                    _ => None,
+                };
+                if let Some(is_mode) = hit {
+                    if let Some(desc) = spans.next() {
+                        w += display_width(desc.content.as_ref()) as u16;
+                    }
+                    // skip the two-space gap so the rect starts at the key text
+                    let rect = Rect { x: footer_a.x + start + 2, y: footer_a.y, width: w - 2, height: 1 };
+                    if is_mode {
+                        self.footer_mode_area = rect;
+                    } else {
+                        self.footer_palette_area = rect;
+                    }
+                }
+                x = x.saturating_add(w);
+            }
+            f.render_widget(Paragraph::new(line), footer_a);
         }
 
         self.chat_area = chat_a;
@@ -10592,7 +10662,8 @@ impl App {
         } else {
             Some(format!(
                 "session {} · 恢复：tango --resume {}",
-                self.session_full, self.session_full
+                self.session_full,
+                short_session(&self.session_full)
             ))
         }
     }
@@ -12460,6 +12531,53 @@ mod tests {
         let v = app.viewer.as_ref().expect("preview viewer opened");
         assert!(v.read_only);
         assert!(v.text.contains("看看预览"));
+    }
+
+    #[test]
+    fn footer_hints_are_clickable() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.mode = "auto".into();
+        app.serve_cwd = Some("/work/x".into());
+        let mut term = Terminal::new(TestBackend::new(80, 40)).unwrap();
+        term.draw(|f| app.draw(f)).unwrap();
+        let (m, p) = (app.footer_mode_area, app.footer_palette_area);
+        assert!(m.width > 0 && p.width > 0, "both hints have a rect");
+        let b = term.backend().buffer();
+        let at = |r: Rect| (r.x..r.x + r.width).map(|x| b[(x, r.y)].symbol()).collect::<String>();
+        assert_eq!(at(m), "shift+tab plan");
+        assert_eq!(at(p), "ctrl+p commands");
+        let click = |app: &mut App, serve: &mut Serve, r: Rect| {
+            app.handle(
+                Event::Mouse(crossterm::event::MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    column: r.x + 1,
+                    row: r.y,
+                    modifiers: KeyModifiers::NONE,
+                }),
+                serve,
+            );
+        };
+        // shift+tab hint → the mode picker, like a click on the mode label
+        click(&mut app, &mut serve, m);
+        assert_eq!(app.picker.as_ref().map(|p| p.kind), Some(PickerKind::Mode));
+        // ctrl+p hint while a picker is open swaps to the command palette
+        click(&mut app, &mut serve, p);
+        assert_eq!(app.picker.as_ref().map(|p| p.kind), Some(PickerKind::Command));
+        // a second click closes it
+        click(&mut app, &mut serve, p);
+        assert!(app.picker.is_none());
+        click(&mut app, &mut serve, p);
+        assert_eq!(app.picker.as_ref().map(|p| p.kind), Some(PickerKind::Command));
+        assert!(serve.sent.is_empty(), "neither hint talks to serve");
+    }
+
+    #[test]
+    fn short_session_is_the_uuid_tail() {
+        assert_eq!(short_session("427f7386-2f24-4923-93f7-0ad2040a8182"), "0ad2040a8182");
+        assert_eq!(short_session("a1b2c3d4e5f67890"), "a1b2c3d4e5f67890");
+        assert_eq!(short_session("task-晨间摘要-2026-11-23-13-32-04"), "task-晨间摘要-2026-11-23-13-32-04");
     }
 
     #[test]

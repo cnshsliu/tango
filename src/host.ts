@@ -309,7 +309,10 @@ export function makeAgent(model: ModelSpec, store: SessionStore, cwd: string, pe
 
 export async function resolveSessionId(prefix: string): Promise<string> {
   const sessions = await SessionStore.list(sessionsDir());
-  const hits = sessions.filter((s) => s.id.startsWith(prefix));
+  const hits = sessions.filter(
+    // an id prefix, or the id's last '-' part (a uuid's final 12 hex digits, as the TUI shows it)
+    (s) => s.id.startsWith(prefix) || (!!prefix && !prefix.includes('-') && s.id.endsWith(`-${prefix}`))
+  );
   if (hits.length === 1) return hits[0].id;
   if (!hits.length) throw new Error(`no session matches "${prefix}" (tango --sessions)`);
   throw new Error(`ambiguous "${prefix}": ${hits.map((s) => s.id.slice(0, 8)).join(', ')}`);
