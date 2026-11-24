@@ -121,7 +121,7 @@ tango task run [--loop]  run due tasks once, or keep running as a daemon
 one-shot runs permission asks are refused, as in text mode, unless `--yes` is given. Example:
 `tango --format json --max-tool-rounds 10 -y "run the tests" | jq -c 'select(.type=="done")'`.
 
-TUI commands: `/model`, `/agents`, `/resume`, `/new`, `/restart`, `/rename`, `/send`, `/mode`, `/plan`, `/goal`,
+TUI commands: `/model`, `/agents`, `/resume`, `/back`, `/forward`, `/new`, `/restart`, `/rename`, `/send`, `/mode`, `/plan`, `/goal`,
 `/loop`, `/effort`, `/review`, `/security-review`, `/bg`, `/tasks`, `/stop`, `/subagent`,
 `/worktree`, `/mcp`, `/plugins`, `/vim`, `/nvim`, `/editor`, `/multiline`, `/btw`, `/diff`,
 `/focus`, `/density`, `/mouse`, `/animations`, `/ascii`, `/clipboard`, `/theme`, `/compact`, `/autocompact`, `/skill`, `/skills`,
@@ -608,6 +608,10 @@ Esc closes popups, else does the same (OpenCode-style): with a dialog open (pick
 for dev builds). Bare `/model` and `/resume` open centered pickers (`/resume <id or prefix>` switches directly); picking a session kills the
 serve child and respawns it with `TANGO_RESUME`, so both the model context and the visible
 transcript come back. `/new` starts fresh while keeping the current model and permission mode.
+`/back` and `/forward` step through the sessions this TUI switched between, browser-style
+(every `/resume`, picker pick, `/new` and `/fork` pushes the session it left; a new switch clears
+forward history; kept in the TUI process only), so `/resume`-ing a subagent's session and then
+`/back` returns to the parent; the welcome line after a switch names the `/back` target.
 `/restart` quits and re-execs the TUI (and with it a fresh serve), so a rebuilt `tango-tui` or
 `dist/` takes effect; it resumes the current session with the same permission mode. It refuses
 while a turn is running.

@@ -862,6 +862,8 @@ const SLASH: &[(&str, &str)] = &[
     ),
     ("/resume", "切换到历史会话，打开列表"),
     ("/sessions", "打开历史会话列表（切换会话）"),
+    ("/back", "回到切换前的会话（像浏览器后退）"),
+    ("/forward", "撤销 /back，前进到刚离开的会话"),
     (
         "/skill [title]",
         "把本会话存成技能草稿 · /skill finish <file> 定稿",
@@ -1620,6 +1622,10 @@ pub struct App {
     serve_branch: String,
     /// the current session's display name (/name) — status bar shows it over the id
     session_name: String,
+    /// browser-style session history: ids left by a switch (/back pops) and ids /back left
+    /// (/forward pops); a fresh switch clears the forward list. Lives for the TUI process
+    nav_back: Vec<String>,
+    nav_forward: Vec<String>,
     /// the status-bar sess span's rect — clicking copies the full id
     session_id_area: Rect,
     /// the model name (+ provider) in the input block's info row: a click opens
@@ -1769,6 +1775,8 @@ impl App {
             session_full: String::new(),
             serve_branch: String::new(),
             session_name: String::new(),
+            nav_back: Vec::new(),
+            nav_forward: Vec::new(),
             session_id_area: Rect::default(),
             model_area: Rect::default(),
             mode_area: Rect::default(),
@@ -1852,8 +1860,40 @@ impl App {
         }
     }
 
-    /// switching context means a new serve child; wipe the old transcript and turn state
+    /// a user-driven switch (/resume, picker, /new, /fork): remember where we came from
     fn switch_session(&mut self, target: Option<String>) {
+        let cur = self.session_full.clone();
+        let same = target.as_deref().is_some_and(|t| !t.is_empty() && cur.starts_with(t));
+        if !cur.is_empty() && !same {
+            self.nav_back.push(cur);
+            self.nav_forward.clear();
+        }
+        self.respawn_into(target);
+    }
+
+    /// /back and /forward: move one step through the session history
+    fn navigate(&mut self, forward: bool) {
+        let (from, to) = if forward {
+            (&mut self.nav_forward, &mut self.nav_back)
+        } else {
+            (&mut self.nav_back, &mut self.nav_forward)
+        };
+        let Some(id) = from.pop() else {
+            let msg = if forward { "没有可前进的会话" } else { "没有可返回的会话" };
+            self.push(msg, Tone::Muted);
+            return;
+        };
+        if !self.session_full.is_empty() {
+            to.push(self.session_full.clone());
+        }
+        let arrow = if forward { "→" } else { "←" };
+        let short: String = id.chars().take(8).collect();
+        self.push(format!("{arrow} switching to session {short} …"), Tone::Muted);
+        self.respawn_into(Some(id));
+    }
+
+    /// switching context means a new serve child; wipe the old transcript and turn state
+    fn respawn_into(&mut self, target: Option<String>) {
         let keep: Vec<ChatLine> = self.lines.drain(..).last().into_iter().collect();
         self.lines = keep; // the "resuming…/new session" notice just pushed
         self.stream.clear();
@@ -3849,6 +3889,8 @@ impl App {
                 self.switch_session(None);
             }
             "/sessions" => self.run_slash("/resume", serve),
+            "/back" => self.navigate(false),
+            "/forward" => self.navigate(true),
             "/rewind" => {
                 let id = serve.command("timeline", vec![]);
                 self.pending.push((id, Pending::Timeline));
@@ -6884,6 +6926,10 @@ impl App {
                     format!("tango serve · session {} · {n} tools · /help · esc/ctrl+c interrupt · /exit quits", self.session),
                     Tone::Muted,
                 );
+                if let Some(prev) = self.nav_back.last() {
+                    let short: String = prev.chars().take(8).collect();
+                    self.push(format!("← /back 返回会话 {short}"), Tone::Muted);
+                }
             }
             "stream" => {
                 let ev = &v["event"];
@@ -12122,6 +12168,34 @@ mod tests {
         app.run_slash("/branch", &mut serve);
         let sent3: Value = serde_json::from_str(&serve.sent[2]).unwrap();
         assert_eq!(sent3["cmd"], "branch");
+    }
+
+    #[test]
+    fn back_and_forward_walk_the_session_history() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.session_full = "parent-0001".into();
+        app.run_slash("/resume sub-0002", &mut serve);
+        assert_eq!(app.respawn.take(), Some(Some("sub-0002".into())));
+        app.session_full = "sub-0002".into(); // hello from the new serve
+        app.run_slash("/back", &mut serve);
+        assert_eq!(app.respawn.take(), Some(Some("parent-0001".into())));
+        app.session_full = "parent-0001".into();
+        app.run_slash("/back", &mut serve);
+        assert_eq!(app.respawn, None, "nothing further back");
+        app.run_slash("/forward", &mut serve);
+        assert_eq!(app.respawn.take(), Some(Some("sub-0002".into())));
+        app.session_full = "sub-0002".into();
+        app.run_slash("/back", &mut serve);
+        app.session_full = "parent-0001".into();
+        // a fresh switch drops the forward entry, like a browser
+        app.run_slash("/new", &mut serve);
+        assert_eq!(app.respawn.take(), Some(None));
+        app.session_full = "fresh-0003".into();
+        app.run_slash("/forward", &mut serve);
+        assert_eq!(app.respawn, None);
+        app.run_slash("/back", &mut serve);
+        assert_eq!(app.respawn.take(), Some(Some("parent-0001".into())));
     }
 
     #[test]

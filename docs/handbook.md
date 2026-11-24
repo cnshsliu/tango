@@ -103,6 +103,7 @@ Every conversation is a session, stored as an append-only JSONL file in
 | Continue the latest session | `tango -c` |
 | Open a specific session | `tango -r <id or prefix>`, or `/resume` inside the TUI for a picker |
 | Start fresh, same model and mode | `/new` |
+| Go back to the previous session (e.g. from a subagent's session to its parent) | `/back`; `/forward` undoes it |
 | Name the session | `/rename <name>` |
 | Search all past conversations | `/find <text>` |
 | Ask the model about an earlier chat | Just ask ("what did we decide last time about X?"). It searches past sessions itself |
@@ -138,7 +139,7 @@ can be thrown away.
 | --- | --- | --- |
 | Use it for | A larger job you will check on later | A small, self-contained job whose result you want here |
 | Model | `subagent` role (`/bg --long` uses `longContext`) | `subagent` role |
-| Result | Its own session. Open it with `/resume` | A `⑂ subagent … 完成：…` summary added to **this** session, in violet so it stands apart from the main agent's replies |
+| Result | Its own session. Open it with `/resume`, come back with `/back` | A `⑂ subagent … 完成：…` summary added to **this** session, in violet so it stands apart from the main agent's replies |
 | Main session | Not touched | Shows the summary within about 2 seconds of the task ending, also while a turn runs (marked `本回合结束后写入会话`). The summary enters the conversation, so the model sees it, when the turn ends. A session that was restarted or resumed meanwhile still gets it, exactly once |
 
 `/subagent` was called `/subtask` before; the old name still works but is no longer offered.
@@ -333,6 +334,8 @@ while a turn is running unless noted. `/help` prints a short list inside the TUI
 | --- | --- |
 | `/new` | Start a new session with the same model and permission mode |
 | `/resume` (`/sessions`) | Open the session picker and switch to the one you pick; `/resume <id or prefix>` switches directly (Tab completes the id) |
+| `/back` | Return to the session you were in before the last switch (`/resume`, a picker pick, `/new`, `/fork`, or a step of `/forward`), like a browser's back button. After `/resume`-ing into a subagent's session, `/back` takes you to the parent. The welcome line names the way back (`← /back 返回会话 …`) |
+| `/forward` | Undo a `/back`. A new switch clears the forward history, as in a browser. The history lasts until the TUI quits or `/restart`s |
 | `/rename [name]` (`/name`) | Show or set the session name. In the picker, Ctrl+R renames any session |
 | `/editlast` (Alt+E) | Interrupt the running turn, roll the conversation **and code** back to before your last prompt, and load that prompt verbatim into the input box for editing. Two presses: the first arms (rollback touches code), the second executes; Esc cancels |
 | `/find [text]` | Search all sessions, including abandoned turns, and jump to a hit |
