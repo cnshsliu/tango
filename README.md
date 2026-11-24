@@ -150,8 +150,9 @@ match fuzzily everywhere (`-m` too): case-insensitive subsequence — `glm54` fi
   `/resume`) so they stand apart from the main agent's replies.
   The old name `/subtask` still works (the serve command is still `subtask`). The task registry
   (`~/.tango/tasks-bg.json`) records the parent session (`parent`) and the write-back (`reported`), so
-  the summary arrives within ~2s of the task ending (after the running turn), survives `/restart`,
-  and is written once.
+  the summary shows within ~2s of the task ending, survives `/restart`, and is written once. Mid-turn
+  the notice (ending `· 本回合结束后写入会话`) and `SubagentStop` come at once; the summary enters the
+  session (what the model sees) only after the turn ends.
 - **/agents [role model]** — role-based routing: `driver` (live), `subagent` (/subagent, /bg),
   `longContext` (/bg --long). Defaults to the current model.
 - **/mcp** — MCP servers from config `mcpServers: {name: {command, args}}` (stdio JSON-RPC);

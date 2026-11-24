@@ -192,41 +192,60 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
       await agent.events.emit('task_completed', { agentType: 'bg', description: w.prompt, taskId: w.taskId, success: status === 'done', status });
     }
   };
+  // a finished subagent is seen (SubagentStop) once; idle, its summary is written into the session
+  // and then shown; mid-turn it is shown at once and written when the turn ends (never mid-turn, RF#4)
+  const seen = new Map<string, { name: string; summary: string | null; shown: boolean }>(); // task id →
   const checkSubtasks = async (): Promise<void> => {
     void checkBgTasks().catch(() => {});
-    if (promptInFlight || checkingSubtasks) return;
+    if (checkingSubtasks) return;
     checkingSubtasks = true;
     try {
       for (const t of await reconcileTasks()) {
         if (t.parent !== store.id || t.reported || t.status === 'running') continue;
-        if (promptInFlight) return; // a turn started meanwhile: the next check picks it up
+        const s = seen.get(t.id) ?? (await seeSubtask(t));
+        if (promptInFlight) {
+          if (!s.shown) notifySubtask(t, s, true);
+          continue; // the turn-end check writes it back
+        }
         await updateTask(t.id, { reported: true });
-        await reportSubtask(t);
+        seen.delete(t.id);
+        if (s.summary != null) {
+          await store.appendMessage({
+            role: 'assistant',
+            content: [{ type: 'text', text: `⑂ subagent ${s.name} 完成：${s.summary}` }]
+          });
+        }
+        if (!s.shown) notifySubtask(t, s, false);
       }
     } finally {
       checkingSubtasks = false;
     }
   };
-  const reportSubtask = async (t: BgTask): Promise<void> => {
-    const pending = { name: t.name || t.worktreeName, prompt: subagentPrompts.get(t.id) ?? t.prompt.split('\n\n（你是子代理')[0] };
+  const seeSubtask = async (t: BgTask) => {
+    const name = t.name || t.worktreeName;
+    const prompt = subagentPrompts.get(t.id) ?? t.prompt.split('\n\n（你是子代理')[0];
     subagentPrompts.delete(t.id);
-    {
-      await agent.events.emit('subagent_stop', { agentType: 'subtask', description: pending.prompt, taskId: t.id, success: t.status === 'done', status: t.status });
-      if (t.status === 'done' && t.sessionId) {
-        try {
-          const sub = await SessionStore.open(sessionsDir(), t.sessionId);
-          const last = [...sub.allMessages()].reverse().find((m) => m.role === 'assistant' && m.content.some((b) => b.type === 'text'));
-          const text = last?.content.filter((b) => b.type === 'text').map((b) => (b as { text: string }).text).join('') ?? '';
-          const summary = text.trim().split('\n').filter(Boolean).slice(-6).join(' ').slice(0, 500);
-          await store.appendMessage({
-            role: 'assistant',
-            content: [{ type: 'text', text: `⑂ subagent ${pending.name} 完成：${summary}` }]
-          });
-          out({ type: 'notice', text: `⑂ subagent ${pending.name} 完成：${summary || '（没有文字回复）'}（/resume ${t.sessionId} 看全程）` });
-        } catch {}
-      } else {
-        out({ type: 'notice', text: `⑂ subagent ${pending.name} ${t.status === 'failed' ? '失败' : '停止'}` });
-      }
+    let summary: string | null = null;
+    if (t.status === 'done' && t.sessionId) {
+      try {
+        const sub = await SessionStore.open(sessionsDir(), t.sessionId);
+        const last = [...sub.allMessages()].reverse().find((m) => m.role === 'assistant' && m.content.some((b) => b.type === 'text'));
+        const text = last?.content.filter((b) => b.type === 'text').map((b) => (b as { text: string }).text).join('') ?? '';
+        summary = text.trim().split('\n').filter(Boolean).slice(-6).join(' ').slice(0, 500);
+      } catch {}
+    }
+    const s = { name, summary, shown: false };
+    seen.set(t.id, s);
+    await agent.events.emit('subagent_stop', { agentType: 'subtask', description: prompt, taskId: t.id, success: t.status === 'done', status: t.status });
+    return s;
+  };
+  const notifySubtask = (t: BgTask, s: { name: string; summary: string | null; shown: boolean }, later: boolean) => {
+    s.shown = true;
+    if (s.summary != null) {
+      const tail = later ? ' · 本回合结束后写入会话' : '';
+      out({ type: 'notice', text: `⑂ subagent ${s.name} 完成：${s.summary || '（没有文字回复）'}（/resume ${t.sessionId} 看全程${tail}）` });
+    } else {
+      out({ type: 'notice', text: `⑂ subagent ${s.name} ${t.status === 'failed' ? '失败' : '停止'}` });
     }
   };
 

@@ -2064,6 +2064,51 @@ test('subtask: runs in a worktree and writes its summary back to the main sessio
   }
 });
 
+test('subagent: finishing mid-turn shows the notice at once, writes the session only after the turn', async () => {
+  const mock = await startMock();
+  const home = await mkdtemp(join(tmpdir(), 'tango-serve-home-'));
+  const work = await mkdtemp(join(tmpdir(), 'tango-serve-work-'));
+  await writeFile(join(home, 'models.json'), JSON.stringify([
+    { id: 'mock/mock', provider: 'mock', model: 'm', api: 'openai-completions', baseUrl: `http://127.0.0.1:${(mock.server.address() as AddressInfo).port}/v1`, apiKey: 'MOCK_SERVE_KEY', contextWindow: 8000 }
+  ]));
+  const reply = (text: string) => SSE({ choices: [{ delta: { content: text } }] }) + SSE({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 5, completion_tokens: 5 } }) + 'data: [DONE]\n\n';
+  // the subagent's request answers at once; the main session's prompt is held for 8s
+  mock.setScript(() => (mock.requests.at(-1)?.messages?.some((m: any) => JSON.stringify(m).includes('慢回合')) ? 'DELAY:8000:' + reply('主回合结束') : reply('MIDTURNMARK')));
+  const git = (args: string[]) => spawnSync('git', args, { cwd: work, encoding: 'utf8' });
+  git(['init', '-q']); git(['config', 'user.email', 't@t']); git(['config', 'user.name', 't']);
+  await writeFile(join(work, 'seed.txt'), 'seed\n'); git(['add', '.']); git(['commit', '-q', '-m', 'i']);
+
+  const s = await startServe(home, work, 0);
+  try {
+    await s.next();
+    s.send({ id: 1, cmd: 'subtask', prompt: '快任务', name: 'sub-m' });
+    await s.until((f: any) => f.type === 'result' && f.id === 1, 'subtask');
+    s.send({ id: 2, cmd: 'prompt', text: '慢回合' });
+    const note = await s.until((f: any) => (f.type === 'notice' && /MIDTURNMARK/.test(f.text)) || (f.type === 'result' && f.id === 2), 'mid-turn notice');
+    assert.equal(note.type, 'notice', 'the notice arrives before the slow turn ends');
+    assert.match(note.text, /本回合结束后写入会话/);
+    const done = await s.until((f: any) => f.type === 'result' && f.id === 2, 'slow turn');
+    assert.ok(done.ok);
+    let items = '';
+    for (let i = 0; i < 20 && !items.includes('MIDTURNMARK'); i++) {
+      await sleep(300);
+      s.send({ id: 3, cmd: 'history' });
+      items = JSON.stringify((await s.until((f: any) => f.type === 'result' && f.id === 3, 'history')).data.items);
+    }
+    assert.ok(items.includes('MIDTURNMARK'), 'written back after the turn');
+    // written after the slow turn's reply, not inside it, and exactly once
+    assert.ok(items.indexOf('MIDTURNMARK') > items.indexOf('主回合结束'), 'write-back follows the turn');
+    assert.equal(items.split('MIDTURNMARK').length - 1, 1, 'written once');
+    assert.equal(mock.requests.filter((r) => JSON.stringify(r).includes('慢回合')).length, 1);
+  } finally {
+    s.child.kill();
+    spawnSync('git', ['worktree', 'prune'], { cwd: work });
+    mock.server.close();
+    await rm(home, { recursive: true, force: true });
+    await rm(work, { recursive: true, force: true });
+  }
+});
+
 test('mcp: tools bridge in, calls work, dead server does not crash serve', async () => {
   const mock = await startMock();
   const home = await mkdtemp(join(tmpdir(), 'tango-serve-home-'));
