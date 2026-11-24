@@ -1617,6 +1617,8 @@ pub struct App {
     queue_dialog: bool,
     /// keyboard-selected row in the /queue dialog
     queue_sel: usize,
+    /// the /todo dialog's selected row (keyboard)
+    todo_sel: usize,
     /// the IME we switched away from for a single-key dialog (macOS macism)
     ime_restore: Option<String>,
     /// clickable button rects, rebuilt every draw
@@ -1797,6 +1799,7 @@ impl App {
             local_queue: Vec::new(),
             queue_dialog: false,
             queue_sel: 0,
+            todo_sel: 0,
             choices: None,
             choices_collapsed: false,
             choice_rows: Vec::new(),
@@ -2523,6 +2526,54 @@ impl App {
             self.cursor = self.input.len();
             self.todo_dialog = false;
             self.todo_buttons.clear();
+        }
+    }
+
+    /// A /todo row button (click or key): expand / run / reply, or drop.
+    fn todo_action(&mut self, serve: &mut Serve, action: TodoAction) {
+        match action {
+            TodoAction::Expand(i) => self.expand_choice(i),
+            TodoAction::Run(i) => self.run_suggestion(serve, i),
+            TodoAction::Reply(i) => self.reply_question(i),
+            TodoAction::Drop(i) => {
+                if i < self.todos.len() {
+                    self.todos.remove(i);
+                }
+            }
+        }
+        self.todo_sel = self.todo_sel.min(self.todos.len().saturating_sub(1));
+    }
+
+    /// /todo dialog keys: ↑↓/j k pick a row, 1-9 jump to one, enter acts on it (the
+    /// row's first button: 展开 / 执行 / 答复), d/delete drops it, esc/q close.
+    fn todo_key(&mut self, serve: &mut Serve, k: crossterm::event::KeyEvent) {
+        let n = self.todos.len();
+        let sel = self.todo_sel.min(n.saturating_sub(1));
+        match k.code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.todo_dialog = false;
+                self.todo_buttons.clear();
+            }
+            KeyCode::Up | KeyCode::Char('k') => self.todo_sel = sel.saturating_sub(1),
+            KeyCode::Down | KeyCode::Char('j') => self.todo_sel = (sel + 1).min(n.saturating_sub(1)),
+            KeyCode::Char(c @ '1'..='9') => {
+                let i = c as usize - '1' as usize;
+                if i < n {
+                    self.todo_sel = i;
+                }
+            }
+            KeyCode::Enter if n > 0 => {
+                let act = match self.todos[sel].kind {
+                    TodoKind::Choice { .. } => TodoAction::Expand(sel),
+                    TodoKind::Suggest { .. } => TodoAction::Run(sel),
+                    TodoKind::Question { .. } => TodoAction::Reply(sel),
+                };
+                self.todo_action(serve, act);
+            }
+            KeyCode::Char('d') | KeyCode::Delete | KeyCode::Backspace if n > 0 => {
+                self.todo_action(serve, TodoAction::Drop(sel))
+            }
+            _ => {}
         }
     }
 
@@ -4029,6 +4080,7 @@ impl App {
             }
             "/todo" => {
                 self.todo_dialog = !self.todo_dialog;
+                self.todo_sel = 0;
                 if !self.todo_dialog {
                     self.todo_buttons.clear();
                 }
@@ -5456,16 +5508,7 @@ impl App {
                         .find(|(rect, _)| rect.contains(pos))
                         .cloned()
                     {
-                        match action {
-                            TodoAction::Expand(i) => self.expand_choice(i),
-                            TodoAction::Run(i) => self.run_suggestion(serve, i),
-                            TodoAction::Reply(i) => self.reply_question(i),
-                            TodoAction::Drop(i) => {
-                                if i < self.todos.len() {
-                                    self.todos.remove(i);
-                                }
-                            }
-                        }
+                        self.todo_action(serve, action);
                         return false;
                     }
                     self.todo_dialog = false;
@@ -6183,9 +6226,9 @@ impl App {
             self.queue_key(serve, k);
             return;
         }
-        if self.todo_dialog && k.code == KeyCode::Esc {
-            self.todo_dialog = false;
-            self.todo_buttons.clear();
+        if self.todo_dialog && !ctrl {
+            // modal like /queue: its keys never reach the input box
+            self.todo_key(serve, k);
             return;
         }
         // the choices panel navigates only when the input is empty — typing wins
@@ -9486,7 +9529,7 @@ impl App {
             let inner = dialog_frame(&mut self.hint_buttons, f,
                 pop,
                 "待定 · To be considered",
-                "点击逐条处理 · esc 关闭",
+                "↑↓ 选择 · enter 展开/执行/答复 · d 忽略 · esc 关闭",
                 self.theme,
             );
             self.todo_buttons.clear();
@@ -9532,7 +9575,15 @@ impl App {
                     width: inner.width.saturating_sub(20),
                     height: 1,
                 };
-                f.render_widget(Paragraph::new(format!("{badge} {head}")), text_area);
+                let (marker, row_style) = if i == self.todo_sel.min(n.saturating_sub(1)) {
+                    ("❯", self.theme.style(Tone::Badge))
+                } else {
+                    (" ", Style::default())
+                };
+                f.render_widget(
+                    Paragraph::new(format!("{marker}{badge} {head}")).style(row_style),
+                    text_area,
+                );
                 let b1 = Rect {
                     x: inner.x + inner.width.saturating_sub(14),
                     y,
@@ -16720,6 +16771,70 @@ mod tests {
             app.key(esc(), &mut serve);
             assert!(interrupted(&serve), "{name}: the second Esc interrupts");
         }
+    }
+
+    #[test]
+    fn todo_dialog_is_fully_keyboard_driven() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.stream = "改好了。?choice\n1. 提交\n2. 再看看\n另外 ?suggest 顺手补个回归测试".into();
+        app.commit_stream();
+        let suggest = app
+            .todos
+            .iter()
+            .position(|t| matches!(t.kind, TodoKind::Suggest { .. }))
+            .unwrap();
+        app.run_slash("/todo", &mut serve);
+        let key = |app: &mut App, serve: &mut Serve, c: KeyCode| app.key(c.into(), serve);
+        // typing goes to the dialog, not the input box
+        key(&mut app, &mut serve, KeyCode::Char('x'));
+        assert!(app.input.is_empty(), "the dialog is modal");
+        // ↓/↑ move and clamp; a digit jumps to that row
+        key(&mut app, &mut serve, KeyCode::Down);
+        key(&mut app, &mut serve, KeyCode::Down);
+        assert_eq!(app.todo_sel, 1, "clamped to the last row");
+        key(&mut app, &mut serve, KeyCode::Up);
+        assert_eq!(app.todo_sel, 0);
+        key(&mut app, &mut serve, KeyCode::Char(char::from(b'1' + suggest as u8)));
+        assert_eq!(app.todo_sel, suggest);
+        // enter on a suggestion runs it (the row's first button)
+        key(&mut app, &mut serve, KeyCode::Enter);
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        assert_eq!(sent["text"], "请执行这条建议：顺手补个回归测试");
+        assert_eq!(app.todos.len(), 1);
+        assert_eq!(app.todo_sel, 0, "selection follows the shorter list");
+        // the hint's "d 忽略" is a button too: clicking it drops the selected row
+        let mut term = Terminal::new(TestBackend::new(100, 20)).unwrap();
+        term.draw(|f| app.draw(f)).unwrap();
+        let d = app
+            .hint_buttons
+            .iter()
+            .find(|(_, k)| k.code == KeyCode::Char('d'))
+            .map(|(r, _)| *r)
+            .expect("d has a hint button");
+        app.handle(
+            Event::Mouse(crossterm::event::MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: d.x,
+                row: d.y,
+                modifiers: KeyModifiers::NONE,
+            }),
+            &mut serve,
+        );
+        assert!(app.todos.is_empty());
+        assert!(app.todo_dialog, "still open, now empty");
+        // enter on an empty list does nothing; esc closes
+        key(&mut app, &mut serve, KeyCode::Enter);
+        key(&mut app, &mut serve, KeyCode::Esc);
+        assert!(!app.todo_dialog);
+        // enter on a choice re-opens its panel and closes the dialog
+        app.stream = "?choice\n1. 提交\n2. 再看看".into();
+        app.commit_stream();
+        app.submit_text(&mut serve, "别的事".into(), vec![]);
+        app.run_slash("/todo", &mut serve);
+        key(&mut app, &mut serve, KeyCode::Enter);
+        assert!(app.choices.is_some() && !app.todo_dialog);
     }
 
     #[test]

@@ -399,7 +399,7 @@ while a turn is running unless noted. `/help` prints a short list inside the TUI
 | `/security-review` | Security review of the working-tree diff |
 | `/diff [--staged] [paths]` | Read-only view of the working-tree (or staged) patch |
 | `/btw <question>` | Ask about the current context without tools. The answer isn't saved |
-| `/todo` | Open the list of pending choices (❓) and suggestions from the model, and act on them one by one |
+| `/todo` | Open the list of pending choices (❓) and suggestions from the model, and act on them one by one: click a row's buttons, or ↑↓/`j` `k`/1-9 to pick a row, Enter to act on it (展开 a choice, 执行 a suggestion, 答复 a question), `d` to drop it, Esc/`q` to close |
 
 ### Context, memory and skills
 

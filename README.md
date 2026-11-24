@@ -361,7 +361,9 @@ tools and checkpoints follow live); `/add_dir <dir>` registers an extra writable
   ends); `/queue` opens a clickable dialog (per-item [并入当前]/[删], footer [全部并入]/[清空]);
   it also works from the keyboard: ↑↓/`j` `k` or `1`–`9` select a row, Enter/`m` merges it, `d`/Delete
   removes it, `a` merges all, `c` clears, Esc/`q` closes. The dialog closes by itself once the
-  queue is empty (merge all, clear, or the last item merged, removed or sent). `/queue` also accepts `rm <n>`/`all`/`clear`;
+  queue is empty (merge all, clear, or the last item merged, removed or sent). `/todo` (pending ❓ choices and
+  suggestions) works the same way: ↑↓/`j` `k`/`1`–`9` pick a row, Enter acts on it (展开 / 执行 / 答复), `d`/Delete
+  drops it, Esc/`q` closes; the row buttons stay clickable. `/queue` also accepts `rm <n>`/`all`/`clear`;
   `/queue auto append` makes busy-Enter supplement the running turn instead of queueing (Alt+Enter
   semantics), `/queue auto off` restores queueing, bare `/queue auto` prints the current mode; the
   switch lives in the TUI process (not persisted, kept across serve respawns until you quit); **Ctrl+C interrupts only the current reply and keeps the queue**; **Alt+Enter appends the typed
