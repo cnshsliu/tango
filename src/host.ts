@@ -194,7 +194,7 @@ function installLifecycleHooks(
       if (r.block) process.stderr.write(`[hook Notification] ${r.block}\n`.slice(0, 500));
     });
   }
-  // /subtask and /bg: the Start/Created hooks can refuse the launch; the Stop/Completed ones observe
+  // /subagent and /bg: the Start/Created hooks can refuse the launch; the Stop/Completed ones observe
   const launch = (ev: 'SubagentStart' | 'TaskCreated') => async ({ agentType, description }: { agentType: string; description: string }) => {
     const r = await run(ev, { agent_type: agentType, description: description.slice(0, 20_000) }, agentType);
     later(r);

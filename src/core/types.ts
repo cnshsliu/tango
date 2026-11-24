@@ -205,7 +205,7 @@ export interface TangoEvents {
   cwd_changed: { oldCwd: string; newCwd: string };
   /** tango wants the user's attention (a permission prompt) */
   notification: { message: string; type: string };
-  /** a /subtask is about to start (a veto refuses it) or has finished */
+  /** a /subagent is about to start (a veto refuses it) or has finished */
   subagent_start: { agentType: string; description: string; taskId?: string };
   subagent_stop: { agentType: string; description: string; taskId: string; success: boolean; status: string };
   /** a /bg task is about to start (a veto refuses it) or has finished */

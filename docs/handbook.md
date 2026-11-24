@@ -6,7 +6,7 @@ the [README](../README.md).
 - [Get started](#get-started)
 - [Everyday workflows](#everyday-workflows)
   - [Sessions](#sessions)
-  - [Background work: /bg vs /subtask](#background-work-bg-vs-subtask)
+  - [Background work: /bg vs /subagent](#background-work-bg-vs-subagent)
   - [Worktrees](#worktrees)
   - [Time travel](#time-travel)
   - [Permissions](#permissions)
@@ -124,19 +124,21 @@ never starts a turn, so two sessions cannot reply-loop on their own — and mess
 7 days. Remember that a received message does reach the other session's model, i.e. it can
 influence its behavior; permission checks still apply to whatever it then does.
 
-### Background work: /bg vs /subtask
+### Background work: /bg vs /subagent
 
 Both commands start a separate tango process in its own new git worktree (`bg-<id>`), so the
 work never touches your main checkout and your current session stays free. The background
 process runs in `auto` permission mode: nobody is there to answer prompts, and the worktree
 can be thrown away.
 
-| | `/bg <prompt>` | `/subtask <task>` |
+| | `/bg <prompt>` | `/subagent <task>` |
 | --- | --- | --- |
 | Use it for | A larger job you will check on later | A small, self-contained job whose result you want here |
 | Model | `subagent` role (`/bg --long` uses `longContext`) | `subagent` role |
-| Result | Its own session. Open it with `/resume` | A `⑂ subtask … 完成：…` summary added to **this** session |
+| Result | Its own session. Open it with `/resume` | A `⑂ subagent … 完成：…` summary added to **this** session |
 | Main session | Not touched | Gets the summary once the task ends, at the next idle moment |
+
+`/subagent` was called `/subtask` before; the old name still works but is no longer offered.
 
 Both kinds show up in `/tasks` with their status (`running`, `done`, `failed`, `stopped`)
 and session id. `/stop <id or name>` kills a running task.
@@ -296,7 +298,7 @@ More events cover the rest of a session: `SessionStart` / `SessionEnd`, `PreComp
 skips the compaction) / `PostCompact`, `PostToolUseFailure` (only failed calls), `StopFailure`
 (the turn died on an error), `InstructionsLoaded` (AGENTS.md read), `CwdChanged` (`/cd`),
 `Notification` (a permission prompt is waiting: good for a desktop ping), and `SubagentStart` /
-`SubagentStop` / `TaskCreated` / `TaskCompleted` around `/subtask` and `/bg` (exit 2 on the start
+`SubagentStop` / `TaskCreated` / `TaskCompleted` around `/subagent` and `/bg` (exit 2 on the start
 events refuses the launch). README "Hooks" has the full table. Instead of an exit code, a
 script can print JSON on stdout: `{"additionalContext": "…"}` hands the model extra text,
 `{"decision": "block", "reason": "…"}` works like exit 2, and `{"continue": false, "stopReason": "…"}`
@@ -358,7 +360,7 @@ while a turn is running unless noted. `/help` prints a short list inside the TUI
 | Command | What it does |
 | --- | --- |
 | `/model [id]` | Switch model and save it as the default. Bare: open the model picker (its filter is fuzzy too); clicking the model name in the input box's info row opens the same picker, the current model selected (click it again to close; click a row to pick). The id matches fuzzily, case-insensitive: `glm54` → `zhipu-plan/glm-5.4`; with several words each must match (`zp glm5.4`); several matches list the candidates instead of guessing. `-m` on the command line uses the same matching |
-| `/agents [role model]` | Show or set role models: `driver`, `subagent` (`/bg`, `/subtask`), `longContext` (`/bg --long`) |
+| `/agents [role model]` | Show or set role models: `driver`, `subagent` (`/bg`, `/subagent`), `longContext` (`/bg --long`) |
 | `/mode [confirm\|ask\|auto\|readonly]` | Show or set the permission mode. Bare: a picker with all modes (clicking the mode label in the input box's info row opens it too, the current mode selected; click it again to close, or click the model name to swap to the model picker); switching to auto asks for the risk acknowledgement first |
 | `/plan` | Toggle plan mode: writes refused, the model produces a plan |
 | `/effort [low\|medium\|high\|off]` | Show or set reasoning effort for this session |
@@ -373,7 +375,7 @@ while a turn is running unless noted. `/help` prints a short list inside the TUI
 | --- | --- |
 | `/bg <prompt>` | Run a prompt in a new worktree as a detached background session |
 | `/bg --long <prompt>` | Same, on the `longContext` role model |
-| `/subtask <task>` | Run a small task in a new worktree. Its summary is written back into this session |
+| `/subagent <task>` (`/subtask`) | Run a small task in a new worktree. Its summary is written back into this session |
 | `/tasks` | List background tasks with status and session id |
 | `/stop <id or name>` | Kill a running background task |
 | `/worktree` | List managed worktrees |

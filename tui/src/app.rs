@@ -870,9 +870,10 @@ const SLASH: &[(&str, &str)] = &[
     ("/skills", "列出全局/项目技能"),
     ("/status", "会话信息"),
     (
-        "/subtask <任务>",
+        "/subagent <任务>",
         "派子代理在独立 worktree 干活，完成后摘要写回本会话",
     ),
+    ("/subtask", "同 /subagent（旧名）"),
     (
         "/statusline [tpl|off]",
         "自定义状态栏模板：{model} {mode} {cost} {ctx} {pct} {session}",
@@ -3373,7 +3374,8 @@ impl App {
             let items: Vec<(&str, &str)> = SLASH
                 .iter()
                 .copied()
-                .filter(|(c, _)| c.starts_with(text.as_str()))
+                // renamed commands keep working but are not offered (desc ends "（旧名）")
+                .filter(|(c, d)| c.starts_with(text.as_str()) && !d.ends_with("（旧名）"))
                 .collect();
             if items.is_empty() || (items.len() == 1 && items[0].0 == text) {
                 self.popup = None;
@@ -4124,10 +4126,10 @@ impl App {
                     );
                 }
             }
-            "/subtask" => {
+            "/subagent" | "/subtask" => {
                 if rest.is_empty() {
                     self.push(
-                        "usage: /subtask <小任务描述> · 完成后摘要自动写回",
+                        "usage: /subagent <小任务描述> · 完成后摘要自动写回",
                         Tone::Muted,
                     );
                 } else {
@@ -8324,7 +8326,7 @@ impl App {
                             let get = |k: &str| d["roles"][k].as_str().unwrap_or(driver);
                             for (role, note) in [
                                 ("driver", "主会话（立即生效）"),
-                                ("subagent", "/subtask 与 /bg 默认"),
+                                ("subagent", "/subagent 与 /bg 默认"),
                                 ("longContext", "/bg --long 长上下文"),
                             ] {
                                 text.push_str(&format!("  {role:<12} {} · {note}\n", get(role)));
@@ -14705,10 +14707,24 @@ mod tests {
     }
 
     #[test]
-    fn subtask_command_sends() {
+    fn subagent_command_sends() {
         let mut app = App::new();
         let mut serve = Serve::mock();
-        app.run_slash("/subtask 修个测试", &mut serve);
+        // the old name is not offered by completion but still works, same protocol command
+        app.input = "/sub".chars().collect();
+        app.cursor = app.input.len();
+        app.refresh_popup();
+        let offered = app.popup.as_ref().map(|p| p.items.clone()).unwrap_or_default();
+        assert!(!offered.iter().any(|i| i == "/subtask"), "{offered:?}");
+        app.input.clear();
+        app.cursor = 0;
+        app.popup = None;
+        app.run_slash("/subtask 旧名", &mut serve);
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        assert_eq!(sent["cmd"], "subtask");
+        assert_eq!(sent["prompt"], "旧名");
+        serve.sent.clear();
+        app.run_slash("/subagent 修个测试", &mut serve);
         let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
         assert_eq!(sent["cmd"], "subtask");
         assert_eq!(sent["prompt"], "修个测试");

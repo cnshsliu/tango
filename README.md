@@ -122,7 +122,7 @@ one-shot runs permission asks are refused, as in text mode, unless `--yes` is gi
 `tango --format json --max-tool-rounds 10 -y "run the tests" | jq -c 'select(.type=="done")'`.
 
 TUI commands: `/model`, `/agents`, `/resume`, `/new`, `/restart`, `/rename`, `/send`, `/mode`, `/plan`, `/goal`,
-`/loop`, `/effort`, `/review`, `/security-review`, `/bg`, `/tasks`, `/stop`, `/subtask`,
+`/loop`, `/effort`, `/review`, `/security-review`, `/bg`, `/tasks`, `/stop`, `/subagent`,
 `/worktree`, `/mcp`, `/plugins`, `/vim`, `/nvim`, `/editor`, `/multiline`, `/btw`, `/diff`,
 `/focus`, `/density`, `/mouse`, `/animations`, `/ascii`, `/clipboard`, `/theme`, `/compact`, `/autocompact`, `/skill`, `/skills`,
 `/memory`, `/remember`, `/cost`, `/usage`, `/stats`, `/insights`, `/context`, `/queue`,
@@ -144,9 +144,10 @@ match fuzzily everywhere (`-m` too): case-insensitive subsequence — `glm54` fi
 - **/bg <prompt>** — a background prompt: fresh worktree + independent serve child; the task
   runs to completion (detached), its session lands in the shared sessions dir (`/tasks` shows
   status + session, `/stop` kills the process group). `/bg --long` uses the longContext role.
-- **/subtask <task>** — a subagent: a background task on the subagent role model whose final
-  summary is written back into THIS session (`⑂ subtask …`); main turns are never disturbed.
-- **/agents [role model]** — role-based routing: `driver` (live), `subagent` (/subtask, /bg),
+- **/subagent <task>** — a subagent: a background task on the subagent role model whose final
+  summary is written back into THIS session (`⑂ subagent …`); main turns are never disturbed.
+  The old name `/subtask` still works (the serve command is still `subtask`).
+- **/agents [role model]** — role-based routing: `driver` (live), `subagent` (/subagent, /bg),
   `longContext` (/bg --long). Defaults to the current model.
 - **/mcp** — MCP servers from config `mcpServers: {name: {command, args}}` (stdio JSON-RPC);
   tools bridge as `mcp_<server>_<tool>` (collision-suffixed), treated as write-effect
@@ -216,8 +217,8 @@ event's match field; missing or `*` matches everything. The nested
 | `InstructionsLoaded` | the AGENTS.md set is first read, and whenever it changes (`/cd`) | `files_loaded`, `files` (paths, global first) |
 | `CwdChanged` | `/cd` moved the working directory; runs in the new one | `old_cwd`, `new_cwd` |
 | `Notification` | tango needs you: a permission prompt is about to show | `notification_type` (`permission_prompt`), `message` |
-| `SubagentStart` | before `/subtask` starts its worktree child | `agent_type` (`subtask`), `description` (the prompt) |
-| `SubagentStop` | a `/subtask` finished (seen at the next safe point) | `agent_type`, `description`, `task_id`, `success`, `status` (`done`, `failed`, `stopped`) |
+| `SubagentStart` | before `/subagent` starts its worktree child | `agent_type` (`subtask`), `description` (the prompt) |
+| `SubagentStop` | a `/subagent` finished (seen at the next safe point) | `agent_type`, `description`, `task_id`, `success`, `status` (`done`, `failed`, `stopped`) |
 | `TaskCreated` | before `/bg` starts a background task | `agent_type` (`bg`), `description` |
 | `TaskCompleted` | a `/bg` task this session started stopped running (polled every 2s) | `agent_type`, `description`, `task_id`, `success`, `status` |
 
@@ -230,7 +231,7 @@ Exit 0 means go on. Exit 2 acts on the event, with stderr as the reason:
 | `UserPromptSubmit` | the prompt is rejected before it is saved or sent |
 | `Stop` | the model keeps going with the reason as a note; `stop_hook_active` is true on the next stop, so a hook can let it finish; at most 3 times per prompt |
 | `PreCompact` | the compaction is skipped (`/compact` reports nothing compacted) |
-| `SubagentStart`, `TaskCreated` | `/subtask` or `/bg` is refused with the reason |
+| `SubagentStart`, `TaskCreated` | `/subagent` or `/bg` is refused with the reason |
 | all others | nothing can be undone or refused there; the reason is a warning on stderr |
 
 Any other exit code warns on stderr and never blocks. The first block stops the chain of hooks

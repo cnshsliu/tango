@@ -207,12 +207,12 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
           const summary = text.trim().split('\n').filter(Boolean).slice(-6).join(' ').slice(0, 500);
           await store.appendMessage({
             role: 'assistant',
-            content: [{ type: 'text', text: `⑂ subtask ${pending.name} 完成：${summary}` }]
+            content: [{ type: 'text', text: `⑂ subagent ${pending.name} 完成：${summary}` }]
           });
-          out({ type: 'notice', text: `⑂ subtask ${pending.name} 完成（worktree ${t.worktreeName} · /resume ${t.sessionId} 看全程）` });
+          out({ type: 'notice', text: `⑂ subagent ${pending.name} 完成（worktree ${t.worktreeName} · /resume ${t.sessionId} 看全程）` });
         } catch {}
       } else {
-        out({ type: 'notice', text: `⑂ subtask ${pending.name} ${t.status === 'failed' ? '失败' : '停止'}` });
+        out({ type: 'notice', text: `⑂ subagent ${pending.name} ${t.status === 'failed' ? '失败' : '停止'}` });
       }
     }
   };
