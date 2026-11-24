@@ -91,7 +91,7 @@ tango task run [--loop]  run due tasks once, or keep running as a daemon
 | flag | short | meaning |
 | --- | --- | --- |
 | `--continue` | `-c` | continue the most recent session |
-| `--resume <id>` | `-r` | continue a given session (id or prefix) |
+| `--resume <id>` | `-r` | continue a given session (id, id prefix, or the id's last `-` part, e.g. `0ad2040a8182`) |
 | `--model <id>` | `-m` | model for this run (fuzzy: `glm54` finds `zhipu-plan/glm-5.4`) |
 | `--yes` | `-y` | auto mode: tools run without asking |
 | `--readonly` | | no writes, no bash |
@@ -511,7 +511,7 @@ reply data. Most of these also skip the prompt queue.
 | goals | `goal` (`op`, `text`; → `goal`, `paused`, `maxRounds`), `loop` (`prompt`, `everySec`, or `off`) |
 | review | `review` (reviews the working-tree diff), `security_review` (`paths`) |
 | during a turn | `supplement` (`text`, `images`: adds to the running turn; the model sees it at its next step), `editlast` (`entryIndex` optional: interrupt, rewind to before that prompt, → its original text for re-editing) |
-| sessions | `session_preview` (`session` → `preview`), `session_rename` (`session`, `name`), `queue` (→ `running`, `queued`) |
+| sessions | `session_preview` (`session` → `preview`), `session_rename` (`session`, `name`), `session_resolve` (`session` id, prefix or last `-` part → `id`; fails on no match or an ambiguous prefix), `queue` (→ `running`, `queued`) |
 | memory and skills | `memory` (→ `text`, `path`), `remember` (`text`), `skills` (→ `skills`), `preset_save` / `preset_get` (`name`, `text`), `preset_list` (→ `presets`), `init` (`force`; writes AGENTS.md) |
 | models and agents | `agents_show` (→ `roles`, `driver`), `agents_set` (`role`, `model`) |
 | usage and diagnostics | `usage` / `stats` (requests and cost by model and session), `insights` (→ `path` of an HTML report), `doctor` (→ `checks`), `debug_zip` (→ `path`), `mcp_list` (→ `servers`), `plugins_list` (→ `plugins`) |
@@ -542,7 +542,8 @@ same label again closes its picker, clicking the other one swaps to that picker,
 picker row picks it.
 The draft starts right under the rule, with no blank padding rows around it. Under the block, on
 terminals of 24+ rows, a footer shows `~/dir:branch` on the left (refreshed by `/cd`) and key hints
-(`shift+tab plan`, `ctrl+p commands`) on the right when they fit. The bottom status bar (cost ·
+(`shift+tab plan`, `ctrl+p commands`) on the right when they fit. Both hints are clickable: `shift+tab plan`
+opens the mode picker (like clicking the mode label), `ctrl+p commands` the command palette (like ctrl+p). The bottom status bar (cost ·
 session · ctx, fitted to the terminal width — on a narrow screen ctx and sess go first, then the
 pinned ▶, while cost and the ❓ badge stay) no longer repeats the model and mode. The rule above the input
 carries the work state on its left end — `idle`, or the elapsed time and

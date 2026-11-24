@@ -1421,6 +1421,16 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
         }
         return;
       }
+      case 'session_resolve': {
+        // /resume <id or prefix> checks here before the TUI tears down this serve: a bad
+        // ref must stay an error line, not a respawned child that dies on startup
+        try {
+          reply(cmd, true, { id: await resolveSessionId(String(cmd.session ?? '').trim()) });
+        } catch (e: any) {
+          reply(cmd, false, undefined, String(e?.message ?? e));
+        }
+        return;
+      }
       case 'session_rename': {
         try {
           const other = await SessionStore.open(sessionsDir(), await resolveSessionId(String(cmd.session ?? '')));

@@ -101,7 +101,7 @@ Every conversation is a session, stored as an append-only JSONL file in
 | Task | Command |
 | --- | --- |
 | Continue the latest session | `tango -c` |
-| Open a specific session | `tango -r <id or prefix>`, or `/resume` inside the TUI for a picker |
+| Open a specific session | `tango -r <id or prefix>` (the id's last `-` part also works, e.g. `tango -r 0ad2040a8182`), or `/resume` inside the TUI for a picker |
 | Start fresh, same model and mode | `/new` |
 | Go back to the previous session (e.g. from a subagent's session to its parent) | `/back`; `/forward` undoes it |
 | Name the session | `/rename <name>` |
@@ -333,7 +333,7 @@ while a turn is running unless noted. `/help` prints a short list inside the TUI
 | Command | What it does |
 | --- | --- |
 | `/new` | Start a new session with the same model and permission mode |
-| `/resume` (`/sessions`) | Open the session picker and switch to the one you pick; `/resume <id or prefix>` switches directly (Tab completes the id) |
+| `/resume` (`/sessions`) | Open the session picker and switch to the one you pick; `/resume <id or prefix>` switches directly (Tab completes the id; the id's last `-` part, e.g. `0ad2040a8182`, works too). An id that matches no session, or a prefix that matches several, prints an error and keeps the current session |
 | `/back` | Return to the session you were in before the last switch (`/resume`, a picker pick, `/new`, `/fork`, or a step of `/forward`), like a browser's back button. After `/resume`-ing into a subagent's session, `/back` takes you to the parent. The welcome line names the way back (`← /back 返回会话 …`) |
 | `/forward` | Undo a `/back`. A new switch clears the forward history, as in a browser. The history lasts until the TUI quits or `/restart`s |
 | `/rename [name]` (`/name`) | Show or set the session name. In the picker, Ctrl+R renames any session |

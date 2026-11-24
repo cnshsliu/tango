@@ -730,6 +730,22 @@ test('serve: find orphaned futures, export, transcript, rename, recap', async ()
     const ss = await s.until((f: any) => f.type === 'result' && f.id === 307, 'sessions');
     assert.ok(ss.data.sessions.some((x: any) => x.name === 'my-named-session' && x.current === true));
 
+    // session_resolve: a unique prefix → the full id; a miss → ok:false with the reason
+    const cur = ss.data.sessions.find((x: any) => x.current).id;
+    s.send({ id: 3071, cmd: 'session_resolve', session: cur.slice(0, 8) });
+    const rs = await s.until((f: any) => f.type === 'result' && f.id === 3071, 'resolve hit');
+    assert.ok(rs.ok);
+    assert.equal(rs.data.id, cur);
+    // …or by the uuid's last '-' part
+    s.send({ id: 3073, cmd: 'session_resolve', session: cur.split('-').at(-1) });
+    const tail = await s.until((f: any) => f.type === 'result' && f.id === 3073, 'resolve tail');
+    assert.ok(tail.ok);
+    assert.equal(tail.data.id, cur);
+    s.send({ id: 3072, cmd: 'session_resolve', session: '/resume nope' });
+    const miss = await s.until((f: any) => f.type === 'result' && f.id === 3072, 'resolve miss');
+    assert.equal(miss.ok, false);
+    assert.match(miss.error, /no session matches/);
+
     // recap: text answer, no session writes
     s.send({ id: 308, cmd: 'prompt', text: 'another turn' });
     await s.until((f: any) => f.type === 'result' && f.id === 308 && f.ok, 'turn2');
