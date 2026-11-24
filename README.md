@@ -511,7 +511,7 @@ reply data. Most of these also skip the prompt queue.
 | goals | `goal` (`op`, `text`; → `goal`, `paused`, `maxRounds`), `loop` (`prompt`, `everySec`, or `off`) |
 | review | `review` (reviews the working-tree diff), `security_review` (`paths`) |
 | during a turn | `supplement` (`text`, `images`: adds to the running turn; the model sees it at its next step), `editlast` (`entryIndex` optional: interrupt, rewind to before that prompt, → its original text for re-editing) |
-| sessions | `session_preview` (`session` → `preview`), `session_rename` (`session`, `name`), `queue` (→ `running`, `queued`) |
+| sessions | `session_preview` (`session` → `preview`), `session_rename` (`session`, `name`), `session_resolve` (`session` id or prefix → `id`; fails on no match or an ambiguous prefix), `queue` (→ `running`, `queued`) |
 | memory and skills | `memory` (→ `text`, `path`), `remember` (`text`), `skills` (→ `skills`), `preset_save` / `preset_get` (`name`, `text`), `preset_list` (→ `presets`), `init` (`force`; writes AGENTS.md) |
 | models and agents | `agents_show` (→ `roles`, `driver`), `agents_set` (`role`, `model`) |
 | usage and diagnostics | `usage` / `stats` (requests and cost by model and session), `insights` (→ `path` of an HTML report), `doctor` (→ `checks`), `debug_zip` (→ `path`), `mcp_list` (→ `servers`), `plugins_list` (→ `plugins`) |

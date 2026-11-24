@@ -369,6 +369,8 @@ enum Pending {
     Model,
     Models,
     Sessions,
+    /// /resume [id or prefix]: serve resolves it first, the switch happens only on a unique hit
+    ResumeResolve,
     Mode,
     Compact,
     Status,
@@ -4726,9 +4728,13 @@ impl App {
                     let id = serve.command("sessions", vec![]);
                     self.pending.push((id, Pending::Sessions));
                 } else {
-                    // a Tab-completed (or typed) id/prefix: serve resolves it on respawn
-                    self.push(format!("↻ resuming session {target} …"), Tone::Muted);
-                    self.switch_session(Some(target.to_string()));
+                    // a typed id/prefix: resolve it before tearing down this serve, so a
+                    // miss or an ambiguous prefix is an error line instead of a dead child
+                    let id = serve.command(
+                        "session_resolve",
+                        vec![("session", Value::String(target.to_string()))],
+                    );
+                    self.pending.push((id, Pending::ResumeResolve));
                 }
             }
             "/status" => {
@@ -7306,6 +7312,12 @@ impl App {
                                 self.push("editlast: 没有可编辑的回合", Tone::Muted);
                             }
                         }
+                        (Pending::ResumeResolve, true) => {
+                            if let Some(full) = d["id"].as_str() {
+                                self.push(format!("↻ resuming session {full} …"), Tone::Muted);
+                                self.switch_session(Some(full.to_string()));
+                            }
+                        }
                         (Pending::SessionPreview, true) => {
                             if let Some(preview) = d["preview"].as_str() {
                                 let head: String = preview
@@ -8448,6 +8460,13 @@ impl App {
                                 Tone::Error,
                             );
                         }
+                        (Pending::ResumeResolve, false) => self.push(
+                            format!(
+                                "resume: {} · 当前会话不变",
+                                v["error"].as_str().unwrap_or("?")
+                            ),
+                            Tone::Error,
+                        ),
                         (_, false) => self.push(
                             format!("error: {}", v["error"].as_str().unwrap_or("?")),
                             Tone::Error,
@@ -12441,6 +12460,50 @@ mod tests {
         let v = app.viewer.as_ref().expect("preview viewer opened");
         assert!(v.read_only);
         assert!(v.text.contains("看看预览"));
+    }
+
+    #[test]
+    fn resume_with_an_id_resolves_before_switching() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        // no match: an error line, the current serve stays (no respawn)
+        app.run_slash("/resume /resume 427f7386", &mut serve);
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        assert_eq!(sent["cmd"], "session_resolve");
+        assert_eq!(sent["session"], "/resume 427f7386");
+        assert_eq!(app.respawn, None, "nothing torn down before serve answers");
+        app.frame(
+            json!({"type": "result", "id": sent["id"], "ok": false,
+                   "error": "no session matches \"/resume 427f7386\" (tango --sessions)"}),
+            &mut serve,
+        );
+        assert_eq!(app.respawn, None);
+        let last = app.lines.last().unwrap();
+        assert_eq!(last.tone, Tone::Error);
+        assert!(last.text.contains("no session matches"), "{}", last.text);
+        assert!(last.text.contains("当前会话不变"), "{}", last.text);
+        // ambiguous prefix: same, an error and no switch
+        app.run_slash("/resume 4", &mut serve);
+        let sent: Value = serde_json::from_str(&serve.sent[1]).unwrap();
+        app.frame(
+            json!({"type": "result", "id": sent["id"], "ok": false,
+                   "error": "ambiguous \"4\": 427f7386, 4a1b2c3d"}),
+            &mut serve,
+        );
+        assert_eq!(app.respawn, None);
+        assert!(app.lines.last().unwrap().text.contains("ambiguous"));
+        // unique hit: switch to the full id serve resolved
+        app.run_slash("/resume 427f", &mut serve);
+        let sent: Value = serde_json::from_str(&serve.sent[2]).unwrap();
+        app.frame(
+            json!({"type": "result", "id": sent["id"], "ok": true,
+                   "data": {"id": "427f7386-2f24-4923-93f7-0ad2040a8182"}}),
+            &mut serve,
+        );
+        assert_eq!(
+            app.respawn,
+            Some(Some("427f7386-2f24-4923-93f7-0ad2040a8182".into()))
+        );
     }
 
     #[test]
