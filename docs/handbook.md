@@ -137,7 +137,7 @@ can be thrown away.
 | Use it for | A larger job you will check on later | A small, self-contained job whose result you want here |
 | Model | `subagent` role (`/bg --long` uses `longContext`) | `subagent` role |
 | Result | Its own session. Open it with `/resume` | A `⑂ subagent … 完成：…` summary added to **this** session |
-| Main session | Not touched | Gets the summary once the task ends, at the next idle moment |
+| Main session | Not touched | Gets the summary within about 2 seconds of the task ending, or right after the running turn if one is in progress. A session that was restarted or resumed meanwhile still gets it, exactly once |
 
 `/subagent` was called `/subtask` before; the old name still works but is no longer offered.
 

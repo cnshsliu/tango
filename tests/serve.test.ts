@@ -2043,15 +2043,18 @@ test('subtask: runs in a worktree and writes its summary back to the main sessio
     const st = await s.until((f: any) => f.type === 'result' && f.id === 200, 'subtask');
     assert.ok(st.ok, JSON.stringify(st));
 
-    // poll history until the write-back lands (reconcile runs on commands)
-    let wroteBack = false;
-    for (let i = 0; i < 40 && !wroteBack; i++) {
-      await sleep(500);
-      s.send({ id: 201, cmd: 'history' });
-      const h = await s.until((f: any) => f.type === 'result' && f.id === 201, 'history');
-      if (JSON.stringify(h.data.items).includes('SUBTASKMARK')) wroteBack = true;
-    }
-    assert.ok(wroteBack, 'subtask summary written back to the main session');
+    // no further commands: the idle poll alone must notice the finished subagent, show its
+    // summary as a notice and write it into the session
+    const note = await s.until((f: any) => f.type === 'notice' && /SUBTASKMARK/.test(f.text), 'write-back notice');
+    assert.match(note.text, /⑂ subagent sub-x 完成：子任务完成/);
+    s.send({ id: 201, cmd: 'history' });
+    const h = await s.until((f: any) => f.type === 'result' && f.id === 201, 'history');
+    assert.ok(JSON.stringify(h.data.items).includes('SUBTASKMARK'), 'subtask summary written back to the main session');
+    // the registry remembers the parent and the write-back: a restarted serve neither loses nor repeats it
+    const reg = JSON.parse(await readFile(join(home, 'tasks-bg.json'), 'utf8'));
+    const t = reg.find((x: any) => x.name === 'sub-x');
+    assert.equal(t.reported, true);
+    assert.ok(t.parent, 'parent session recorded');
   } finally {
     s.child.kill();
     spawnSync('git', ['worktree', 'prune'], { cwd: work });

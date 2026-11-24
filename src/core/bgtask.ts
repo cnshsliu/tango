@@ -27,6 +27,9 @@ export interface BgTask {
   startedAt: string;
   endedAt?: string;
   model?: string;
+  /** /subagent: the session its summary goes back to, and whether that write-back happened */
+  parent?: string;
+  reported?: boolean;
 }
 
 const registryFile = () => join(tangoDir(), 'tasks-bg.json');
@@ -132,6 +135,7 @@ export async function startBgTask(args: {
   roleModel?: string; // resolved role model (subagent/longContext)
   mainCwd: string;
   currentModel: string;
+  parent?: string;
 }): Promise<BgTask> {
   const { worktreeCreate: create } = await import('./worktrees.js');
   const seq = Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
@@ -185,7 +189,8 @@ export async function startBgTask(args: {
     status: 'running',
     startedAt: new Date().toISOString(),
     model,
-    command: childCommand
+    command: childCommand,
+    ...(args.parent ? { parent: args.parent } : {})
   };
   await writeAll([...(await readAll()), task]);
   return task;

@@ -14,7 +14,7 @@ import { createRequire as nodeCreateRequire } from 'node:module';
 import { createInterface } from 'node:readline';
 import { randomUUID } from 'node:crypto';
 import { buildContext } from './core/context.js';
-import { reconcileTasks, startBgTask, stopTask } from './core/bgtask.js';
+import { reconcileTasks, startBgTask, stopTask, updateTask, type BgTask } from './core/bgtask.js';
 import { bridgeName, connectServers } from './core/mcp.js';
 import { worktreeCreate, worktreeList, worktreeMerge, worktreeRemove } from './core/worktrees.js';
 import { parseRule } from './core/permissions.js';
@@ -175,8 +175,10 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
   // /goal state: auto-continue until the model confirms the goal is done (cap: maxRounds)
   const goal = { text: null as string | null, paused: false, rounds: 0, maxRounds: 5 };
 
-  // pending subtask write-backs: checked lazily on each command, skipped while a turn runs (RF#4)
-  const subtasks: { taskId: string; name: string; prompt: string }[] = [];
+  // /subagent write-backs: the registry remembers the parent session (survives /restart and
+  // /resume); checked on commands, at turn end and on the 2s idle poll, never mid-turn (RF#4)
+  const subagentPrompts = new Map<string, string>(); // task id → the user's own words (hook payload)
+  let checkingSubtasks = false;
   // /bg tasks this serve started: TaskCompleted hooks fire when each one stops running
   const bgWatch: { taskId: string; prompt: string }[] = [];
   const checkBgTasks = async (): Promise<void> => {
@@ -192,12 +194,23 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
   };
   const checkSubtasks = async (): Promise<void> => {
     void checkBgTasks().catch(() => {});
-    if (promptInFlight || !subtasks.length) return;
-    const tasks = await reconcileTasks();
-    for (const pending of [...subtasks]) {
-      const t = tasks.find((x) => x.id === pending.taskId);
-      if (!t || t.status === 'running') continue;
-      subtasks.splice(subtasks.indexOf(pending), 1);
+    if (promptInFlight || checkingSubtasks) return;
+    checkingSubtasks = true;
+    try {
+      for (const t of await reconcileTasks()) {
+        if (t.parent !== store.id || t.reported || t.status === 'running') continue;
+        if (promptInFlight) return; // a turn started meanwhile: the next check picks it up
+        await updateTask(t.id, { reported: true });
+        await reportSubtask(t);
+      }
+    } finally {
+      checkingSubtasks = false;
+    }
+  };
+  const reportSubtask = async (t: BgTask): Promise<void> => {
+    const pending = { name: t.name || t.worktreeName, prompt: subagentPrompts.get(t.id) ?? t.prompt.split('\n\n（你是子代理')[0] };
+    subagentPrompts.delete(t.id);
+    {
       await agent.events.emit('subagent_stop', { agentType: 'subtask', description: pending.prompt, taskId: t.id, success: t.status === 'done', status: t.status });
       if (t.status === 'done' && t.sessionId) {
         try {
@@ -209,7 +222,7 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
             role: 'assistant',
             content: [{ type: 'text', text: `⑂ subagent ${pending.name} 完成：${summary}` }]
           });
-          out({ type: 'notice', text: `⑂ subagent ${pending.name} 完成（worktree ${t.worktreeName} · /resume ${t.sessionId} 看全程）` });
+          out({ type: 'notice', text: `⑂ subagent ${pending.name} 完成：${summary || '（没有文字回复）'}（/resume ${t.sessionId} 看全程）` });
         } catch {}
       } else {
         out({ type: 'notice', text: `⑂ subagent ${pending.name} ${t.status === 'failed' ? '失败' : '停止'}` });
@@ -423,7 +436,7 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
   // idle poll for /send mail (declared here: the callback reads promptInFlight)
   const mailTimer = setInterval(() => {
     if (!promptInFlight) void receiveMail();
-    void checkBgTasks().catch(() => {}); // TaskCompleted needs no idle moment: it writes nothing
+    void checkSubtasks().catch(() => {}); // runs TaskCompleted checks too; write-backs wait for idle
   }, 2000);
   mailTimer.unref?.();
   // warming state: keep provider prompt caches warm between real prompts (opencode parity).
@@ -646,6 +659,7 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
             promptInFlight = false;
           }
         }
+        if (!promptInFlight) void checkSubtasks().catch(() => {});
         if (goal.text) void maybeContinueGoal();
         return;
       }
@@ -857,9 +871,10 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
             name: String(cmd.name ?? ''),
             roleModel: roles?.subagent,
             mainCwd: cwd,
-            currentModel: agent.model.id
+            currentModel: agent.model.id,
+            parent: store.id
           });
-          subtasks.push({ taskId: task.id, name: task.name || task.worktreeName, prompt });
+          subagentPrompts.set(task.id, prompt);
           reply(cmd, true, { task });
         } catch (e: any) {
           reply(cmd, false, undefined, String(e?.message ?? e));

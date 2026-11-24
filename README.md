@@ -146,7 +146,10 @@ match fuzzily everywhere (`-m` too): case-insensitive subsequence — `glm54` fi
   status + session, `/stop` kills the process group). `/bg --long` uses the longContext role.
 - **/subagent <task>** — a subagent: a background task on the subagent role model whose final
   summary is written back into THIS session (`⑂ subagent …`); main turns are never disturbed.
-  The old name `/subtask` still works (the serve command is still `subtask`).
+  The old name `/subtask` still works (the serve command is still `subtask`). The task registry
+  (`~/.tango/tasks-bg.json`) records the parent session (`parent`) and the write-back (`reported`), so
+  the summary arrives within ~2s of the task ending (after the running turn), survives `/restart`,
+  and is written once.
 - **/agents [role model]** — role-based routing: `driver` (live), `subagent` (/subagent, /bg),
   `longContext` (/bg --long). Defaults to the current model.
 - **/mcp** — MCP servers from config `mcpServers: {name: {command, args}}` (stdio JSON-RPC);
