@@ -44,6 +44,7 @@ git diff | tango "review this patch"
 | Run a command | Type `/` and Tab-complete (works while a turn runs too), or open the palette with Ctrl+P |
 | Fill in an argument | After `/mode `, `/effort `, `/model `, `/send ` or `/resume `, press Tab: the first match goes in, each further Tab swaps in the next, Shift+Tab goes back (zsh menu-complete). Typed letters filter first; `/model glm54` finds `zhipu-plan/glm-5.4`. Enter runs what is in the input |
 | Answer a `?choice` panel | ↑↓/click + Enter, or type the option number + Enter. Tab answers in your own words: the input fills with the ask as a lead-in (`关于…，模型在等你选择: `) in the conversation's language — only what you write after it is sent; the panel's title uses the same language. Esc collapses the panel |
+| Interrupt the running turn | Esc or Ctrl+C. If a dialog is open (picker, completion list, `/todo`, `/queue`, a `?choice` panel), the first Esc only closes it and the turn keeps running; press Esc again to interrupt. Ctrl+C interrupts right away |
 | Search earlier prompts | Ctrl+R |
 | Park a half-written draft | Alt+S (press again to restore) |
 | Edit a draft in Neovim | Ctrl+E, or `/nvim` |

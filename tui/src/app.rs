@@ -6095,7 +6095,8 @@ impl App {
                     self.pick_choice(serve, sel);
                     return;
                 }
-                KeyCode::Esc if !self.busy => {
+                // Esc closes the panel first, even mid-turn; the next Esc interrupts
+                KeyCode::Esc => {
                     self.choices_collapsed = true;
                     return;
                 }
@@ -6261,8 +6262,9 @@ impl App {
         }
         // ctrl+c is two-stage: a non-empty input is cleared first; only an empty
         // input lets it (or Esc) interrupt the running turn
-        let interrupt_key =
-            k.code == KeyCode::Esc || (self.keys.matches(Action::Interrupt, k) && self.input.is_empty());
+        // an open picker or popup takes Esc first (closing it); Ctrl+C still interrupts
+        let interrupt_key = (k.code == KeyCode::Esc && self.picker.is_none() && self.popup.is_none())
+            || (self.keys.matches(Action::Interrupt, k) && self.input.is_empty());
         if self.busy && interrupt_key {
             serve.notify(json!({ "cmd": "interrupt" }));
             self.goal_text = None;
@@ -16323,6 +16325,50 @@ mod tests {
         let note = app.exit_note().expect("note once serve handshook");
         assert!(note.contains("a1b2c3d4e5f67890"), "full session id: {note}");
         assert!(note.contains("tango --resume a1b2c3d4e5f67890"), "{note}");
+    }
+
+    #[test]
+    fn esc_closes_an_open_dialog_without_interrupting_the_turn() {
+        let esc = || crossterm::event::KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+        let interrupted = |s: &Serve| s.sent.iter().any(|l| l.contains("\"interrupt\""));
+        let cases: Vec<(&str, fn(&mut App))> = vec![
+            ("todo", |a| {
+                a.stream = "?choice\n1. 甲\n2. 乙\n另外 ?suggest 补测试".into();
+                a.commit_stream();
+                a.choices = None;
+                a.todo_dialog = true;
+            }),
+            ("choices", |a| {
+                a.stream = "?choice\n1. 甲\n2. 乙".into();
+                a.commit_stream();
+            }),
+            ("picker", |a| a.open_mode_picker()),
+            ("slash popup", |a| {
+                a.input = "/mo".chars().collect();
+                a.cursor = a.input.len();
+                a.refresh_popup();
+                assert!(a.popup.is_some());
+            }),
+            ("queue", |a| a.queue_dialog = true),
+            ("prompt menu", |a| a.prompt_menu = Some(0)),
+        ];
+        for (name, open) in cases {
+            let mut app = App::new();
+            let mut serve = Serve::mock();
+            open(&mut app);
+            app.busy = true;
+            app.key(esc(), &mut serve);
+            assert!(!interrupted(&serve), "{name}: the first Esc must only close the dialog");
+            assert!(
+                !app.todo_dialog && app.picker.is_none() && app.popup.is_none()
+                    && !app.queue_dialog && app.prompt_menu.is_none()
+                    && (app.choices.is_none() || app.choices_collapsed),
+                "{name}: the dialog is still open"
+            );
+            // nothing open any more: the next Esc interrupts
+            app.key(esc(), &mut serve);
+            assert!(interrupted(&serve), "{name}: the second Esc interrupts");
+        }
     }
 
     #[test]
