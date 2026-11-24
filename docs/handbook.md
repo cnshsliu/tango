@@ -66,7 +66,9 @@ A tool call in flight shows as `⚙ bash …` with the gear color cycling; when 
 the same line becomes `⚙ bash <command> · <ms>` (double-click it or press ctrl+o for the output).
 A tool line always takes one row: long or multi-line commands (heredocs, loops) show their first
 line, cut to the terminal width, with `…（共 N 行）`; the viewer shows the full command above the output. Interrupting a running command
-(Esc / Ctrl+C) marks its line `· 已中断` in the warning color instead of a red error.
+(Esc / Ctrl+C) marks its line `· 已中断` in the warning color instead of a red error. A command
+that fails stays one line too, in the warning color, ending `· 出错 · 双击查看`: double-click it
+(or Ctrl+O) to read the error output.
 
 Reasoning the model streamed shows as a block headed by an upright `🤖` (the text after it is dim
 italic), with a `┃` bar on its left. The whole
@@ -440,7 +442,7 @@ while a turn is running unless noted. `/help` prints a short list inside the TUI
 | `/editor` | Edit the draft in `$VISUAL` / `$EDITOR` |
 | `/keymap` | Show key bindings (change them under `keys` in `config.json`) |
 | `/focus` | Hide successful tool calls and thinking. Errors stay visible |
-| `/density [0\|1\|2]` | Tool detail level: compact, default, full |
+| `/density [0\|1\|2]` | Tool detail level: compact, default (one line per call, failures too), full (every call's output previewed inline) |
 | `/timestamps` | Toggle `[HH:MM]` timestamps |
 | `/bubble [on\|off]` | User messages as right-aligned bubbles (on) or full-width (off) |
 | `/statusline [tpl\|off]` | Custom status bar, e.g. `/statusline '{model} {pct} {cost}'` |

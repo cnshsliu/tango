@@ -4396,7 +4396,7 @@ impl App {
                 let name = match self.density {
                     0 => "0 紧凑（仅工具名）",
                     2 => "2 完整（成功工具也显示输出）",
-                    _ => "1 默认（错误显示输出）",
+                    _ => "1 默认（每次调用一行，出错的也是）",
                 };
                 self.push(format!("工具详情密度 → {name}"), Tone::Muted);
             }
@@ -6954,13 +6954,9 @@ impl App {
                 let ms = v["ms"].as_u64().unwrap_or(0);
                 let ok = !v["isError"].as_bool().unwrap_or(false);
                 let interrupted = !ok && Self::interrupted_output(v["output"].as_str());
-                let style = if ok {
-                    Tone::Muted
-                } else if interrupted {
-                    Tone::Warning
-                } else {
-                    Tone::Error
-                };
+                // a failed call is one warning-colored line like an interrupted one: the
+                // output stays behind double-click / ctrl+o instead of a red block
+                let style = if ok { Tone::Muted } else { Tone::Warning };
                 let full = v["output"].as_str().map(|s| {
                     let mut out = String::new();
                     for line in s.lines().take(200) {
@@ -6975,7 +6971,7 @@ impl App {
                 } else if interrupted {
                     " · 已中断"
                 } else {
-                    " · error (ctrl+o)"
+                    " · 出错 · 双击查看"
                 };
                 let text = format!("⚙ {name} {summary} · {ms}ms{note}");
                 // freeze the RUNNING line into its summary in place: one line per call,
@@ -8541,13 +8537,7 @@ impl App {
                 Some("tool") => {
                     let name = it["name"].as_str().unwrap_or("?");
                     let ok = !it["isError"].as_bool().unwrap_or(false);
-                    let style = if ok {
-                        Tone::Muted
-                    } else if Self::interrupted_output(it["output"].as_str()) {
-                        Tone::Warning
-                    } else {
-                        Tone::Error
-                    };
+                    let style = if ok { Tone::Muted } else { Tone::Warning };
                     let out = it["output"]
                         .as_str()
                         .map(|s| s.lines().take(200).collect::<Vec<_>>().join("\n"));
@@ -8668,12 +8658,9 @@ impl App {
                 } else {
                     line.text.clone()
                 };
-                // density: 0 = names only; 1 = errors show output (default); 2 = everything does
-                let show_output = match self.density {
-                    0 => false,
-                    1 => line.tone == Tone::Error,
-                    _ => true,
-                };
+                // density 2 previews every call's output inline; 0 and 1 (default) keep each
+                // call to its one line, failures too: their output is a double-click away
+                let show_output = self.density >= 2;
                 if show_output && let Some(output) = &line.output {
                     let preview = output
                         .lines()
@@ -11651,17 +11638,13 @@ mod tests {
             }),
             &mut serve,
         );
+        // a failure is one warning-colored line with a hint; the output waits in the viewer
         let rendered = app.chat_lines();
-        assert!(
-            rendered
-                .iter()
-                .any(|line| line.text.contains("first failure"))
-        );
-        assert!(
-            rendered
-                .iter()
-                .any(|line| line.text.contains("second failure"))
-        );
+        let fail = rendered.iter().find(|l| l.text.contains("⚙ bash fail")).unwrap();
+        assert_eq!(fail.tone, Tone::Warning);
+        assert!(fail.text.ends_with("· 出错 · 双击查看"), "{}", fail.text);
+        assert!(!fail.text.contains('\n'));
+        assert!(!rendered.iter().any(|l| l.text.contains("first failure")));
         assert_eq!(
             app.lines[0].output.as_deref(),
             Some("first failure\nsecond failure")
@@ -11678,11 +11661,6 @@ mod tests {
                 .any(|line| line.text.contains("private reasoning"))
         );
         assert!(focused.iter().any(|line| line.text.contains("⚙ bash fail")));
-        assert!(
-            focused
-                .iter()
-                .any(|line| line.text.contains("first failure"))
-        );
 
         app.run_slash("/focus", &mut serve);
         assert!(
@@ -13725,13 +13703,13 @@ mod tests {
             Tone::Muted,
             Some("line one\nline two\n".into()),
         );
-        app.push_tool("⚙ bash bad", Tone::Error, Some("boom\ntrace".into()));
+        app.push_tool("⚙ bash bad", Tone::Warning, Some("boom\ntrace".into()));
 
-        // density 1 (default): error rows show their first output lines
+        // density 1 (default): a failed call stays one line too, its output in the viewer
         let lines = app.chat_lines();
         assert!(
-            lines.iter().any(|l| l.text.contains("boom")),
-            "errors visible at density 1"
+            lines.iter().all(|l| !l.text.contains("boom")),
+            "no inline error block at density 1"
         );
 
         // density 0: compact — no output preview even for errors

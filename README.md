@@ -299,7 +299,7 @@ tools and checkpoints follow live); `/add_dir <dir>` registers an extra writable
 - `/usage` / `/stats` — cost and token aggregates across ALL sessions, by model and by session;
   `/insights` writes the same data as an offline single-file HTML report.
 - `/timestamps` toggles `[HH:MM]` prefixes; `/density 0|1|2` sets tool-detail level (compact /
-  default-errors-only / full) and applies to restored history too.
+  default: one line per call, failures included / full: every call's output previewed inline) and applies to restored history too.
 - **Thinking blocks**: committed reasoning is kept whole (no truncation) as a block headed by `🤖`
   (the icon upright, the reasoning in dim italics)
   (an emoji, 2 cells; terminals without an emoji font can switch to `/ascii`).
@@ -322,7 +322,9 @@ tools and checkpoints follow live); `/add_dir <dir>` registers an extra writable
   with `…` when it doesn't fit, plus `（共 N 行）` for multi-line commands; the
   viewer (double-click / Ctrl+O) shows the whole command as `$ <command>` above the output,
   and Ctrl+T's transcript keeps it too. A call killed by your interrupt (Esc / Ctrl+C) ends
-  in `[interrupted]` (not `[exit null]`) and shows in the warning tone with `· 已中断`, not red.
+  in `[interrupted]` (not `[exit null]`) and shows in the warning tone with `· 已中断`, not red. A failed call
+  (error result, non-zero exit) is likewise a single warning-tone line ending `· 出错 · 双击查看`;
+  its output opens in the viewer (double-click / Ctrl+O), never as an inline red block.
 - **Input history**: Up/Down in the input box walk through sent prompts (empty input
   recalls the newest). The unsent draft is stashed aside and comes back when you press
   Down past the newest entry, or Esc — and after you edit a recalled entry and send it,
