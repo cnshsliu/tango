@@ -6936,7 +6936,8 @@ impl App {
             "notice" => {
                 if let Some(text) = v["text"].as_str() {
                     let from = self.lines.len();
-                    self.push(text, Tone::Muted);
+                    let tone = if text.starts_with("⑂ subagent ") { Tone::Subagent } else { Tone::Muted };
+                    self.push(text, tone);
                     for line in &mut self.lines[from..] {
                         line.notice = true;
                     }
@@ -8342,7 +8343,7 @@ impl App {
                                     "⑂ 子代理 {} 已派出（独立 worktree）· 摘要将写回本会话",
                                     t["id"].as_str().unwrap_or("?")
                                 ),
-                                Tone::Success,
+                                Tone::Subagent,
                             );
                         }
                         (Pending::McpList, true) => {
@@ -8510,6 +8511,10 @@ impl App {
                     if let Some(line) = self.lines.last_mut() {
                         line.prompt_state = Some(PromptState::Completed);
                     }
+                }
+                // a /subagent write-back keeps its own color when the session is resumed
+                Some("assistant") if text.starts_with("⑂ subagent ") => {
+                    self.push(text, Tone::Subagent);
                 }
                 Some("assistant") => {
                     self.stream = text.to_string();
@@ -14714,6 +14719,22 @@ mod tests {
             &mut serve,
         );
         assert!(app.lines.iter().any(|l| l.text.contains("s1")));
+        let tone_of = |app: &App, needle: &str| app.lines.iter().find(|l| l.text.contains(needle)).map(|l| l.tone);
+        assert_eq!(tone_of(&app, "已派出"), Some(Tone::Subagent));
+        // the write-back notice gets the subagent color; other notices stay muted
+        app.frame(json!({"type": "notice", "text": "⑂ subagent bg-1 完成：3+2=5"}), &mut serve);
+        app.frame(json!({"type": "notice", "text": "other status"}), &mut serve);
+        assert_eq!(tone_of(&app, "3+2=5"), Some(Tone::Subagent));
+        assert_eq!(tone_of(&app, "other status"), Some(Tone::Muted));
+        // …and keeps it after /resume, while the main agent's replies stay plain text
+        let mut app = App::new();
+        app.load_history(&json!({"total": 3, "items": [
+            {"kind": "user", "text": "问"},
+            {"kind": "assistant", "text": "⑂ subagent bg-1 完成：3+2=5"},
+            {"kind": "assistant", "text": "主代理回答"}
+        ]}));
+        assert_eq!(tone_of(&app, "3+2=5"), Some(Tone::Subagent));
+        assert_ne!(tone_of(&app, "主代理回答"), Some(Tone::Subagent));
     }
 
     #[test]

@@ -11,6 +11,8 @@ pub enum Tone {
     Error,
     Selected,
     Badge,
+    /// a /subagent's dispatch and write-back lines: set apart from the main agent's text
+    Subagent,
 }
 
 #[derive(Clone, Copy)]
@@ -92,6 +94,8 @@ impl Theme {
             (false, Tone::Warning) => Style::new().fg(Color::Yellow),
             (true, Tone::Warning) => Style::new().fg(Color::Rgb(150, 90, 0)),
             (_, Tone::Error) => Style::new().fg(Color::Red),
+            (false, Tone::Subagent) => Style::new().fg(Color::Rgb(170, 150, 240)),
+            (true, Tone::Subagent) => Style::new().fg(Color::Rgb(100, 70, 180)),
             (false, Tone::Selected) => Style::new().add_modifier(Modifier::BOLD),
             (true, Tone::Selected) => Style::new().fg(Color::Black).add_modifier(Modifier::BOLD),
             (false, Tone::Badge) => Style::new().fg(Color::Black).bg(Color::White),
