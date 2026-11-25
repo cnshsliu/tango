@@ -723,6 +723,14 @@ commands in the call, taking effect mid-turn). One-shot runs
 can't ask, so risky calls are refused there unless `--yes` is given. The gate is a `before_tool`
 handler in `src/core/permissions.ts`.
 
+## Search tools
+
+`grep` and `find` use ripgrep when it is installed (plain `grep`/`find` otherwise) and respect
+`.gitignore`. A folder they may not read, such as macOS privacy-protected parts of `~/Library`, no
+longer fails the whole search: the results come back with one line
+`[skipped N unreadable paths (no permission)]`. Only an error with nothing found (a bad regex,
+say) is reported as `grep failed: …` / `find failed: …`.
+
 ## Web tools
 
 `web_search` uses the first backend whose key is set: `TAVILY_API_KEY`, `BOCHA_API_KEY` (博查),

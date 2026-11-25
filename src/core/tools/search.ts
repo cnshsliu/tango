@@ -6,21 +6,36 @@ import { error, text, truncate } from './registry.js';
 
 const hasRg = spawnSync('rg', ['--version'], { stdio: 'ignore' }).status === 0;
 
-/** Run a command without a shell (no quoting issues); resolve with stdout and exit code. */
-function run(cmd: string, args: string[], ctx: ToolContext): Promise<{ out: string; code: number | null }> {
+/** Run a command without a shell (no quoting issues); resolve with stdout, stderr and exit code. */
+function run(cmd: string, args: string[], ctx: ToolContext): Promise<{ out: string; err: string; code: number | null }> {
   return new Promise((done) => {
     const child = spawn(cmd, args, { cwd: ctx.cwd, stdio: ['ignore', 'pipe', 'pipe'] });
     let out = '';
+    let err = '';
     child.stdout.on('data', (b: Buffer) => (out += b.toString()));
-    child.stderr.on('data', (b: Buffer) => (out += b.toString()));
+    child.stderr.on('data', (b: Buffer) => (err += b.toString()));
     const onAbort = () => child.kill('SIGKILL');
     ctx.signal.addEventListener('abort', onAbort, { once: true });
-    child.on('error', (e) => done({ out: String(e.message), code: -1 }));
+    child.on('error', (e) => done({ out: '', err: String(e.message), code: -1 }));
     child.on('close', (code) => {
       ctx.signal.removeEventListener('abort', onAbort);
-      done({ out, code });
+      done({ out, err, code });
     });
   });
+}
+
+/**
+ * rg/grep/find exit 2 when any path was unreadable (macOS privacy-protected folders, root-owned
+ * dirs) even though the rest was searched. Results win: keep them and note what was skipped in
+ * one line. Only a run with no results and a real error is a failure.
+ */
+export function searchOutcome(tool: string, r: { out: string; err: string; code: number | null }, empty: string, body: (out: string) => string) {
+  const denied = r.err.split('\n').filter((l) => /Operation not permitted|Permission denied/.test(l));
+  const other = r.err.split('\n').filter((l) => l.trim() && !denied.includes(l));
+  const note = denied.length ? `\n[skipped ${denied.length} unreadable path${denied.length > 1 ? 's' : ''} (no permission)]` : '';
+  if (r.out.trim()) return text(body(r.out) + note);
+  if (r.code === 0 || r.code === 1 || (r.code === 2 && !other.length)) return text(empty + note);
+  return error(`${tool} failed: ${(other.join('\n') || r.err).trim().slice(0, 2000)}`);
 }
 
 const limitLines = (s: string, n: number) => {
@@ -50,10 +65,8 @@ export const grepTool: Tool<{ pattern: string; path?: string; glob?: string; ign
     if (ignoreCase) args.push('-i');
     if (glob) args.push(hasRg ? '-g' : '--include', glob);
     args.push('-e', pattern, path);
-    const { out, code } = await run(hasRg ? 'rg' : 'grep', args, ctx);
-    if (code === 1) return text('no matches');
-    if (code !== 0) return error(`grep failed: ${out.trim()}`);
-    return text(truncate(limitLines(out, limit)));
+    const r = await run(hasRg ? 'rg' : 'grep', args, ctx);
+    return searchOutcome('grep', r, 'no matches', (out) => truncate(limitLines(out, limit)));
   }
 };
 
@@ -71,12 +84,12 @@ export const findTool: Tool<{ pattern: string; path?: string; limit?: number }> 
     required: ['pattern']
   },
   async execute({ pattern, path = '.', limit = 500 }, ctx) {
-    const { out, code } = hasRg
+    const r = hasRg
       ? await run('rg', ['--files', '--color', 'never', '-g', pattern], { ...ctx, cwd: resolve(ctx.cwd, path) })
       : await run('find', [path, '-path', '*/node_modules', '-prune', '-o', '-path', '*/.git', '-prune', '-o', '-type', 'f', '-name', pattern.split('/').pop() ?? pattern, '-print'], ctx);
-    if (code === 1 || !out.trim()) return text('no files found');
-    if (code !== 0) return error(`find failed: ${out.trim()}`);
-    return text(truncate(limitLines(out.split('\n').sort().join('\n'), limit)));
+    return searchOutcome('find', r, 'no files found', (out) =>
+      truncate(limitLines(out.trimEnd().split('\n').sort().join('\n'), limit))
+    );
   }
 };
 
