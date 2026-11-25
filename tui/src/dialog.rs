@@ -1,5 +1,6 @@
 //! Application modal standard: rounded complete borders, themed surface/title,
-//! bottom key hints, and content confined to the returned inner rectangle.
+//! a key-hint row inside the frame above the bottom border (a blank row between it and
+//! the content), and content confined to the returned inner rectangle.
 //! App routes input by focus: viewer → permission → picker → completion → chat;
 //! modal scrolling and clicks must never leak into the transcript below.
 
@@ -55,6 +56,10 @@ pub fn render_dialog(f: &mut Frame, area: Rect, title: &str, hint: &str, theme: 
     render_dialog_buttons(f, area, title, hint, theme).0
 }
 
+/// Rows a dialog's hint takes inside the frame: a blank separator row, then the hint.
+/// Size a dialog `HINT_ROWS` taller than its content plus borders.
+pub const HINT_ROWS: u16 = 2;
+
 /// A clickable key in a dialog's bottom hint: where it is drawn and the key it presses.
 pub type HintButton = (Rect, KeyEvent);
 
@@ -82,14 +87,17 @@ pub fn render_dialog_buttons(
                 .bg(palette.title_bg)
                 .add_modifier(Modifier::BOLD),
         ));
-    let inner = block.inner(area);
+    let mut inner = block.inner(area);
     f.render_widget(Clear, area);
     f.render_widget(block, area);
-    if area.width < 3 || area.height < 2 {
+    if inner.width == 0 || inner.height == 0 {
         return (inner, Vec::new());
     }
-    // the hint row sits on the bottom border, between the corners
-    let row = Rect::new(area.x + 1, area.y + area.height - 1, area.width - 2, 1);
+    // the hint is the last row inside the frame, a blank row above it; the bottom border
+    // stays a plain line. Too short for that, the hint takes the last inner row alone.
+    let reserved = HINT_ROWS.min(inner.height);
+    let row = Rect::new(inner.x, inner.y + inner.height - 1, inner.width, 1);
+    inner.height -= reserved;
     let plain = Style::new().fg(palette.hint).bg(palette.surface);
     let key_style = Style::new().fg(palette.title_fg).bg(palette.title_bg);
     let (spans, buttons) = hint_layout(hint, row, plain, key_style);
@@ -256,19 +264,27 @@ mod tests {
     #[test]
     fn dialog_draws_complete_rounded_border_and_surface() {
         let mut terminal = Terminal::new(TestBackend::new(20, 8)).unwrap();
-        let area = Rect::new(2, 1, 12, 5);
+        let area = Rect::new(2, 1, 12, 6);
         let mut inner = Rect::default();
+        let mut buttons = Vec::new();
         terminal
             .draw(|f| {
-                inner = render_dialog(f, area, "title", "hint", Theme::dark());
+                (inner, buttons) = render_dialog_buttons(f, area, "title", "esc 关闭", Theme::dark());
             })
             .unwrap();
-        assert_eq!(inner, Rect::new(3, 2, 10, 3));
+        // content: rows 2..4; row 4 blank; row 5 the hint; row 6 the bottom border
+        assert_eq!(inner, Rect::new(3, 2, 10, 2));
         let buffer = terminal.backend().buffer();
         assert_eq!(buffer[(2, 1)].symbol(), "╭");
         assert_eq!(buffer[(13, 1)].symbol(), "╮");
         assert_eq!(buffer[(13, 2)].symbol(), "│");
-        assert_eq!(buffer[(13, 5)].symbol(), "╯");
+        assert_eq!(buffer[(13, 6)].symbol(), "╯");
+        let row = |y: u16| (3..13).map(|x| buffer[(x, y)].symbol()).collect::<String>();
+        assert_eq!(row(4).trim(), "", "a blank row above the hint");
+        assert!(row(5).contains("esc"), "the hint is the last inner row: {:?}", row(5));
+        assert_eq!(row(6), "─".repeat(10), "the bottom border stays a plain line");
+        assert_eq!(buttons[0].0.y, 5);
+        assert_eq!(buffer[(2, 5)].symbol(), "│", "the hint sits inside the side borders");
         assert_eq!(
             buffer[(4, 2)].bg,
             DialogPalette::for_theme(Theme::dark()).surface

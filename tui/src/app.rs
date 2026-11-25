@@ -1,5 +1,5 @@
 use crate::child::{Event, Serve};
-use crate::dialog::{HintButton, render_dialog_buttons};
+use crate::dialog::{HINT_ROWS, HintButton, render_dialog_buttons};
 use crate::keys::{Action, Keymap};
 use crate::nvim::{EditResolution, Neovim, NvimRequest, NvimTarget, edit_submission};
 use crate::theme::{Theme, Tone};
@@ -5657,8 +5657,10 @@ impl App {
                         {
                             // + the scroll offset the draw applied (selection kept in view)
                             let skip = self.popup.as_ref().unwrap().sel.saturating_sub(5);
-                            let row = m.row.saturating_sub(self.popup_area.y + 1) as usize + skip;
-                            if row < self.popup.as_ref().unwrap().items.len() {
+                            let shown = m.row.saturating_sub(self.popup_area.y + 1) as usize;
+                            let row = shown + skip;
+                            // only the 6 drawn rows pick; the blank and hint rows below do not
+                            if shown < 6 && row < self.popup.as_ref().unwrap().items.len() {
                                 self.popup.as_mut().unwrap().sel = row;
                                 self.accept_popup();
                             }
@@ -8887,8 +8889,8 @@ impl App {
         let q_rows = wrap_chat_rows(&[c.question.clone()], iw).len() as u16;
         let notes = c.options.iter().filter(|o| o.note.is_some()).count() as u16;
         let content = q_rows + c.preview.len() as u16 + c.options.len() as u16 + notes + 1; // + explain row
-        // +2: title + hint rows; capped so the chat keeps at least half the screen
-        (content + 2).min(term_h / 2).max(3)
+        // borders + hint rows; capped so the chat keeps at least half the screen
+        (content + 2 + HINT_ROWS).min(term_h / 2).max(3)
     }
 
     /// True once the conversation has content: anything besides the session banner
@@ -9529,7 +9531,7 @@ impl App {
         // /queue dialog: clickable per-item actions
         if self.queue_dialog {
             let n = self.local_queue.len();
-            let h = (n.min(10) as u16) + 4; // rows + rule + footer buttons + hint
+            let h = (n.min(10) as u16) + 3 + HINT_ROWS; // rows + rule + footer buttons + borders
             let w = 72u16.min(area.width);
             let pop = Rect {
                 x: (area.width.saturating_sub(w)) / 2,
@@ -9625,7 +9627,7 @@ impl App {
         // the /todo dialog: every unanswered choice and side suggestion, one row each
         if self.todo_dialog {
             let n = self.todos.len();
-            let h = (n.min(10) as u16) + 3; // rows + hint + padding
+            let h = (n.min(10) as u16) + 3 + HINT_ROWS; // rows + borders + padding
             let w = 76u16.min(area.width);
             let pop = Rect {
                 x: (area.width.saturating_sub(w)) / 2,
@@ -9721,7 +9723,7 @@ impl App {
         // the prompt menu: a small centered dialog anchored to a user bubble
         if self.prompt_menu.is_some() {
             let w = 44u16.min(area.width);
-            let h = 6;
+            let h = 6 + HINT_ROWS;
             let pop = Rect {
                 x: (area.width.saturating_sub(w)) / 2,
                 y: (area.height.saturating_sub(h)) / 2,
@@ -9876,7 +9878,7 @@ impl App {
 
         // completion popup, glued above the input rule
         if let Some(p) = &self.popup {
-            let ph = (p.items.len().min(6) + 2) as u16;
+            let ph = (p.items.len().min(6) + 2) as u16 + HINT_ROWS;
             let pop = Rect {
                 x: 0,
                 y: input_a.y.saturating_sub(ph),
@@ -10082,7 +10084,7 @@ impl App {
             let pagination = usize::from(line_count > 14);
             let query_rows = usize::from(p.filterable());
             let shown = if two_line { 14 / per } else { 14 };
-            let h = (line_count.min(14) + pagination + query_rows + 2) as u16;
+            let h = (line_count.min(14) + pagination + query_rows + 2) as u16 + HINT_ROWS;
             let w = (area.width.min(72)).max(44).min(area.width);
             let pop = Rect {
                 x: (area.width.saturating_sub(w)) / 2,
@@ -10243,7 +10245,7 @@ impl App {
             let wrap_w = (w as usize).saturating_sub(2);
             self.perm_wrap_w = wrap_w;
             let cmd_rows = wrap_chat_rows(&[p.detail.clone()], wrap_w);
-            let max_rows = 8.min(area.height.saturating_sub(6) as usize);
+            let max_rows = 8.min(area.height.saturating_sub(6 + HINT_ROWS) as usize);
             let total = cmd_rows.len();
             let max_scroll = total.saturating_sub(max_rows);
             self.perm_scroll = self.perm_scroll.min(max_scroll);
@@ -10254,8 +10256,8 @@ impl App {
                 .map(|r| Line::from(Span::styled(r.text.clone(), self.theme.style(Tone::Muted))))
                 .collect::<Vec<_>>();
             let brief_rows = usize::from(!p.brief.is_empty());
-            let h = (3 + brief_rows + shown.len() + usize::from(total > max_rows)) as u16;
-            let h = h.max(5).min(area.height);
+            let h = (3 + brief_rows + shown.len() + usize::from(total > max_rows)) as u16 + HINT_ROWS;
+            let h = h.max(5 + HINT_ROWS).min(area.height);
             let popup = Rect {
                 x: (area.width.saturating_sub(w)) / 2,
                 y: (area.height.saturating_sub(h)) / 2,
@@ -10300,7 +10302,7 @@ impl App {
         // the full-access (auto) acknowledgement dialog
         if let Some(ack) = self.full_access {
             let w = area.width.min(64).max(40);
-            let h = 12u16.min(area.height);
+            let h = (12 + HINT_ROWS).min(area.height);
             let popup = Rect {
                 x: (area.width.saturating_sub(w)) / 2,
                 y: (area.height.saturating_sub(h)) / 2,
