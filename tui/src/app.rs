@@ -3217,6 +3217,17 @@ impl App {
             let bg = if input["background"].as_bool() == Some(true) { " · 后台" } else { "" };
             return format!("{agent} · {}{bg}", desc.chars().take(200).collect::<String>());
         }
+        // lsp: `definition · src/x.ts:12 add`
+        if let (Some(op), Some(path)) = (input["op"].as_str(), input["path"].as_str()) {
+            let mut out = format!("{op} · {path}");
+            if let Some(line) = input["line"].as_u64() {
+                out.push_str(&format!(":{line}"));
+            }
+            if let Some(sym) = input["symbol"].as_str().or_else(|| input["query"].as_str()) {
+                out.push_str(&format!(" {sym}"));
+            }
+            return out;
+        }
         let detail = ["command", "path", "url", "query", "pattern"]
             .iter()
             .find_map(|k| m.and_then(|o| o.get(*k)).and_then(|v| v.as_str()))
@@ -15105,6 +15116,15 @@ mod tests {
         );
         assert_eq!(app.cursor, app.input.len());
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn lsp_calls_summarize_op_path_line_and_symbol() {
+        let s = |v: Value| App::call_summary(&v);
+        assert_eq!(s(json!({"op": "definition", "path": "src/a.ts", "line": 12, "symbol": "add"})), "definition · src/a.ts:12 add");
+        assert_eq!(s(json!({"op": "workspace_symbols", "path": "src/a.ts", "query": "Lsp"})), "workspace_symbols · src/a.ts Lsp");
+        assert_eq!(s(json!({"op": "symbols", "path": "src/a.ts"})), "symbols · src/a.ts");
+        assert_eq!(s(json!({"path": "src/a.ts"})), "src/a.ts", "other tools unchanged");
     }
 
     #[test]

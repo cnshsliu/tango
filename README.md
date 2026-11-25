@@ -851,6 +851,7 @@ error that names what was looked for. One server runs per language and root, sta
 and stopped when tango exits. A server that just started is still loading the project: for its
 first 20 s an empty answer (or a TypeScript definition that only reaches the import line) is
 retried every 1.5 s. `lsp` counts as a read, so `explore` sub-agents and `readonly` mode have it.
+In the TUI the call line reads `⚙ lsp definition · src/host.ts:40 lspTool`.
 
 ## Past conversations
 
