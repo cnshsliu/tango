@@ -367,7 +367,10 @@ function subAgentPrompt(def: SubAgentDef): string {
     'Work on your own: never ask the user anything (no ?choice, no ?suggest). ' +
     'End with a self-contained report for that agent: what you found or did, exact paths and ' +
     'line numbers, commands and their results, and anything you could not verify. ' +
-    (def.readonly ? 'You are read-only: you can read, search and browse, but not edit files or run commands. ' : '') +
+    (def.readonly
+      ? 'You are read-only: you can read, search and browse, but not edit files or run commands (no bash). ' +
+        'If the task asks for a command, do the closest thing with your tools and say so in the report. '
+      : '') +
     (def.instruction ? `\n\n${def.instruction}` : '')
   );
 }

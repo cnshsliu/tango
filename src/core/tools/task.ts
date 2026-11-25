@@ -72,7 +72,9 @@ export function makeTaskTool(deps: TaskDeps): Tool<TaskInput> {
         'so the prompt must carry every detail it needs (paths, goal, what to report). Only its final ' +
         'report comes back, which keeps this context small. Use it proactively for investigation, ' +
         'review and research; do small, tightly scoped lookups yourself. ' +
-        'background: true (read-only agents only) returns at once; the report arrives later as a message.\n' +
+        'background: true (read-only agents only) returns at once; the report arrives later as a message. ' +
+        'Read-only agents have no bash: ask them for read/grep/find/ls/web work only, and name the ' +
+        'directories to search (a scan of the whole home directory is slow).\n' +
         'Agents:\n' + list
       );
     },

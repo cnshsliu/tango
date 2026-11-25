@@ -82,6 +82,10 @@ test('task: explore runs read-only in its own sub-session and reports back as th
     assert.ok(subTools.includes('read') && subTools.includes('grep'), subTools.join(','));
     for (const t of ['task', 'write', 'edit', 'bash', 'office_write', 'notify']) assert.ok(!subTools.includes(t), `sub has ${t}`);
     assert.match(JSON.stringify(subBody.messages[0]), /read-only/);
+    assert.match(JSON.stringify(subBody.messages[0]), /no bash/);
+    // the parent's tool description tells it what a read-only brief may ask for
+    const taskDesc = m.bodies[0].tools.find((t: any) => t.function.name === 'task').function.description;
+    assert.match(taskDesc, /Read-only agents have no bash/);
     // the sub-agent sees only the delegated prompt, not the parent's conversation
     assert.ok(!JSON.stringify(subBody.messages).includes('where is X?'));
     const result = lastToolResult(m.bodies[2]);
