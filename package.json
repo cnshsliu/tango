@@ -24,7 +24,8 @@
     "@types/node": "^22.0.0",
     "pyright": "^1.1.414",
     "tsx": "^4.19.0",
-    "typescript": "^5.6.0"
+    "typescript": "^5.6.0",
+    "typescript-language-server": "^5.3.0"
   },
   "license": "MIT"
 }

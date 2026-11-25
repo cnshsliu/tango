@@ -183,6 +183,16 @@ task left uncommitted edits, commit them in the worktree first. Set role models 
 `/agents subagent <model>` and `/agents longContext <model>`. Without them, the current
 model is used.
 
+### Code navigation
+
+Ask "who calls `searchOutcome`?" or "what type does `run` return?" and the model uses the `lsp`
+tool: definitions, references, hover, file outlines, project-wide symbol search, callers and
+callees, answered by the project's language server rather than by text search. TypeScript and
+JavaScript work in any project with `typescript-language-server` in `node_modules` or on `PATH`;
+Python needs `pyright-langserver`, Rust `rust-analyzer`, Go `gopls`, C/C++ `clangd`. tango
+doesn't install them. Without one, the model gets an error naming what it looked for and falls
+back to grep. The first question in a project takes a second or two while the server loads it.
+
 ### Long-running commands (dev servers, watchers)
 
 A normal `bash` call waits for the command and is killed after 120 seconds. For `npm run dev`,

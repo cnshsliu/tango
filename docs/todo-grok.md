@@ -31,7 +31,7 @@
 
 ## P2：价值中等，改动不大
 
-- [ ] **6. LSP 工具**
+- [x] **6. LSP 工具**（`lsp`：8 种操作，TS/Python/Rust/Go/C；不自动安装，缺了就报出找过哪里）
   - grok：`lsp` 工具支持跳转定义、查引用、hover、文档符号、工作区符号、实现和调用层级。内置语言服务器清单，缺的会通过 npm 自动安装。见 `src/lsp/builtins.ts`、`src/lsp/manager.ts`、`src/grok/tools.ts:290`。
   - tango：只在写文件后跑 tsc / pyright / cargo 这类检查（`src/core/diagnostics.ts`），模型找定义只能靠 grep。
 - [ ] **7. 远程 MCP 服务器和常用清单**

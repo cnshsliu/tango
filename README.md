@@ -11,7 +11,7 @@ How to use it day to day: [docs/handbook.md](docs/handbook.md).
 
 Core loop is working: agent loop, JSONL sessions with compaction, Anthropic + OpenAI-compatible
 adapters, built-in tools (read / write / edit / bash / grep / find / ls / web_search / web_fetch /
-office_read / office_write / notify / diff / session_search / process_logs / process_stop / process_list / schedule_list / schedule_create / schedule_remove / task), a permission gate, AGENTS.md + skills context assembly,
+office_read / office_write / notify / diff / session_search / process_logs / process_stop / process_list / schedule_list / schedule_create / schedule_remove / lsp / task), a permission gate, AGENTS.md + skills context assembly,
 typed event bus, cost tracking with long-prompt price tiers, `/save-as-skill`, scheduled tasks
 (`tango task`) with Feishu webhook delivery, auto type diagnostics after edits, a JSONL
 serve protocol (`tango serve`), and a Rust TUI client (`tui/`) on top of it.
@@ -775,7 +775,7 @@ hunts.
 
 | agent | tools | use |
 | --- | --- | --- |
-| `explore` | read-only: `read`, `grep`, `find`, `ls`, `web_search`, `web_fetch`, `office_read`, `diff`, `session_search`, `process_logs`, `process_list`, `schedule_list` | investigation, review, research |
+| `explore` | read-only: `read`, `grep`, `find`, `ls`, `web_search`, `web_fetch`, `office_read`, `diff`, `session_search`, `process_logs`, `process_list`, `schedule_list`, `lsp` | investigation, review, research |
 | `general` | every tool except `task` | multi-step work that edits files or runs commands |
 | config `subAgents` | read-only or all, per `readonly` | your own, e.g. a reviewer with fixed rules |
 
@@ -826,6 +826,31 @@ characters of combined stdout+stderr.
 `process_logs` and `process_list` count as reads. `process_stop` never asks in `ask` mode, since
 it can only signal processes this tango started; `readonly` refuses it (and `bash`). Background
 processes belong to the tango process and are killed when it exits.
+
+## Code navigation: the lsp tool
+
+`lsp` asks a language server instead of grepping. Input: `op`, `path`, and for position ops a
+1-based `line` plus the `symbol` on it (or `column`).
+
+| op | answer |
+| --- | --- |
+| `definition`, `implementation` | `path:line:col  source line` of the declaration(s) |
+| `references` | every use, declaration included |
+| `hover` | type signature and doc comment |
+| `symbols` | outline of the file, top to bottom, nested |
+| `workspace_symbols` | `query` matched across the project |
+| `incoming_calls` | each call site, labelled with the caller (the file name for top-level code) |
+| `outgoing_calls` | what the function calls |
+
+Servers, found under the project root and its parents first, then on `PATH`:
+`typescript-language-server` (TS/JS; a dev dependency of this repo), `pyright-langserver`
+(`.venv/bin`, `node_modules/.bin`), `rust-analyzer`, `gopls`, `clangd`. The project root is the
+nearest directory with a marker (`tsconfig.json`/`package.json`, `pyproject.toml`, `Cargo.toml`,
+`go.mod`, `compile_commands.json` …). Nothing is installed automatically; a missing server gets an
+error that names what was looked for. One server runs per language and root, started on first use
+and stopped when tango exits. A server that just started is still loading the project: for its
+first 20 s an empty answer (or a TypeScript definition that only reaches the import line) is
+retried every 1.5 s. `lsp` counts as a read, so `explore` sub-agents and `readonly` mode have it.
 
 ## Past conversations
 
