@@ -13,7 +13,7 @@
 
 ## P1：价值高，先做
 
-- [ ] **1. 模型自己派子 agent（`task` 工具）和自定义命名子 agent**
+- [x] **1. 模型自己派子 agent（`task` 工具）和自定义命名子 agent**（`a5ec7f2`、`430f4ab`）
   - grok：模型可以调用 `task`，选 `explore`（只读、快速调查）或 `general`（多步执行），也能选配置里 `subAgents: [{name, model, instruction}]` 定义的子 agent。系统提示鼓励它主动派活。见 `src/grok/tools.ts:366`、`src/utils/subagents-settings.test.ts`、`src/ui/agents-modal.tsx`。
   - tango：`/subtask`、`/bg` 只能由用户发起，模型没有派活的工具。`/agents` 只能按角色选模型，不能带指令。
 - [x] **2. 后台 shell 进程**
@@ -43,7 +43,7 @@
 - [ ] **9. `@` 文件提及：模糊搜索和行号范围**
   - grok：按 `git ls-files` 建索引（30 秒刷新，跳过二进制），按文件名打分模糊匹配。支持 `@file:10-20` 只引用几行。见 `src/utils/file-index.ts`、`src/utils/at-mentions.ts`。
   - tango：`@` 只能逐级补全目录（`tui/src/app.rs` 的 `file_candidates`），不支持模糊搜索和行号。
-- [ ] **10. 兼容 `.agents/skills` 目录**
+- [x] **10. 兼容 `.agents/skills` 目录**（只读项目的；`~/.agents/skills` 常有上百个，会撑大每次请求，不读）
   - grok：技能放在 `.agents/skills/<name>/SKILL.md` 和 `~/.agents/skills/`。这是几家工具共用的位置，并解析 YAML frontmatter 里的 `name`、`description`。见 `src/utils/skills.ts`。
   - tango：只读 `~/.tango/skills` 和 `.tango/skills`。
 - [ ] **11. 模型可调用的定时任务工具**

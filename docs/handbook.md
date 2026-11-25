@@ -457,7 +457,7 @@ while a turn is running unless noted. `/help` prints a short list inside the TUI
 | `/remember <text>` | Add a line to the global memory `~/.tango/AGENTS.md`, used by every session |
 | `/memory` | View the global memory. Ctrl+E edits it |
 | `/init [--force]` | Create a project `AGENTS.md` scaffold (`--force` appends to an existing one) |
-| `/skills` | List global and project skills |
+| `/skills` | List global and project skills (`~/.tango/skills`, `.tango/skills`, `.agents/skills`) |
 | `/skill [title]` (`/save-as-skill`) | Turn this session into a skill draft in `~/.tango/skill-drafts/` |
 | `/skill finish <file>` | Install an edited draft as a project skill |
 | `/preset save <name>` | Save the current input as a reusable prompt template |

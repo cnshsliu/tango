@@ -481,8 +481,11 @@ sources API keys from `~/.tango/env` (KEY=VALUE, chmod 600); logs go to `~/Libra
 
 ## Skills
 
-Global skills live in `~/.tango/skills/<name>/SKILL.md` (project: `.tango/skills/`); only name +
-description enter the system prompt. `/save-as-skill 名称` distils the current session (user turns
+Global skills live in `~/.tango/skills/<name>/SKILL.md` (project: `.tango/skills/`, or the shared
+`.agents/skills/` other agent CLIs use; `.tango` wins on a name clash). Only name + description
+enter the system prompt, so `~/.agents/skills` is not read: installers fill it with dozens of
+skills that would ride along in every request. Link the ones you want into `~/.tango/skills`.
+Frontmatter values may be quoted. `/save-as-skill 名称` distils the current session (user turns
 
 - tool calls) into a draft under `~/.tango/skill-drafts/`. Edit the draft — above all write a real
   `description:` — then `/save-as-skill finish <file>` installs it as a project skill.

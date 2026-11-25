@@ -22,6 +22,9 @@ Working rules:
 - You do remember past conversations: they are saved as tango sessions. When the user refers to earlier talks ("did we discuss X", "last time", "之前/上次/我们聊过/前面说的"), call session_search first (Chinese and English keywords, e.g. "智谱|zhipu|coding plan"), then the codebase if relevant. Never answer "I can't see earlier conversations" without having searched.
 - Delegate with the task tool when work would flood your context: broad searches, "how does X work", reviewing a change, finding a root cause. Send explore (read-only) and give it a complete brief, since it sees none of this conversation. Run independent investigations as separate tasks; use background: true when you can keep working meanwhile. Do quick lookups (one file, one grep) yourself.`;
 
+/** YAML scalars may be quoted: `description: "Use when …"`. */
+const unquote = (v: string) => (/^(["']).*\1$/.test(v) ? v.slice(1, -1) : v);
+
 /** Parse leading `---` frontmatter into key/value pairs. */
 function frontmatter(src: string): Record<string, string> {
   const m = /^---\r?\n([\s\S]*?)\r?\n---/.exec(src);
@@ -29,22 +32,26 @@ function frontmatter(src: string): Record<string, string> {
   if (!m) return out;
   for (const line of m[1].split('\n')) {
     const i = line.indexOf(':');
-    if (i > 0) out[line.slice(0, i).trim()] = line.slice(i + 1).trim();
+    if (i > 0) out[line.slice(0, i).trim()] = unquote(line.slice(i + 1).trim());
   }
   return out;
 }
 
 /**
  * Skills live in <root>/<name>/SKILL.md, global (~/.tango/skills) and project (.tango/skills).
+ * Projects may also use the shared location .agents/skills.
  * Only name + description go into the system prompt; the model reads the file when it matches.
  */
 export async function discoverSkills(cwd: string): Promise<SkillInfo[]> {
-  const roots = [skillsDir(), join(cwd, '.tango', 'skills')];
+  // .agents/skills is the project location several agent CLIs share; the first skill of a name
+  // wins. ~/.agents/skills is not read: skill installers fill it with dozens of entries, and every
+  // one would ride along in each request's system prompt.
+  const roots = [skillsDir(), join(cwd, '.tango', 'skills'), join(cwd, '.agents', 'skills')];
   const skills: SkillInfo[] = [];
   const seen = new Set<string>();
   for (const root of roots) {
     if (!existsSync(root)) continue;
-    for (const dir of await readdir(root)) {
+    for (const dir of (await readdir(root).catch(() => [] as string[])).sort()) {
       const file = join(root, dir, 'SKILL.md');
       if (!existsSync(file)) continue;
       const fm = frontmatter(await readFile(file, 'utf8'));
