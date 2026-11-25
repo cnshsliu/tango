@@ -83,6 +83,23 @@ test('anthropic usage.input includes cache reads and writes', async () => {
   }
 });
 
+test('anthropic input usage: message_delta counts win, zeros never erase earlier counts', async () => {
+  const { readInputUsage } = await import('../src/core/models/anthropic.js');
+  // apikey.fan: zeros in message_start, the real counts only in message_delta (seen live)
+  const gw = { input: 0, output: 0 };
+  readInputUsage(gw, { input_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 0 });
+  readInputUsage(gw, { input_tokens: 4, cache_read_input_tokens: 0, cache_creation_input_tokens: 1124, output_tokens: 576 });
+  assert.deepEqual(gw, { input: 1128, output: 0, cacheRead: 0, cacheWrite: 1124 });
+  // Anthropic: message_delta carries only output_tokens, so message_start's counts stay
+  const an = { input: 0, output: 0 };
+  readInputUsage(an, { input_tokens: 5, cache_read_input_tokens: 1000, cache_creation_input_tokens: 200 });
+  readInputUsage(an, { output_tokens: 7 });
+  assert.equal(an.input, 1205);
+  // a gateway that zeroes the delta keeps message_start's numbers
+  readInputUsage(an, { input_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 7 });
+  assert.deepEqual(an, { input: 1205, output: 0, cacheRead: 1000, cacheWrite: 200 });
+});
+
 test('postJson retries 502 with backoff up to `retries`, announcing each retry', async () => {
   const { postJson } = await import('../src/core/models/util.js');
   let hits = 0;

@@ -182,6 +182,10 @@ test('serve: stdin EOF does not cut a queued prompt short (pipe usage)', async (
     s.child.stdin.end(); // EOF while the prompt is still in flight
     const msg = await s.until((f) => f.type === 'message', 'message after EOF');
     assert.equal(msg.message.content[0].text, '管道里的答复');
+    // the endpoint reported no usage: ctx shows an estimate of the history, not 0
+    const te = await s.until((f) => f.type === 'turn_end', 'turn_end');
+    assert.equal(te.usage.input, 0);
+    assert.ok(te.contextTokens > 0, `estimate, got ${te.contextTokens}`);
     const res = await s.until((f) => f.type === 'result' && f.id === 1, 'result after EOF');
     assert.deepEqual(res.data, { stopReason: 'stop' });
     await new Promise<number>((r) => s.child.on('exit', r)); // then it exits on its own

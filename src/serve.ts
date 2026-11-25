@@ -326,7 +326,8 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
       type: 'turn_end',
       ...e,
       totalCostUsd: sessionCostUsd,
-      contextTokens: e.usage.input,
+      // a gateway that reports no input count must not show ctx 0
+      contextTokens: e.usage.input || agent.contextTokenEstimate(),
       contextWindow: agent.model.contextWindow ?? 128_000
     });
   });
@@ -393,7 +394,7 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
     sessionName: store.meta()?.name ?? '',
     mode: perm.mode,
     totalCostUsd: sessionCostUsd,
-    contextTokens: store.allMessages().filter((m) => m.role === 'assistant').at(-1)?.usage?.input ?? 0,
+    contextTokens: store.allMessages().filter((m) => m.role === 'assistant').at(-1)?.usage?.input || agent.contextTokenEstimate(),
     contextWindow: agent.model.contextWindow ?? 128_000,
     theme: config.theme,
     mouse: config.mouse ?? true,

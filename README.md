@@ -594,7 +594,9 @@ terminals of 24+ rows, a footer shows `~/dir:branch` on the left (refreshed by `
 (`shift+tab mode`, `ctrl+p commands`) on the right when they fit. Both hints are clickable: `shift+tab mode`
 opens the mode picker on the current mode (like clicking the mode label; pressing Shift+Tab itself switches to the next mode), `ctrl+p commands` opens the command palette. The bottom status bar (cost ·
 session · ctx, fitted to the terminal width — on a narrow screen ctx and sess go first, then the
-pinned ▶, while cost and the ❓ badge stay) no longer repeats the model and mode. Session ids are shown
+pinned ▶, while cost and the ❓ badge stay) no longer repeats the model and mode. `ctx` is the input size of the last model request (fresh + cache read + cache write tokens; for
+Anthropic-style endpoints taken from `message_start` or, when a gateway sends zeros there, `message_delta`).
+When an endpoint reports no input count at all, ctx shows tango's own estimate of the history instead of 0. Session ids are shown
 short everywhere (status bar, `/send`, handoff/takeover, mail notices, `/tasks`, `tango --sessions`): a uuid's
 last `-` part, e.g. `0ad2040a8182`, which every id-taking command accepts; clicking `sess …` copies the full id. The rule above the input
 carries the work state on its left end — `idle`, or the elapsed time and

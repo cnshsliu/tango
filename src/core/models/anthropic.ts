@@ -43,6 +43,24 @@ function toAnthropicMessages(messages: Message[]) {
   }));
 }
 
+/**
+ * Input side of an Anthropic usage object. input_tokens excludes cached tokens; Usage.input is the
+ * whole prompt. A later event wins, except that one carrying no input counts at all (only
+ * output_tokens) or only zeros keeps what an earlier event said.
+ */
+export function readInputUsage(usage: Usage, u: any): void {
+  if (!u) return;
+  const fresh = u.input_tokens;
+  const read = u.cache_read_input_tokens;
+  const write = u.cache_creation_input_tokens;
+  if (fresh === undefined && read === undefined && write === undefined) return;
+  const total = (fresh ?? 0) + (read ?? 0) + (write ?? 0);
+  if (total === 0 && usage.input > 0) return;
+  usage.cacheRead = read;
+  usage.cacheWrite = write;
+  usage.input = total;
+}
+
 export const anthropicAdapter: ModelAdapter = {
   async *stream(spec: ModelSpec, req: CompletionRequest): AsyncIterable<StreamEvent> {
     const body: Record<string, unknown> = {
@@ -89,14 +107,9 @@ export const anthropicAdapter: ModelAdapter = {
       sawEvent = true;
       const ev = parseEvent(spec, data);
       switch (ev.type) {
-        case 'message_start': {
-          // input_tokens excludes cached tokens; Usage.input is the whole prompt
-          const u = ev.message?.usage ?? {};
-          usage.cacheRead = u.cache_read_input_tokens;
-          usage.cacheWrite = u.cache_creation_input_tokens;
-          usage.input = (u.input_tokens ?? 0) + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0);
+        case 'message_start':
+          readInputUsage(usage, ev.message?.usage);
           break;
-        }
         case 'content_block_start': {
           const cb = ev.content_block;
           if (cb.type === 'text') blocks[ev.index] = { type: 'text', text: '' };
@@ -135,6 +148,9 @@ export const anthropicAdapter: ModelAdapter = {
         }
         case 'message_delta':
           usage.output = ev.usage?.output_tokens ?? usage.output;
+          // the final counts: Anthropic may repeat them here, and some gateways (apikey.fan)
+          // send zeros in message_start and the real input only here
+          readInputUsage(usage, ev.usage);
           stopReason =
             ev.delta?.stop_reason === 'tool_use'
               ? 'tool_use'
