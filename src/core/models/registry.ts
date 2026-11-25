@@ -131,6 +131,22 @@ export const presets: ModelSpec[] = [
     cost: { input: 3.889, output: 20.344, cacheRead: 0.1945, cacheWrite: 3.889 }
   },
   {
+    // ERNIE 5.5 Flash Preview: 280B total / 14B active, 1M context. Qianfan lists it under both
+    // 文本生成 and 深度思考, so the chain of thought arrives in reasoning_content.
+    // Prices are the list ones (peak 8:00-22:00); the 2026-11 promo halves input and output.
+    id: 'baidu/ernie-5.5-flash-preview',
+    region: 'cn',
+    provider: 'baidu',
+    model: 'ernie-5.5-flash-preview',
+    api: 'openai-completions',
+    baseUrl: 'https://qianfan.baidubce.com/v2',
+    apiKey: 'QIANFAN_API_KEY',
+    contextWindow: 1000000,
+    maxTokens: 32768,
+    reasoning: true,
+    cost: { input: 0.299, output: 1.197, cacheRead: 0.03 }
+  },
+  {
     id: 'qwen/qwen3.8-max',
     region: 'cn',
     provider: 'qwen',
