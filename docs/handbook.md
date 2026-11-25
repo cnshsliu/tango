@@ -269,16 +269,17 @@ are never touched. Time travel is refused while a turn is running. Turn it off w
 
 ### Permissions
 
-Every tool call passes a permission gate. There are three modes:
+Every tool call passes a permission gate. There are four modes; the TUI shows each with its
+Chinese name (`plan`, below, is 只出计划):
 
 | Mode | Start with | Behaviour |
 | --- | --- | --- |
-| `confirm` | `/mode confirm` | Ask before every change: file writes and every shell command ask first (zcode's 变更前确认) |
-| `ask` | default | Reads and writes inside the project run. Deletes, `git push`, `git reset --hard`, `sudo`, `curl … \| sh`, writes outside the project and unknown tools ask first |
-| `auto` | `tango -y` | Everything runs |
-| `readonly` | `tango --readonly` | Reads only. Writes and shell are refused |
+| `confirm` 每步确认 | `/mode confirm` | Ask before every change: file writes and every shell command ask first |
+| `ask` 风险确认 | default | Reads and writes inside the project run. Deletes, `git push`, `git reset --hard`, `sudo`, `curl … \| sh`, writes outside the project and unknown tools ask first |
+| `auto` 完全放行 | `tango -y` | Everything runs |
+| `readonly` 只读 | `tango --readonly` | Reads only. Writes and shell are refused |
 
-Switch at any time with `/mode <mode>` — bare `/mode` opens a picker listing all modes with a one-line description each (plan included). Switching to `auto` (完全访问) first shows an acknowledgement: what it allows (any file path, any shell command, network), a warning that mistakes may be irreversible, and a `☐ 我已了解风险，并对自己的数据安全负责` checkbox — press Space to check it, then Enter to enable; Esc cancels. Answering `a` (始终允许) in a permission
+Switch at any time with `/mode <mode>` — bare `/mode` opens a picker listing all modes with a one-line description each (plan included). Switching to `auto` (完全放行) first shows an acknowledgement: what it allows (any file path, any shell command, network), a warning that mistakes may be irreversible, and a `☐ 我已了解风险，并对自己的数据安全负责` checkbox — press Space to check it, then Enter to enable; Esc cancels. Answering `a` (始终允许) in a permission
 dialog saves persistent allow rules for that call and allows it — `bash:git branch` for
 `git branch -D x`, the written file's directory for an outside write, `tool:<name>` otherwise —
 so the same thing never asks again, in this session or the next. A command line with several

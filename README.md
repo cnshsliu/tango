@@ -712,7 +712,8 @@ Four modes, set with flags or `/mode`:
 | `readonly` | `--readonly`   | reads only; writes and shell are refused                                                                                                    |
 
 In the TUI, bare `/mode` opens the mode picker (one line per mode with its description, plan
-included). Switching to `auto` first shows the full-access acknowledgement: what it allows (any
+included). Its Chinese names, also used in `/mode ` completion: plan 只出计划, confirm 每步确认,
+ask 风险确认（默认）, auto 完全放行, readonly 只读. Switching to `auto` first shows the full-access acknowledgement: what it allows (any
 file path, any shell command, network), a warning that mistakes may be irreversible, and the
 `☐ 我已了解风险，并对自己的数据安全负责` checkbox — Space checks it, Enter enables, Esc cancels.
 

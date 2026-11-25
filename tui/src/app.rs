@@ -3585,11 +3585,11 @@ impl App {
         // (shown, desc, inserted)
         let all: Vec<(String, String, String)> = match cmd {
             "/mode" => [
-                ("plan", "编辑前先出计划"),
-                ("confirm", "改文件、跑命令前都先问"),
-                ("ask", "有风险时才问（默认）"),
-                ("auto", "全部直接执行（需确认）"),
-                ("readonly", "只看不改"),
+                ("plan", "只出计划 · 只研究、写计划，不改文件也不跑命令"),
+                ("confirm", "每步确认 · 改文件、跑命令前都先问"),
+                ("ask", "风险确认（默认） · 项目内的改动直接做，高风险操作先问"),
+                ("auto", "完全放行 · 不再确认，全部直接执行"),
+                ("readonly", "只读 · 只看不改，写入和命令都拒绝"),
             ]
             .iter()
             .map(|(m, d)| (m.to_string(), d.to_string(), m.to_string()))
@@ -7018,11 +7018,11 @@ impl App {
     /// one line each, the current one marked.
     fn open_mode_picker(&mut self) {
         let modes: [(&str, &str, &str); 5] = [
-            ("plan", "💡 计划模式", "编辑前先出计划（不改文件）"),
-            ("confirm", "✋ 变更前确认", "改文件、跑命令前都先问我"),
-            ("ask", "🛡 自主模式", "项目内直过，有风险时才问（默认）"),
-            ("auto", "⚠ 完全访问", "减少确认：全部直接执行"),
-            ("readonly", "🚫 只读", "只看不改：写入和命令都拒绝"),
+            ("plan", "💡 只出计划", "只研究、写计划，不改文件也不跑命令"),
+            ("confirm", "✋ 每步确认", "改文件、跑命令前都先问"),
+            ("ask", "🛡 风险确认（默认）", "项目内的改动直接做，高风险操作先问"),
+            ("auto", "⚠ 完全放行", "不再确认，全部直接执行"),
+            ("readonly", "🚫 只读", "只看不改，写入和命令都拒绝"),
         ];
         let items = modes
             .into_iter()
@@ -10372,7 +10372,7 @@ impl App {
                 "空格 勾选了解风险 · esc 取消".to_string()
             };
             self.modal_rect = Some(popup);
-            let inner = dialog_frame(&mut self.hint_buttons, f, popup, "⚠ 要启用完全访问吗？", &hint, self.theme);
+            let inner = dialog_frame(&mut self.hint_buttons, f, popup, "⚠ 要启用完全放行吗？", &hint, self.theme);
             let mut body = vec![
                 Line::from(Span::styled(
                     "启用后，任务可以直接执行以下操作，无需逐次请求你确认：",
