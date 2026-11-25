@@ -291,9 +291,11 @@ lists and removes the rules it created.
 
 `/plan` is a stricter, temporary mode for research: all writes are refused and the model
 writes a plan instead. Run `/plan` again to leave it and carry the plan out. In the TUI,
-Shift+Tab does the same toggle; the input block's left bar and the `mode · model` row under the
-draft turn orange while plan is on (ask is blue, auto red, readonly gray). Shift+Tab never switches
-to `auto`; use `/mode auto` for that.
+Shift+Tab opens the mode picker with that toggle preselected (plan, or your permission mode
+while plan is on), so pressing Shift+Tab twice flips plan; esc leaves things as they were. The
+footer's `shift+tab mode` hint does the same when clicked. The input block's left bar and the `mode · model` row under the
+draft turn orange while plan is on (ask is blue, auto red, readonly gray). Shift+Tab never preselects
+`auto`; picking it still goes through the full-access confirmation.
 
 To stop being asked about something specific without going fully `auto`, add an allow rule:
 

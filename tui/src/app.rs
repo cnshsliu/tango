@@ -1680,8 +1680,8 @@ pub struct App {
     /// the mode label (`auto`, `plan` …) at the start of that row: a click opens
     /// the mode picker
     mode_area: Rect,
-    /// the footer's key hints: `shift+tab plan` opens the mode picker (like a click on
-    /// the mode label), `ctrl+p commands` the command palette (like ctrl+p)
+    /// the footer's key hints: `shift+tab mode` does what Shift+Tab does (the mode picker,
+    /// plan toggle preselected), `ctrl+p commands` the command palette (like ctrl+p)
     footer_mode_area: Rect,
     footer_palette_area: Rect,
     /// every open dialog's bottom-hint keys as buttons, drawn this frame: a click on
@@ -5593,12 +5593,16 @@ impl App {
                     if let MouseEventKind::Down(MouseButton::Left) = m.kind
                         && !self.picker_area.contains(pos)
                     {
-                        if self.mode_area.width > 0 && self.mode_area.contains(pos)
-                            || self.footer_mode_area.width > 0 && self.footer_mode_area.contains(pos)
-                        {
+                        let on_label = self.mode_area.width > 0 && self.mode_area.contains(pos);
+                        let on_hint = self.footer_mode_area.width > 0 && self.footer_mode_area.contains(pos);
+                        if on_label || on_hint {
                             self.picker = None;
                             if kind != PickerKind::Mode {
-                                self.open_mode_picker();
+                                if on_hint {
+                                    self.open_mode_toggle();
+                                } else {
+                                    self.open_mode_picker();
+                                }
                             }
                             return false;
                         }
@@ -5702,13 +5706,14 @@ impl App {
                                 self.run_slash("/model", serve);
                                 return false;
                             }
-                            // …and the mode label (or the footer's shift+tab hint) opens the
-                            // mode picker on the current mode
-                            if self.mode_area.width > 0 && self.mode_area.contains(pos)
-                                || self.footer_mode_area.width > 0
-                                    && self.footer_mode_area.contains(pos)
-                            {
+                            // …the mode label opens the mode picker on the current mode; the
+                            // footer's shift+tab hint does what Shift+Tab does (plan preselected)
+                            if self.mode_area.width > 0 && self.mode_area.contains(pos) {
                                 self.open_mode_picker();
+                                return false;
+                            }
+                            if self.footer_mode_area.width > 0 && self.footer_mode_area.contains(pos) {
+                                self.open_mode_toggle();
                                 return false;
                             }
                             // the footer's ctrl+p hint opens the command palette
@@ -6394,14 +6399,18 @@ impl App {
             self.open_command_palette();
             return;
         }
-        // Shift+Tab flips ask ↔ plan (auto stays an explicit `/mode auto`)
+        // Shift+Tab opens the mode picker on the plan toggle (plan, or back to the permission
+        // mode when plan is on); a second Shift+Tab confirms it. The footer hint does the same.
         if k.code == KeyCode::BackTab
             && self.picker.is_none()
             && self.popup.is_none()
             && self.viewer.is_none()
         {
-            let id = serve.command("set_plan", vec![("on", Value::Bool(!self.plan_mode))]);
-            self.pending.push((id, Pending::Plan));
+            self.open_mode_toggle();
+            return;
+        }
+        if k.code == KeyCode::BackTab && self.picker.as_ref().is_some_and(|p| p.kind == PickerKind::Mode) {
+            self.accept_picker(serve);
             return;
         }
         if ctrl && k.code == KeyCode::Char('r') && self.picker.is_none() && self.popup.is_none() {
@@ -7039,6 +7048,19 @@ impl App {
             })
             .collect();
         self.picker = Some(Picker::new(PickerKind::Mode, items));
+    }
+
+    /// Shift+Tab and the footer's `shift+tab mode` hint: the mode picker with the plan toggle
+    /// preselected — plan when it is off, the current permission mode when it is on — so a
+    /// second Shift+Tab (or enter) flips plan and leaves the permission mode as it was.
+    fn open_mode_toggle(&mut self) {
+        self.open_mode_picker();
+        let target = if self.plan_mode { self.mode.clone() } else { "plan".to_string() };
+        if let Some(p) = self.picker.as_mut()
+            && let Some(i) = p.items.iter().position(|it| it.id == target)
+        {
+            p.sel = i;
+        }
     }
 
     fn send_prompt(&mut self, serve: &mut Serve) {
@@ -11000,7 +11022,7 @@ impl App {
         } else {
             format!("{dir}:{}", self.serve_branch)
         };
-        let hints: [(&str, &str); 2] = [("shift+tab", "plan"), ("ctrl+p", "commands")];
+        let hints: [(&str, &str); 2] = [("shift+tab", "mode"), ("ctrl+p", "commands")];
         let hint_w: usize = hints.iter().map(|(k, d)| display_width(k) + 1 + display_width(d) + 2).sum();
         let key = self.theme.style(Tone::Text);
         let muted = self.theme.style(Tone::Muted);
@@ -12873,7 +12895,7 @@ mod tests {
         assert!(m.width > 0 && p.width > 0, "both hints have a rect");
         let b = term.backend().buffer();
         let at = |r: Rect| (r.x..r.x + r.width).map(|x| b[(x, r.y)].symbol()).collect::<String>();
-        assert_eq!(at(m), "shift+tab plan");
+        assert_eq!(at(m), "shift+tab mode");
         assert_eq!(at(p), "ctrl+p commands");
         let click = |app: &mut App, serve: &mut Serve, r: Rect| {
             app.handle(
@@ -12886,9 +12908,11 @@ mod tests {
                 serve,
             );
         };
-        // shift+tab hint → the mode picker, like a click on the mode label
+        // shift+tab hint → what Shift+Tab does: the mode picker, plan preselected
         click(&mut app, &mut serve, m);
         assert_eq!(app.picker.as_ref().map(|p| p.kind), Some(PickerKind::Mode));
+        let p0 = app.picker.as_ref().unwrap();
+        assert_eq!(p0.items[p0.sel].id, "plan");
         // ctrl+p hint while a picker is open swaps to the command palette
         click(&mut app, &mut serve, p);
         assert_eq!(app.picker.as_ref().map(|p| p.kind), Some(PickerKind::Command));
@@ -14938,10 +14962,16 @@ mod tests {
         let mut serve = Serve::mock();
         app.mode = "ask".into();
         let ask = app.mode_color();
-        app.key(
-            crossterm::event::KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT),
-            &mut serve,
-        );
+        let shift_tab = || crossterm::event::KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT);
+        // first press: the mode picker, plan preselected; nothing is sent yet
+        app.key(shift_tab(), &mut serve);
+        let p = app.picker.as_ref().expect("shift+tab opens the mode picker");
+        assert_eq!(p.kind, PickerKind::Mode);
+        assert_eq!(p.items[p.sel].id, "plan");
+        assert!(serve.sent.is_empty());
+        // second press confirms it
+        app.key(shift_tab(), &mut serve);
+        assert!(app.picker.is_none());
         let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
         assert_eq!(sent["cmd"], "set_plan");
         assert_eq!(sent["on"], true);
@@ -14952,12 +14982,22 @@ mod tests {
         assert!(app.plan_mode);
         assert_ne!(app.mode_color(), ask, "plan has its own accent");
         assert_eq!(app.mode, "ask", "shift+tab never touches the permission mode");
-        app.key(
-            crossterm::event::KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT),
-            &mut serve,
-        );
+        // in plan: the permission mode is preselected, so two presses turn plan off again
+        app.key(shift_tab(), &mut serve);
+        let p = app.picker.as_ref().unwrap();
+        assert_eq!(p.items[p.sel].id, "ask");
+        app.key(shift_tab(), &mut serve);
         let sent2: Value = serde_json::from_str(&serve.sent[1]).unwrap();
+        assert_eq!(sent2["cmd"], "set_plan");
         assert_eq!(sent2["on"], false);
+        let sent3: Value = serde_json::from_str(&serve.sent[2]).unwrap();
+        assert_eq!((sent3["cmd"].as_str(), sent3["mode"].as_str()), (Some("set_mode"), Some("ask")));
+        // esc after the first press changes nothing
+        let n = serve.sent.len();
+        app.key(shift_tab(), &mut serve);
+        app.key(KeyCode::Esc.into(), &mut serve);
+        assert!(app.picker.is_none());
+        assert_eq!(serve.sent.len(), n);
     }
 
     #[test]
@@ -14998,7 +15038,7 @@ mod tests {
         assert!(text(&tall, top + 2).starts_with("▌ auto · claude-opus-5-5 apikeyfan"));
         let footer = text(&tall, top + 3);
         assert!(footer.starts_with("/work/x:tango/x"), "footer: {footer}");
-        assert!(footer.contains("shift+tab plan"), "footer: {footer}");
+        assert!(footer.contains("shift+tab mode"), "footer: {footer}");
         let b = tall.backend().buffer();
         assert_eq!(b[(0, top + 1)].fg, app.theme.mode_color("auto", false));
         assert_eq!(b[(40, top + 1)].bg, app.theme.input_bg());

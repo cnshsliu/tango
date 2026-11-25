@@ -187,8 +187,9 @@ isolation), MCP server→client capabilities (sampling/roots), plugin marketplac
 
 - `/plan` — research-only mode: every write-effect tool call is vetoed (even allow rules
   can't widen it) and the model is instructed to produce an execution plan; `/plan` again to
-  execute. Shift+Tab in the TUI toggles it too (ask ↔ plan only; `auto` stays an explicit
-  `/mode auto`). The input block's bar and info row turn orange while plan is on.
+  execute. Shift+Tab in the TUI toggles it too: the first press opens the mode picker with
+  the toggle preselected (plan, or back to the permission mode while plan is on), a second
+  Shift+Tab or enter confirms, esc cancels. `auto` stays an explicit choice. The input block's bar and info row turn orange while plan is on.
 - `/goal <text>` — keep working toward a goal: after each turn tango asks (tool-free) whether
   the goal is done; NO → one auto-continuation, YES → cleared with a notice. Hard cap
   (`/goal max N`, default 5), interrupt stops it, ●goal badge while active.
@@ -573,8 +574,8 @@ same label again closes its picker, clicking the other one swaps to that picker,
 picker row picks it.
 The draft starts right under the rule, with no blank padding rows around it. Under the block, on
 terminals of 24+ rows, a footer shows `~/dir:branch` on the left (refreshed by `/cd`) and key hints
-(`shift+tab plan`, `ctrl+p commands`) on the right when they fit. Both hints are clickable: `shift+tab plan`
-opens the mode picker (like clicking the mode label), `ctrl+p commands` the command palette (like ctrl+p). The bottom status bar (cost ·
+(`shift+tab mode`, `ctrl+p commands`) on the right when they fit. Both hints are clickable and do what their key does: `shift+tab mode`
+opens the mode picker with the plan toggle preselected, `ctrl+p commands` the command palette. Clicking the mode label opens the mode picker on the current mode. The bottom status bar (cost ·
 session · ctx, fitted to the terminal width — on a narrow screen ctx and sess go first, then the
 pinned ▶, while cost and the ❓ badge stay) no longer repeats the model and mode. Session ids are shown
 short everywhere (status bar, `/send`, handoff/takeover, mail notices, `/tasks`, `tango --sessions`): a uuid's
@@ -654,7 +655,7 @@ forward history; kept in the TUI process only), so `/resume`-ing a subagent's se
 `/restart` quits and re-execs the TUI (and with it a fresh serve), so a rebuilt `tango-tui` or
 `dist/` takes effect; it resumes the current session with the same permission mode. It refuses
 while a turn is running.
-Shift+Tab toggles plan mode (ask ↔ plan). Ctrl+P opens a filterable command palette; model/session pickers use the same filtering and mouse
+Shift+Tab, then Shift+Tab again, toggles plan mode (the first press opens the mode picker on the toggle). Ctrl+P opens a filterable command palette; model/session pickers use the same filtering and mouse
 routing. Ctrl+R searches original prompt history, and Alt+S stashes/restores the complete draft
 (including collapsed paste metadata) without submitting it. File references accept inclusive line
 ranges: `@path#20-45`, `@path#L20-L45`, or `@path#20`. Scrolling up pauses auto-follow and keeps the
