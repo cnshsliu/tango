@@ -772,7 +772,7 @@ hunts.
 
 | agent | tools | use |
 | --- | --- | --- |
-| `explore` | read-only: `read`, `grep`, `find`, `ls`, `web_search`, `web_fetch`, `office_read`, `diff`, `session_search`, `process_logs`, `process_list` | investigation, review, research |
+| `explore` | read-only: `read`, `grep`, `find`, `ls`, `web_search`, `web_fetch`, `office_read`, `diff`, `session_search`, `process_logs`, `process_list`, `schedule_list` | investigation, review, research |
 | `general` | every tool except `task` | multi-step work that edits files or runs commands |
 | config `subAgents` | read-only or all, per `readonly` | your own, e.g. a reviewer with fixed rules |
 
