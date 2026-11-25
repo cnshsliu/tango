@@ -19,6 +19,39 @@ use std::process::{Command, Stdio};
 /// Recognize a pasted image: terminals drop a clipboard image to a temp file and paste
 /// its path (e.g. `/var/folders/…/orca-paste-….png`). A single-line paste that names an
 /// existing image file becomes an attachment chip instead of raw path text.
+/// Fuzzy @file search over repo paths: `query`'s characters must appear in order (case-insensitive).
+/// Ranked: substring of the file name, then subsequence of the file name, then of the whole path;
+/// shorter paths first within a rank. At most 12.
+fn fuzzy_files(query: &str, files: &[String]) -> Vec<String> {
+    if query.is_empty() {
+        return Vec::new();
+    }
+    let q = query.to_lowercase();
+    let subseq = |hay: &str| {
+        let mut it = hay.chars();
+        q.chars().all(|c| it.any(|h| h == c))
+    };
+    let mut hits: Vec<(u8, usize, &String)> = files
+        .iter()
+        .filter_map(|f| {
+            let lower = f.to_lowercase();
+            let name = lower.rsplit('/').next().unwrap_or(&lower);
+            let rank = if name.contains(&q) {
+                0
+            } else if subseq(name) {
+                1
+            } else if subseq(&lower) {
+                2
+            } else {
+                return None;
+            };
+            Some((rank, f.len(), f))
+        })
+        .collect();
+    hits.sort();
+    hits.into_iter().take(12).map(|(_, _, f)| f.clone()).collect()
+}
+
 fn image_path_from_paste(text: &str) -> Option<String> {
     let t = text.trim();
     if t.is_empty() || t.contains('\n') {
@@ -1603,6 +1636,8 @@ pub struct App {
     full_access: Option<bool>,
     /// serve-side working directory (/cd moves it); @file resolves against it
     serve_cwd: Option<std::path::PathBuf>,
+    /// `git ls-files` of serve_cwd for fuzzy @file search: (dir, built at, paths); rebuilt after 30 s
+    file_index: Option<(std::path::PathBuf, std::time::Instant, Vec<String>)>,
     /// in-chat mouse selection (terminal rows); release copies the covered lines
     sel_anchor: Option<u16>,
     sel_end: Option<u16>,
@@ -1802,6 +1837,7 @@ impl App {
             statusline: None,
             multiline_enter: false,
             serve_cwd: None,
+            file_index: None,
             sel_anchor: None,
             sel_end: None,
             chat_rows: Vec::new(),
@@ -3561,7 +3597,21 @@ impl App {
         // @file palette: cursor sits inside an @token
         let (tok, _, _) = self.token_at_cursor();
         if tok.starts_with('@') && tok.len() > 1 {
-            let items = Self::file_candidates(&tok, self.serve_cwd.as_deref());
+            let mut items = Self::file_candidates(&tok, self.serve_cwd.as_deref());
+            // a bare name (no '/') also matches anywhere in the repo, fuzzily, after the
+            // directory's own prefix matches
+            let body = &tok[1..];
+            if !body.contains('/') && !body.contains('#') && items.len() < 12 {
+                for hit in fuzzy_files(body, self.repo_files()) {
+                    let hit = format!("@{hit}");
+                    if !items.contains(&hit) {
+                        items.push(hit);
+                    }
+                    if items.len() >= 12 {
+                        break;
+                    }
+                }
+            }
             if items.is_empty() {
                 self.popup = None;
             } else {
@@ -3671,6 +3721,31 @@ impl App {
         if single {
             self.popup = None;
         }
+    }
+
+    /// tracked + untracked-but-not-ignored files of serve_cwd, cached for 30 s; empty outside git
+    fn repo_files(&mut self) -> &[String] {
+        let dir = self.serve_cwd.clone().unwrap_or_else(|| std::path::PathBuf::from("."));
+        let fresh = matches!(&self.file_index, Some((d, t, _)) if *d == dir && t.elapsed().as_secs() < 30);
+        if !fresh {
+            let files = Command::new("git")
+                .args(["ls-files", "-co", "--exclude-standard"])
+                .current_dir(&dir)
+                .stderr(Stdio::null())
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| {
+                    String::from_utf8_lossy(&o.stdout)
+                        .lines()
+                        .take(50_000)
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default();
+            self.file_index = Some((dir, std::time::Instant::now(), files));
+        }
+        &self.file_index.as_ref().unwrap().2
     }
 
     fn file_candidates(token: &str, base: Option<&Path>) -> Vec<String> {
@@ -15018,6 +15093,54 @@ mod tests {
             "深圳\u{00a0}靠「试错」崛起\u{3000}@target.txt"
         );
         assert_eq!(app.cursor, app.input.len());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn fuzzy_files_ranks_name_matches_before_path_matches() {
+        let files: Vec<String> = [
+            "src/core/tools/search.ts",
+            "tests/search-tools.test.ts",
+            "src/serve.ts",
+            "docs/handbook.md",
+            "src/core/context.ts",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        // substring of the name first (shorter path wins), then subsequences
+        assert_eq!(fuzzy_files("search", &files), vec!["src/core/tools/search.ts", "tests/search-tools.test.ts"]);
+        assert_eq!(fuzzy_files("SRV", &files), vec!["src/serve.ts"], "case-insensitive subsequence of the name");
+        assert_eq!(fuzzy_files("coctx", &files), vec!["src/core/context.ts"], "subsequence across directories");
+        assert!(fuzzy_files("zzz", &files).is_empty());
+        assert!(fuzzy_files("", &files).is_empty());
+    }
+
+    #[test]
+    fn at_file_popup_finds_repo_files_by_fuzzy_name() {
+        let base = std::env::temp_dir().join(format!("tango-fuzzy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("src/deep/er")).unwrap();
+        std::fs::write(base.join("src/deep/er/handler.rs"), "x").unwrap();
+        std::fs::write(base.join("hand.txt"), "x").unwrap();
+        std::fs::write(base.join(".gitignore"), "ignored/\n").unwrap();
+        std::fs::create_dir_all(base.join("ignored")).unwrap();
+        std::fs::write(base.join("ignored/handout.rs"), "x").unwrap();
+        let ok = Command::new("git").args(["init", "-q"]).current_dir(&base).status().is_ok_and(|s| s.success());
+        if !ok {
+            return; // no git on this machine
+        }
+        let mut app = App::new();
+        app.serve_cwd = Some(base.clone());
+        app.input = "look at @hand".chars().collect();
+        app.cursor = app.input.len();
+        app.refresh_popup();
+        let items = app.popup.as_ref().map(|p| p.items.clone()).unwrap_or_default();
+        // the directory's own prefix match first, then the nested file; git-ignored files stay out
+        assert_eq!(items, vec!["@hand.txt".to_string(), "@src/deep/er/handler.rs".to_string()]);
+        app.popup.as_mut().unwrap().sel = 1;
+        app.accept_popup();
+        assert_eq!(app.input.iter().collect::<String>(), "look at @src/deep/er/handler.rs");
         let _ = std::fs::remove_dir_all(&base);
     }
 

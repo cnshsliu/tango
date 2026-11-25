@@ -663,7 +663,8 @@ while a turn is running.
 Shift+Tab steps through the modes (ask → plan → confirm → readonly). Ctrl+P opens a filterable command palette; model/session pickers use the same filtering and mouse
 routing. Ctrl+R searches original prompt history, and Alt+S stashes/restores the complete draft
 (including collapsed paste metadata) without submitting it. File references accept inclusive line
-ranges: `@path#20-45`, `@path#L20-L45`, or `@path#20`. Scrolling up pauses auto-follow and keeps the
+ranges: `@path#20-45`, `@path#L20-L45`, or `@path#20`. A `@` token without `/` also lists repo files whose name (or path)
+contains its letters in order, from `git ls-files -co --exclude-standard` (cached 30 s), after the current directory's own matches. Scrolling up pauses auto-follow and keeps the
 reading position stable; a centered ↓ pill on its own row above the input jumps back to the bottom
 (and counts new lines), shrinking its label on narrow terminals; clicking it or Ctrl+End resumes
 following. While scrolled up, a dim top row names the latest prompt above the view (it changes as

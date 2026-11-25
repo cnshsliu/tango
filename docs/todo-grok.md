@@ -40,7 +40,7 @@
 - [x] **8. `AGENTS.override.md`**（按目录替换，不限于 git 根以下，沿用 tango 一直往上找的做法）
   - grok：从 git 根目录往下合并到当前目录，某一层有 `AGENTS.override.md` 时，这一层用它代替 `AGENTS.md`。见 `src/utils/instructions.ts:44`。
   - tango：从当前目录一直合并到文件系统根，只能叠加，不能覆盖（`src/core/context.ts:59`）。
-- [ ] **9. `@` 文件提及：模糊搜索和行号范围**
+- [x] **9. `@` 文件提及：模糊搜索和行号范围**（行号早已有；模糊搜索按文件名子串 → 名字子序列 → 路径子序列排序）
   - grok：按 `git ls-files` 建索引（30 秒刷新，跳过二进制），按文件名打分模糊匹配。支持 `@file:10-20` 只引用几行。见 `src/utils/file-index.ts`、`src/utils/at-mentions.ts`。
   - tango：`@` 只能逐级补全目录（`tui/src/app.rs` 的 `file_candidates`），不支持模糊搜索和行号。
 - [x] **10. 兼容 `.agents/skills` 目录**（只读项目的；`~/.agents/skills` 常有上百个，会撑大每次请求，不读）
