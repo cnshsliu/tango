@@ -213,6 +213,14 @@ so a stuck task fails fast instead of using the default 64. One-shot runs cannot
 asks, so risky calls are refused unless you add `-y`. The README's "Headless JSON" section lists
 every event field.
 
+### Recurring tasks
+
+Ask in plain words: "每两小时检查一下 CI，有失败就发飞书". The model creates the task with
+`schedule_create` (you approve it in `ask` mode); `schedule_list` and `schedule_remove` show and
+delete them. These are the same tasks as `tango task list/add/rm`, kept in `~/.tango/tasks.json`.
+They only run while `tango task run --loop` (or the launchd agent from the README) is running, and
+they run without a TUI: `readonly` by default, `auto` only if you asked for it.
+
 ### Worktrees
 
 A managed worktree is a separate checkout of your repo at `~/.tango/worktrees/<name>` on

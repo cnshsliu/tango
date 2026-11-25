@@ -11,7 +11,7 @@ How to use it day to day: [docs/handbook.md](docs/handbook.md).
 
 Core loop is working: agent loop, JSONL sessions with compaction, Anthropic + OpenAI-compatible
 adapters, built-in tools (read / write / edit / bash / grep / find / ls / web_search / web_fetch /
-office_read / office_write / notify / diff / session_search / process_logs / process_stop / process_list / task), a permission gate, AGENTS.md + skills context assembly,
+office_read / office_write / notify / diff / session_search / process_logs / process_stop / process_list / schedule_list / schedule_create / schedule_remove / task), a permission gate, AGENTS.md + skills context assembly,
 typed event bus, cost tracking with long-prompt price tiers, `/save-as-skill`, scheduled tasks
 (`tango task`) with Feishu webhook delivery, auto type diagnostics after edits, a JSONL
 serve protocol (`tango serve`), and a Rust TUI client (`tui/`) on top of it.
@@ -478,6 +478,18 @@ due tasks once and exits. On macOS, `scripts/com.tango.task.plist` installs the 
 launchd service (starts at login, respawns on crash): copy it to `~/Library/LaunchAgents/`,
 `launchctl bootstrap gui/$(id -u) <path>`. launchd gets no shell environment, so the wrapper
 sources API keys from `~/.tango/env` (KEY=VALUE, chmod 600); logs go to `~/Library/Logs/tango-task.log`.
+
+The model manages the same list with tools, so "每天早上 9 点前帮我看一下 CI" can become a task
+without leaving the chat:
+
+| tool              | input                                            | what it does                                  |
+| ----------------- | ------------------------------------------------ | --------------------------------------------- |
+| `schedule_list`   | none                                             | the tasks with interval, mode, last run, cwd  |
+| `schedule_create` | `name`, `every` (`30m`, `2h`, `1d`), `prompt`, `mode` (`readonly` default, `auto`) | adds a task that runs in the session's cwd |
+| `schedule_remove` | `name`                                           | deletes it                                    |
+
+`schedule_list` counts as a read. Creating or removing a task changes what runs unattended, so in
+`ask` mode both ask first, `readonly` refuses them and plan mode blocks them.
 
 ## Skills
 

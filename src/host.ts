@@ -24,6 +24,7 @@ import { processListTool, processLogsTool, processStopTool } from './core/tools/
 import { editTool, readTool, writeTool } from './core/tools/fs.js';
 import { officeReadTool, officeWriteTool } from './core/tools/office/index.js';
 import { notifyTool } from './core/tools/notify.js';
+import { scheduleCreateTool, scheduleListTool, scheduleRemoveTool } from './core/tools/schedule.js';
 import { findTool, grepTool, lsTool } from './core/tools/search.js';
 import { sessionSearchTool } from './core/tools/session-search.js';
 import { webFetchTool } from './core/tools/web-fetch.js';
@@ -35,7 +36,7 @@ export const VERSION = '0.1.0';
 
 export function buildTools(): ToolRegistry {
   const tools = new ToolRegistry();
-  for (const t of [readTool, writeTool, editTool, bashTool, grepTool, findTool, lsTool, webSearchTool, webFetchTool, officeReadTool, officeWriteTool, notifyTool, diffTool, sessionSearchTool, processLogsTool, processStopTool, processListTool])
+  for (const t of [readTool, writeTool, editTool, bashTool, grepTool, findTool, lsTool, webSearchTool, webFetchTool, officeReadTool, officeWriteTool, notifyTool, diffTool, sessionSearchTool, processLogsTool, processStopTool, processListTool, scheduleListTool, scheduleCreateTool, scheduleRemoveTool])
     tools.register(t);
   return tools;
 }

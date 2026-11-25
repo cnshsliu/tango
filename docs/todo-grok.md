@@ -46,7 +46,7 @@
 - [x] **10. 兼容 `.agents/skills` 目录**（只读项目的；`~/.agents/skills` 常有上百个，会撑大每次请求，不读）
   - grok：技能放在 `.agents/skills/<name>/SKILL.md` 和 `~/.agents/skills/`。这是几家工具共用的位置，并解析 YAML frontmatter 里的 `name`、`description`。见 `src/utils/skills.ts`。
   - tango：只读 `~/.tango/skills` 和 `.tango/skills`。
-- [ ] **11. 模型可调用的定时任务工具**
+- [x] **11. 模型可调用的定时任务工具**（`schedule_list` / `schedule_create` / `schedule_remove`；TUI 的 `/schedule` 浏览暂不做）
   - grok：`schedule_create`、`schedule_list`、`schedule_remove` 等工具，可以用自然语言创建定时任务。TUI 里 `/schedule` 可以浏览。见 `src/tools/schedule.ts`、`src/ui/schedule-modal.tsx`。
   - tango：只有 `tango task add` 命令行，模型和 TUI 都管不到。
 - [ ] **12. `/commit-push` 和 `/commit-pr`**
