@@ -47,6 +47,9 @@ export interface PermState {
   rules?: { allow: string[] };
   /** live extra write roots (/add_dir; inside() also accepts these) */
   extraDirs?: { dirs: string[] };
+  /** re-reads the rules and extra roots before a decision, so they follow the config files and
+   *  the current directory; serve installs it */
+  refreshRules?: () => unknown;
   /** plan mode: write-effect tools are vetoed (/plan) */
   plan?: { on: boolean };
 }
@@ -285,6 +288,7 @@ export function makeAgent(model: ModelSpec, store: SessionStore, cwd: string, pe
       return perm.ask(c, r);
     },
     rules: parsedRules,
+    refresh: () => perm.refreshRules?.(),
     // managed worktrees (~/.tango/worktrees) are tango's own isolation checkouts:
     // writing there is the point of creating one, so it never asks
     extraDirs: () => [...extraDirs.dirs, worktreeRoot()],

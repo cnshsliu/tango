@@ -184,7 +184,8 @@ export function suggestRule(call: ToolCallBlock): string | null {
 
 /** Segment a bash command into its ; && || | and newline parts, for tail re-checks.
  * Separators inside '…', "…", `…` or after a backslash are text, not separators
- * (`grep "a|b; c" f` is one segment). Heredoc bodies are dropped first. */
+ * (`grep "a|b; c" f` is one segment). An `&` right after `>` belongs to the redirect
+ * (`cmd 2>&1` is one segment: it used to leave a stray `1`). Heredoc bodies are dropped first. */
 function bashSegments(command: string): string[] {
   const cmd = stripHeredocs(command);
   const out: string[] = [];
@@ -200,6 +201,7 @@ function bashSegments(command: string): string[] {
     }
     if (c === '\\' && i + 1 < cmd.length) { cur += c + cmd[++i]; continue; }
     if (c === "'" || c === '"' || c === '`') { quote = c; cur += c; continue; }
+    if (c === '&' && cmd[i - 1] === '>') { cur += c; continue; }
     if (c === ';' || c === '|' || c === '&' || c === '\n') { out.push(cur); cur = ''; continue; }
     cur += c;
   }
@@ -268,7 +270,16 @@ export type AskFn = (call: ToolCallBlock, reason: string) => Promise<boolean>;
 
 export function installPermissionGate(
   events: EventBus,
-  opts: { mode: () => PermissionMode; cwd: string | (() => string); ask?: AskFn; rules?: () => AllowRule[]; extraDirs?: () => string[]; plan?: () => boolean }
+  opts: {
+    mode: () => PermissionMode;
+    cwd: string | (() => string);
+    ask?: AskFn;
+    rules?: () => AllowRule[];
+    extraDirs?: () => string[];
+    plan?: () => boolean;
+    /** runs before every decision, so rules can follow the config files and the current directory */
+    refresh?: () => unknown;
+  }
 ): () => void {
   const cwdNow = () => (typeof opts.cwd === 'function' ? opts.cwd() : opts.cwd);
   return events.on('before_tool', async ({ call, tool }) => {
@@ -276,6 +287,7 @@ export function installPermissionGate(
     if (opts.plan?.() && tool.writeEffect) {
       return { block: true, reason: 'plan mode — research only; /plan off to execute' };
     }
+    await opts.refresh?.();
     const d = decide(opts.mode(), call, cwdNow(), opts.rules?.(), opts.extraDirs?.());
     if (d.action === 'allow') return;
     if (d.action === 'deny') return { block: true, reason: d.reason };

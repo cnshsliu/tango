@@ -278,7 +278,10 @@ To stop being asked about something specific without going fully `auto`, add an 
 ```
 
 Rules are saved in the project's personal `.tango/config.local.json` (outside a project: in
-`~/.tango/config.json`); `/permissions` labels each rule with its file. They only turn "ask" into "allow" and never
+`~/.tango/config.json`); `/permissions` labels each rule with its file. They apply at once, everywhere they are
+in force: an `a` pressed in one window counts in every open session from its next decision on,
+and after `/cd` the rules of the directory you are in now apply (the ones you left stop). They
+only turn "ask" into "allow" and never
 loosen `readonly` or `/plan`. A bash rule covers only the part of a command line it
 matches, so `git status; rm -rf build` still asks. `/import claude-code|grok|codex` copies
 another agent's allow list into these rules and lists any entries it couldn't convert.

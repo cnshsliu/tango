@@ -299,16 +299,22 @@ allows the call (it no longer flips the session to auto mode). A command line wi
 and `bash:rm`, because a rule for the first command alone leaves the risky tail uncovered and the
 same line would ask again every time. The dialog's hint names what `a` remembers
 (`a 始终允许（记住 osascript · rm）`) before you press it. Lines split segments too, and `;`, `|`
-or `&` inside quotes do not; `NAME=value` assignments, shell keywords (`for … do … done`,
+or `&` inside quotes do not, nor does the `&` of `2>&1`; `NAME=value` assignments, shell keywords (`for … do … done`,
 `if … then … fi`, `{ … }`) and heredoc bodies (up to their terminator line, even when commands
 follow it) are not commands, so a script written with `cat > f <<'EOF'` never turns its code into
 rules. Since `bash:rm` then allows any `rm`, prefer `y` for one-offs.
+Rules are live, not a snapshot from startup: they are re-read whenever a config file changes, so
+an `a` pressed in one window applies to every open session from its next decision on, and a rule
+that is removed stops applying just as fast. They follow the directory the session is in: after
+`/cd` the rules of the new directory apply and the old ones stop. (Hooks and MCP stay those of
+the directory the session opened in; `/restart` re-reads those. A project's shared and personal
+layers still need trust first.)
 `/import claude-code|grok|codex` maps another agent's allowed-tools into these rules and
 reports every entry it could not represent (codex reads trusted `command = "…"` entries from
 `~/.codex/config.toml`, loose TOML scan, `path:` override for testing). Bash rules cover only
 the command segments they match: a risky command later in the same line (`git status; rm …`)
 still asks unless its own command word is allowed too. `/export` and `/insights` write into `~/.tango/exports/` (never dirty the repo). `/cd <dir>` moves the session working directory (agent,
-tools and checkpoints follow live). Bare `/cd` opens the directories used before; `/cd /path`
+tools, checkpoints and permission rules follow live). Bare `/cd` opens the directories used before; `/cd /path`
 or `/cd ~/path` switches directly. A prompt does not start when that directory is gone:
 tango opens the same picker instead of calling the model. `/add_dir <dir>` registers an extra writable root.
 

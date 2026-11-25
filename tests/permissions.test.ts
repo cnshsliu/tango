@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { decide, installPermissionGate } from '../src/core/permissions.js';
+import { decide, installPermissionGate, parseRule, suggestRules } from '../src/core/permissions.js';
 import { EventBus } from '../src/core/events.js';
 import { findTool, grepTool, lsTool } from '../src/core/tools/search.js';
 import type { ToolCallBlock } from '../src/core/types.js';
@@ -78,6 +78,31 @@ test('gate blocks without an asker and honours the answer with one', async () =>
   const yes = new EventBus();
   installPermissionGate(yes, { mode: () => 'ask', cwd, ask: async () => true });
   assert.equal(await yes.emit('before_tool', risky), undefined);
+});
+
+test('the gate asks its refresh before deciding, so rules can follow the files', async () => {
+  const rules = { allow: [] as string[] };
+  let checks = 0;
+  const bus = new EventBus();
+  installPermissionGate(bus, {
+    mode: () => 'ask',
+    cwd,
+    rules: () => rules.allow.map((r) => parseRule(r)).filter((x) => x.ok).map((x) => (x as { ok: true; rule: never }).rule),
+    // the second check on: a rule appears "on disk"
+    refresh: () => void (checks++ === 1 && rules.allow.push('bash:git push'))
+  });
+  const push = { call: call('bash', { command: 'git push origin main' }), tool: {} as any };
+  assert.ok(await bus.emit('before_tool', push), 'no rule yet: the call is stopped');
+  assert.equal(await bus.emit('before_tool', push), undefined, 'the rule that appeared is applied, no restart');
+});
+
+test('`2>&1` is a redirect, not a command separator — and a risky tail after it still asks', () => {
+  const both = suggestRules(call('bash', { command: 'git push origin main 2>&1 | tail -6' }));
+  assert.deepEqual(both, ['bash:git push', 'bash:tail'], 'no stray `bash:1`');
+  const echo = [parseRule('bash:echo')].filter((x) => x.ok).map((x) => (x as { ok: true; rule: never }).rule);
+  const d = decide('ask', call('bash', { command: 'echo hi 2>&1 && rm -rf build' }), cwd, echo);
+  assert.equal(d.action, 'ask', 'the rm after the redirect is still seen');
+  assert.match(String(d.reason), /rm -rf build|deletes files/);
 });
 
 test('grep / find / ls work on a temp tree', async () => {

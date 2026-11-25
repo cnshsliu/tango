@@ -10,7 +10,7 @@
  * frames:    hello | stream | btw_stream | message | notice (chat line) | tool_result | permission_request | turn_end | error | result
  */
 import { spawnSync } from 'node:child_process';
-import { existsSync, realpathSync } from 'node:fs';
+import { existsSync, realpathSync, statSync } from 'node:fs';
 import { createRequire as nodeCreateRequire } from 'node:module';
 import { createInterface } from 'node:readline';
 import { randomUUID } from 'node:crypto';
@@ -36,7 +36,7 @@ import { costUsd, displayPlatform, groupModels } from './core/models/registry.js
 import { retryText } from './core/models/util.js';
 import type { AskFn, PermissionMode } from './core/permissions.js';
 import type { ToolResult } from './core/types.js';
-import { describeSources, localFile, projectFile, readLayerJson, resolveConfig, setTrust, updateLocalConfig } from './core/project-config.js';
+import { describeSources, localFile, projectFile, projectRoots, readLayerJson, resolveConfig, setTrust, updateLocalConfig, type Resolved } from './core/project-config.js';
 import { buildTools, loadPluginHooks, openAgent, resolveSessionId, VERSION, type HostArgs, type PermState } from './host.js';
 import { diffTool } from './core/tools/diff.js';
 
@@ -91,10 +91,11 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
   }
   const { agent, store } = opened;
   let cwd = opened.cwd; // /cd moves it (agent.cwd is the same truth)
-  // config layers stay those of the directory the session opened in (/restart re-reads)
-  const configCwd = opened.cwd;
   const resolvedAtStart = opened.resolved;
-  const effectiveConfig = () => resolveConfig(configCwd);
+  // Hooks and MCP stay those of the directory the session opened in (/restart re-reads). The live
+  // keys — permission rules, extra write roots, what /permissions and /trust show — follow the
+  // directory the session is in now, so they agree with each other and with every decision.
+  const effectiveConfig = () => resolveConfig(agent.cwd);
 
   // same-repo concurrency guard (single-writer convention): warn when another live serve
   // holds this cwd — its snapshots/checkpoints could interleave with ours
@@ -132,6 +133,50 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
   }
   // per-session liveness, so /handoff can tell the target is open in another window
   await holdSessionLock(store.id, cwd).catch(() => {});
+  // Permission rules and extra roots are not the snapshot taken at startup: an "always allow"
+  // saved in another window, or a /cd into another project, applies from the next decision on.
+  // Cheap check per decision — the mtimes of the files rules can come from, and the directory.
+  const ruleStamp = () => {
+    const roots = projectRoots(agent.cwd);
+    const files = [
+      join(tangoDir(), 'config.json'),
+      join(tangoDir(), 'trusted.json'),
+      ...(roots ? [projectFile(roots.root), localFile(roots.localRoot)] : [])
+    ];
+    return JSON.stringify([
+      agent.cwd,
+      files.map((f) => {
+        try {
+          return statSync(f).mtimeMs;
+        } catch {
+          return -1;
+        }
+      })
+    ]);
+  };
+  let rulesStamp = ruleStamp();
+  const refreshLiveRules = async (): Promise<void> => {
+    const now = ruleStamp();
+    if (now === rulesStamp) return;
+    rulesStamp = now;
+    const r = await resolveConfig(agent.cwd).catch(() => undefined);
+    if (!r) return;
+    if (perm.rules) perm.rules.allow = r.config.permissions?.allow ?? [];
+    if (perm.extraDirs) perm.extraDirs.dirs = r.config.extraDirs ?? [];
+  };
+  perm.refreshRules = refreshLiveRules;
+  /** the project layer wants trust before its rules apply: the UI asks once per project */
+  const askTrust = (r: Resolved) => {
+    const project = r.project;
+    if (!project?.needsTrust) return;
+    // until answered the gated keys stay off (headless runs never ask)
+    out({
+      type: 'trust_request',
+      root: project.localRoot,
+      keys: project.gated,
+      files: r.sources.filter((x) => x.scope !== 'global' && x.ignored.some((i) => i.why === 'untrusted')).map((x) => x.path)
+    });
+  };
   const config = opened.resolved.config;
   // the persisted threshold (or 'off') must survive restarts
   if (config.autocompact === 'off') agent.compactAt = 0;
@@ -375,16 +420,7 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
   for (const src of opened.resolved.sources) {
     if (src.error) out({ type: 'notice', text: `⚠ 配置文件已跳过：${src.path}（${src.error}）` });
   }
-  const project = opened.resolved.project;
-  if (project?.needsTrust) {
-    // the UI asks once; until answered the gated keys stay off (headless runs never ask)
-    out({
-      type: 'trust_request',
-      root: project.localRoot,
-      keys: project.gated,
-      files: opened.resolved.sources.filter((x) => x.scope !== 'global' && x.ignored.some((i) => i.why === 'untrusted')).map((x) => x.path)
-    });
-  }
+  askTrust(opened.resolved);
 
   /** /goal auto-continuation: ask (no tools) whether the goal is done; continue or clear. */
   async function maybeContinueGoal(): Promise<void> {
@@ -1201,6 +1237,9 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
         cwd = target;
         rememberCwd(target);
         await agent.setCwd(target);
+        // rules follow the directory: load the new one's now, and ask for trust if it wants it
+        await refreshLiveRules();
+        askTrust(await effectiveConfig());
         await store.append({ kind: 'meta', id: store.id, createdAt: store.meta()?.createdAt ?? new Date().toISOString(), cwd: target, name: store.meta()?.name });
         // the TUI footer shows `dir:branch`: report the branch of the new cwd ('' outside git)
         const branch = String(spawnSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: target, encoding: 'utf8' }).stdout ?? '').trim();
