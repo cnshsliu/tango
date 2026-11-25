@@ -846,7 +846,7 @@ All user state lives in `~/.tango/` (override with `TANGO_HOME`):
 | `config.json`            | default model (`/model <id>` writes it); `feishuWebhook` for notify/tasks; `theme`: `dark` (default), `light`, or `auto` from the terminal's background (OSC 11, then `COLORFGBG`) |
 | `models.json`            | extra/overriding model specs, same shape as built-in presets                                                                                             |
 | `tasks.json`             | scheduled tasks (`tango task add`)                                                                                                                       |
-| `AGENTS.md`              | global instructions appended to the system prompt                                                                                                        |
+| `AGENTS.md`              | global instructions appended to the system prompt. Project ones are read from cwd up to `/`; an `AGENTS.override.md` replaces the `AGENTS.md` of its own directory |
 | `skills/<name>/SKILL.md` | global skills (project-level: `<cwd>/.tango/skills/`)                                                                                                    |
 | `sessions/*.jsonl`       | append-only sessions, one line per entry                                                                                                                 |
 | `trusted.json`           | your trust decision per project (keyed by the main checkout), see below                                                                                  |
@@ -914,7 +914,7 @@ src/core/
   events.ts     typed bus; before_tool can veto, before_request can mutate
   agent.ts      the loop: model → tools → model, persist + emit each step
   session.ts    append-only JSONL store, compaction = summary entry + kept verbatim tail (keep)
-  context.ts    system prompt = base + AGENTS.md (upward + global) + skills + env
+  context.ts    system prompt = base + AGENTS.md / AGENTS.override.md (upward + global) + skills + env
   skills.ts     /save-as-skill drafts → SKILL.md
   diagnostics.ts after write/edit → project checker (tsc/pyright/ruff/go vet/cargo) → tool result
   scheduler.ts  tango task: due-check, per-run sessions, Feishu webhook, daemon loop

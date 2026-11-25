@@ -37,7 +37,7 @@
 - [ ] **7. 远程 MCP 服务器和常用清单**
   - grok：MCP 除了 stdio，还支持 HTTP / SSE 加自定义请求头。内置 GitHub、Supabase、Notion、Sentry、Figma 等常用服务器清单，可以在 `/mcps` 里添加和管理。见 `src/mcp/runtime.ts:11`、`src/mcp/catalog.ts`、`src/ui/mcp-modal.tsx`。
   - tango：只支持 stdio（`src/core/mcp.ts`），只能手写 config。
-- [ ] **8. `AGENTS.override.md`**
+- [x] **8. `AGENTS.override.md`**（按目录替换，不限于 git 根以下，沿用 tango 一直往上找的做法）
   - grok：从 git 根目录往下合并到当前目录，某一层有 `AGENTS.override.md` 时，这一层用它代替 `AGENTS.md`。见 `src/utils/instructions.ts:44`。
   - tango：从当前目录一直合并到文件系统根，只能叠加，不能覆盖（`src/core/context.ts:59`）。
 - [ ] **9. `@` 文件提及：模糊搜索和行号范围**

@@ -359,6 +359,11 @@ A repo can carry its own `.tango/config.json` (committed), and you can keep a pe
 `~/.tango/config.json`: single values come from the nearest file, rule and hook lists add up.
 `/config` shows every file and the merged result.
 
+Instructions work the same way. tango reads `AGENTS.md` from the current directory up to the
+filesystem root, plus `~/.tango/AGENTS.md`, and gives the model all of them (global first, nearest
+last). To change a shared `AGENTS.md` just for yourself, put an `AGENTS.override.md` next to it:
+in that directory tango reads the override instead, and the other directories are unaffected.
+
 Project hooks, permission rules, MCP servers and extra dirs can run commands or loosen access.
 The first time you open such a repo, tango lists them and asks whether to trust the project.
 Until you say yes they stay off; everything else in the file applies right away. The answer is

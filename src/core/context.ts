@@ -57,19 +57,31 @@ export async function discoverSkills(cwd: string): Promise<SkillInfo[]> {
   return skills;
 }
 
+/**
+ * The instructions file of one directory: AGENTS.override.md replaces that directory's AGENTS.md
+ * (a local, usually git-ignored variant), other directories are unaffected.
+ */
+function agentsFileIn(dir: string): string | undefined {
+  for (const name of ['AGENTS.override.md', 'AGENTS.md']) {
+    const f = join(dir, name);
+    if (existsSync(f)) return f;
+  }
+  return undefined;
+}
+
 /** Paths of the AGENTS.md files loadAgentsFiles reads, in the same order (global first, nearest last). */
 export function findAgentsFiles(cwd: string): string[] {
   const local: string[] = [];
   let dir = cwd;
   while (true) {
-    const f = join(dir, 'AGENTS.md');
-    if (existsSync(f)) local.unshift(f);
+    const f = agentsFileIn(dir);
+    if (f) local.unshift(f);
     const parent = dirname(dir);
     if (parent === dir) break;
     dir = parent;
   }
-  const global = join(tangoDir(), 'AGENTS.md');
-  return existsSync(global) ? [global, ...local] : local;
+  const global = agentsFileIn(tangoDir());
+  return global && !local.includes(global) ? [global, ...local] : local;
 }
 
 /** AGENTS.md from cwd upward to the filesystem root, plus global ~/.tango/AGENTS.md. Global first, nearest last. */
