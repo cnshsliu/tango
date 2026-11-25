@@ -203,6 +203,13 @@ default 10; `0` turns it off), or per model with `retries` in `models.json`. A w
 fails at once, since retrying cannot fix it. A reply that breaks off midway is not retried,
 because tango would have to throw away the text it already showed.
 
+Some gateways change what you send. Measured on 2026-11-25: `slb.apikey.fan` (the
+`apikeyfan/claude-opus-5-5` model) turns every `<` and `>` in the request into `[` and `]`
+before the model sees it, whether sent raw or JSON-escaped; the direct `zhipu-plan/glm-5.4`
+endpoint keeps them. On such a gateway the model can't read HTML, generics or shell redirects
+correctly in files and tool output. Switch models (`/model`) for that kind of work. To test a
+gateway, ask it for the code points of `A<B>C`: the answer should be `65 60 66 62 67`.
+
 ### Scripts and CI (one-shot runs)
 
 `tango "<prompt>"` runs one prompt without the TUI and prints the answer. For a script that needs
