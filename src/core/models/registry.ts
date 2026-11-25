@@ -928,14 +928,64 @@ export const presets: ModelSpec[] = [
     reasoning: true,
     cost: { input: 8, output: 40, cacheRead: 0.4, cacheWrite: 10, tiers: [{ above: 272000, input: 16, cacheRead: 0.8, cacheWrite: 20, output: 60 }] }
   },
+  // OpenRouter (openrouter.ai) — one key over many upstream providers, so the same model can be
+  // bought here when its own vendor key runs out. Free variants keep OpenRouter's `:free` suffix
+  // (zero cost, lower rate limits). Checked 2026-11-25 against /api/v1/models; prices are the
+  // catalog's per-token list prices. Free and paid sit in the same group on purpose: the suffix
+  // is what separates them, and the model search matches it.
+  ...([
+    ['baidu/ernie-5.5-flash-preview:free', 1024000, 0, 0, 0, false],
+    ['inclusionai/ling-3.2-flash:free', 1048576, 0, 0, 0, true],
+    ['particle-ai/particle-1:free', 1048576, 0, 0, 0, true],
+    ['nvidia/nemotron-3.5-super-vl:free', 1000000, 0, 0, 0, true],
+    ['nvidia/nemotron-3.5-lightning:free', 1000000, 0, 0, 0, false],
+    ['nvidia/nemotron-3-ultra-550b-a55b:free', 1000000, 0, 0, 0, false],
+    ['google/gemma-4-26b-a4b-it:free', 262144, 0, 0, 0, true],
+    ['google/gemma-4-31b-it:free', 262144, 0, 0, 0, true],
+    ['liquid/lfm-3-1.7b:free', 262144, 0, 0, 0, false],
+    ['recursive/flint-v1.0:free', 262144, 0, 0, 0, false],
+    ['anthropic/claude-opus-5.5', 1000000, 4, 20, 0.2, true],
+    ['anthropic/claude-sonnet-5.5', 1000000, 2, 10, 0.1, true],
+    ['anthropic/claude-haiku-5.5', 1000000, 0.1, 0.5, 0.01, true],
+    ['openai/gpt-6-astra', 1050000, 10, 50, 1, true],
+    ['openai/gpt-6.1-terra', 1050000, 1, 5, 0.05, true],
+    ['openai/gpt-6.2-sol', 1050000, 2, 10, 0.1, true],
+    ['google/gemini-4-carbon', 1048576, 2, 10, 0.1, true],
+    ['google/gemini-3.8-flash', 1048576, 0.825, 4.125, 0.0825, true],
+    ['x-ai/grok-4.7', 500000, 2, 6, 0.5, true],
+    ['moonshotai/kimi-k3.1-pro', 1048576, 0.2403, 8.4023, 0.2, true],
+    ['z-ai/glm-5.3', 1048576, 0.0699, 1.4, 0.0689, false],
+    ['z-ai/glm-5.3-flash', 1048576, 0.12, 0.38, 0.02, true],
+    ['qwen/qwen3.8-max-0902', 1000000, 2, 6, 0.25, true],
+    ['qwen/qwen3.8-flash', 1000000, 0.15, 0.47, 0.016, true],
+    ['deepseek/deepseek-v4-pro', 1048576, 1.28, 2.56, 0.108, false],
+    ['deepseek/deepseek-v4.1-flash', 1048576, 0.14, 0.42, 0.0042, true],
+    ['minimax/minimax-m3', 1048576, 0.3, 1.2, 0.06, true],
+    ['mistralai/mistral-large-4-0', 1048576, 0.7, 2.1, 0.07, true]
+  ] as const).map(([model, contextWindow, input, output, cacheRead, vision]) => ({
+    id: `openrouter/${model}`,
+    platform: 'openrouter',
+    provider: 'openrouter',
+    model,
+    api: 'openai-completions' as const,
+    baseUrl: 'https://openrouter.ai/api/v1',
+    apiKey: 'OPENROUTER_API_KEY',
+    region: 'intl' as const,
+    contextWindow,
+    maxTokens: 32768,
+    reasoning: true,
+    reasoningField: 'reasoning',
+    vision,
+    cost: { input, output, cacheRead }
+  })),
   // Local Phai on NovaMLX (127.0.0.1:6590, OpenAI-compatible). Checked 2026-11-22: tool calls,
   // JSON output, reasoning_content on by default; text only (images get HTTP 400). ~41 tok/s,
-  // one request at a time. Last so it never becomes the default.
+  // one request at a time. Last so it never becomes the default. No explicit platform: a
+  // platform would keep it out of the free bucket (see displayPlatform).
   {
     id: 'local/phai-a1-35b',
     region: 'gateway',
     provider: 'novamlx',
-    platform: 'novamlx',
     model: 'PhaiModelLab/Phai-A1-35B-1M-MLX-4bit',
     api: 'openai-completions',
     baseUrl: 'http://127.0.0.1:6590/v1',
@@ -966,9 +1016,14 @@ export function isFreeModel(m: ModelSpec): boolean {
   return !!m.cost && m.cost.input === 0 && m.cost.output === 0;
 }
 
-/** Display platform: zero-cost models collect into the virtual "free" platform, whatever their source. */
+/**
+ * Display platform: an explicit platform keeps its models together (OpenRouter lists free and
+ * paid side by side). Models without one collect into the virtual "free" platform when they cost
+ * nothing, whatever their source.
+ */
 export function displayPlatform(m: ModelSpec): string {
-  return isFreeModel(m) ? 'free' : platformOf(m);
+  if (m.platform) return m.platform;
+  return isFreeModel(m) ? 'free' : m.provider;
 }
 
 /** Group models for display: virtual "free" first, then source platforms in first-appearance order. */

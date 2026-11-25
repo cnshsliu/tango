@@ -104,6 +104,29 @@ test('local Phai preset: NovaMLX endpoint, key from NOVA_API_KEY, text only, nev
   assert.equal(presets.at(-1)!.id, phai.id, 'appended last so it never becomes the default');
 });
 
+test('openrouter presets: free and paid share one group, the :free suffix marks the free ones', () => {
+  const or = presets.filter((m) => m.platform === 'openrouter');
+  assert.ok(or.length >= 20, `expected the catalog, got ${or.length}`);
+  for (const m of or) {
+    assert.equal(m.provider, 'openrouter');
+    assert.equal(m.api, 'openai-completions');
+    assert.equal(m.baseUrl, 'https://openrouter.ai/api/v1');
+    assert.equal(m.apiKey, 'OPENROUTER_API_KEY');
+    assert.ok(m.id.startsWith('openrouter/'), m.id);
+    assert.ok((m.contextWindow ?? 0) > 0, m.id);
+    assert.ok(m.cost, m.id);
+    // zero cost and the suffix must agree: no free model without the mark, no mark without the price
+    assert.equal(isFreeModel(m), m.model.endsWith(':free'), m.id);
+  }
+  const groups = groupModels(presets);
+  const orGroup = groups.find(([p]) => p === 'openrouter')?.[1] ?? [];
+  assert.ok(orGroup.some((m) => isFreeModel(m)) && orGroup.some((m) => !isFreeModel(m)), 'both halves in one group');
+  const freeGroup = groups.find(([p]) => p === 'free')?.[1] ?? [];
+  assert.ok(!freeGroup.some((m) => m.platform === 'openrouter'), 'a platform keeps its free models out of the free bucket');
+  assert.ok(freeGroup.some((m) => m.id === 'local/phai-a1-35b'), 'a zero-cost model with no platform still lists as free');
+  assert.ok(presets.find((m) => m.id === 'openrouter/baidu/ernie-5.5-flash-preview:free'), 'free ERNIE registered');
+});
+
 test('presets: ids stay unique after the opencode batch; existing defaults unchanged', () => {
   assert.equal(new Set(presets.map((m) => m.id)).size, presets.length);
   assert.equal(presets[0].id, 'tknet/qwen3.8-flash-next', 'tknet stays the first default');

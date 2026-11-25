@@ -98,8 +98,8 @@ export interface ModelSpec {
   region?: 'cn' | 'intl' | 'gateway';
   /**
    * Source platform (tokenhub) the model is reached through, e.g. "opencode", "tknet".
-   * Defaults to `provider` when unset. Display grouping uses this; zero-cost models are
-   * additionally collected into the virtual "free" platform (see groupModels).
+   * Defaults to `provider` when unset. Display grouping uses this; zero-cost models with no
+   * platform are additionally collected into the virtual "free" platform (see groupModels).
    */
   platform?: string;
 }
