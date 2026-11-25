@@ -14,6 +14,7 @@ import { existsSync, realpathSync } from 'node:fs';
 import { createRequire as nodeCreateRequire } from 'node:module';
 import { createInterface } from 'node:readline';
 import { randomUUID } from 'node:crypto';
+import { cwdMissingMessage } from './core/agent.js';
 import { buildContext } from './core/context.js';
 import { reconcileTasks, startBgTask, stopTask, updateTask, type BgTask } from './core/bgtask.js';
 import { bridgeName, connectServers } from './core/mcp.js';
@@ -24,7 +25,9 @@ import { restoreSnapshot, snapshotFileList } from './core/git-snapshot.js';
 import { type Config, hasKey, keyProblem, loadConfig, loadModels, pickModel, saveConfig, sessionsDir, tangoDir } from './core/config.js';
 import { loadImages } from './core/images.js';
 import { listDrafts, promoteDraft, saveDraft } from './core/skills.js';
+import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { listCwds, rememberCwd } from './core/cwds.js';
 import { SessionStore, relativeTime, shortId } from './core/session.js';
 import { cancelHandoff, drainHandoffs, listHandoffs, purgeExpiredHandoffs, queueHandoff } from './core/handoff.js';
 import { drainMail, sendMail } from './core/mail.js';
@@ -38,6 +41,13 @@ import { buildTools, loadPluginHooks, openAgent, resolveSessionId, VERSION, type
 import { diffTool } from './core/tools/diff.js';
 
 const nodeRequire = nodeCreateRequire(import.meta.url);
+
+/** `~` and `~/…` expand before resolve, so a missing cwd does not swallow an absolute home path. */
+function expandHome(dir: string): string {
+  if (dir === '~') return homedir();
+  if (dir.startsWith('~/')) return join(homedir(), dir.slice(2));
+  return dir;
+}
 
 export const PROTOCOL = 1;
 
@@ -360,6 +370,8 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
         : `— 会话仍在 ${cwd} 里运行，不受影响`;
     out({ type: 'notice', text: `⚠ ${what.replace(/^⚠ /, '')} ${tail}` });
   }
+  if (existsSync(cwd)) rememberCwd(cwd);
+  else out({ type: 'cwd_missing', cwd, dirs: await cwdChoices() });
   for (const src of opened.resolved.sources) {
     if (src.error) out({ type: 'notice', text: `⚠ 配置文件已跳过：${src.path}（${src.error}）` });
   }
@@ -662,6 +674,18 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
     }
   }
 
+  async function cwdChoices(): Promise<string[]> {
+    const sessions = await SessionStore.list(sessionsDir()).catch(() => []);
+    return listCwds(sessions.map((s) => s.cwd));
+  }
+
+  /** The directory is gone: tell the UI to open the picker. The caller replies with the error. */
+  async function missingCwd(): Promise<boolean> {
+    if (existsSync(cwd)) return false;
+    out({ type: 'cwd_missing', cwd, dirs: await cwdChoices() });
+    return true;
+  }
+
   async function handle(cmd: Command): Promise<void> {
     switch (cmd.cmd) {
       case 'prompt': {
@@ -675,6 +699,7 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
           ? '\n# Plan mode\n当前处于 plan 模式：只做研究和计划，不要尝试写入或执行修改；产出清晰执行计划，等用户批准后 /plan off 再执行。'
           : undefined;
         try {
+          if (await missingCwd()) return reply(cmd, false, undefined, cwdMissingMessage(cwd));
           const images = imagePaths.length ? await loadImages(imagePaths, cwd) : undefined;
           if (images?.length && agent.model.vision !== true) {
             out({
@@ -1141,6 +1166,7 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
             ? '你是资深代码评审。审查以下工作区 diff：找出正确性问题（逻辑错误、边界、错误处理）、可读性问题与测试缺口。按 严重度 排序列出发现，每条给出文件:行 与修复建议；没有实质问题就明说。用中文。'
             : '你是安全评审专家。审查以下工作区 diff：找出注入、路径穿越、命令注入、密钥泄露、越权与不安全的依赖变更。按 严重度 排序列出，每条给出文件:行 与修复建议；没有风险就明说。用中文。';
         const text = `${instructions}\n\n<diff>\n${diffText.slice(0, 60_000)}\n</diff>`;
+        if (await missingCwd()) return reply(cmd, false, undefined, cwdMissingMessage(cwd));
         try {
           const msg = await agent.prompt(text, (ev) => { if (ev.type !== 'done') out({ type: 'stream', event: ev }); });
           reply(cmd, true, { done: true, reviewed: true, stopReason: msg.stopReason ?? 'stop' });
@@ -1164,7 +1190,7 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
         return;
       }
       case 'cd': {
-        const dir = String(cmd.dir ?? '').trim();
+        const dir = expandHome(String(cmd.dir ?? '').trim());
         const target = resolve(cwd, dir);
         const { statSync } = await import('node:fs');
         let isDir = false;
@@ -1173,6 +1199,7 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
         } catch {}
         if (!isDir) return reply(cmd, false, undefined, `cd: not a directory: ${target}`);
         cwd = target;
+        rememberCwd(target);
         await agent.setCwd(target);
         await store.append({ kind: 'meta', id: store.id, createdAt: store.meta()?.createdAt ?? new Date().toISOString(), cwd: target, name: store.meta()?.name });
         // the TUI footer shows `dir:branch`: report the branch of the new cwd ('' outside git)
@@ -1182,6 +1209,10 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
       }
       case 'pwd': {
         reply(cmd, true, { cwd });
+        return;
+      }
+      case 'cwds': {
+        reply(cmd, true, { dirs: await cwdChoices() });
         return;
       }
       case 'add_dir': {
@@ -2070,7 +2101,7 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
     // (e.g. "always allow" from a permission dialog), so they skip the prompt queue too
     const guarded = (p: Promise<unknown>) =>
       void p.catch((e) => out({ type: 'error', message: String(e?.message ?? e) }));
-    if (['set_mode', 'status', 'timeline', 'context', 'queue', 'usage', 'stats', 'insights', 'preset_save', 'preset_list', 'preset_get', 'permissions_list', 'permissions_add', 'permissions_remove', 'import', 'cd', 'pwd', 'add_dir', 'config_show', 'init', 'doctor', 'debug_zip', 'set_plan', 'set_effort', 'memory', 'remember', 'skills', 'goal', 'loop', 'worktree_create', 'worktree_list', 'worktree_remove', 'worktree_merge', 'tasks', 'agents_show', 'agents_set', 'mcp_list', 'plugins_list', 'send'].includes(cmd.cmd)) {
+    if (['set_mode', 'status', 'timeline', 'context', 'queue', 'usage', 'stats', 'insights', 'preset_save', 'preset_list', 'preset_get', 'permissions_list', 'permissions_add', 'permissions_remove', 'import', 'cd', 'pwd', 'cwds', 'add_dir', 'config_show', 'init', 'doctor', 'debug_zip', 'set_plan', 'set_effort', 'memory', 'remember', 'skills', 'goal', 'loop', 'worktree_create', 'worktree_list', 'worktree_remove', 'worktree_merge', 'tasks', 'agents_show', 'agents_set', 'mcp_list', 'plugins_list', 'send'].includes(cmd.cmd)) {
       guarded(handle(cmd));
       void checkSubtasks(); // immediate lane only: never between a prompt line and its turn start
       return;

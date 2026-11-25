@@ -422,6 +422,37 @@ test('effort: reasoning_effort rides openai requests; off omits it', async () =>
   }
 });
 
+test('a turn refuses to start when the working directory is gone', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'tango-cwd-home-'));
+  const work = await mkdtemp(join(tmpdir(), 'tango-cwd-work-'));
+  try {
+    const store = await SessionStore.create(home, work);
+    const agent = new Agent({
+      store,
+      tools: new ToolRegistry(),
+      cwd: work,
+      model: { id: 'm/m', provider: 'm', model: 'm', api: 'openai-completions', baseUrl: 'http://127.0.0.1:9/v1', apiKey: 'k', contextWindow: 1000 }
+    });
+    await rm(work, { recursive: true, force: true });
+    await assert.rejects(agent.prompt('hi'), /工作目录不存在：/);
+    await assert.rejects(agent.prompt('hi'), /请选择用过的目录/);
+    assert.equal(store.messages().length, 0, 'the prompt is not stored when the directory is gone');
+  } finally {
+    await rm(home, { recursive: true, force: true });
+    await rm(work, { recursive: true, force: true });
+  }
+});
+
+test('bash with a missing cwd reports the error instead of crashing the process', async () => {
+  const { bashTool } = await import('../src/core/tools/bash.js');
+  const cwd = '/tmp/tango-missing-cwd-does-not-exist';
+  const r = await bashTool.execute({ command: 'echo hi' }, { cwd, signal: new AbortController().signal });
+  assert.equal(r.isError, true);
+  const body = String(r.content[0].text);
+  assert.match(body, /cwd does not exist/);
+  assert.ok(body.includes(cwd), body);
+});
+
 test('bash abort and timeout kill the whole process group, not just the shell wrapper', async () => {
   const { bashTool } = await import('../src/core/tools/bash.js');
   // abort mid-run: a curl/sleep grandchild must die with the shell

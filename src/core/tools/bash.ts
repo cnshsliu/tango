@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import type { Tool } from '../types.js';
 import { describe, startProcess, startup, tail } from '../processes.js';
 import { error, text, truncate } from './registry.js';
@@ -67,16 +68,31 @@ export const bashTool: Tool<{ command: string; timeout?: number; background?: bo
       const onAbort = killGroup;
       ctx.signal.addEventListener('abort', onAbort, { once: true });
 
-      child.on('close', (code) => {
+      // 'error' with no listener kills the whole serve process (Node's default).
+      // A missing cwd fails this way: spawn() itself does not throw.
+      let started = false;
+      let settled = false;
+      const finish = (text: string, isError: boolean) => {
+        if (settled) return;
+        settled = true;
         clearTimeout(timer);
         ctx.signal.removeEventListener('abort', onAbort);
+        resolvePromise({ content: [{ type: 'text', text }], isError });
+      };
+      child.on('spawn', () => { started = true; });
+      child.on('error', (e) => {
+        if (started) return; // the close handler reports the exit
+        const why = existsSync(ctx.cwd)
+          ? `cannot run command: ${e.message}`
+          : `cannot run command: cwd does not exist: ${ctx.cwd}`;
+        finish(why, true);
+      });
+      child.on('close', (code) => {
+        if (!started) return;
         const body = truncate(out.trimEnd());
         // killed by the user's interrupt: say so instead of the meaningless `[exit null]`
         const tailNote = code === 0 ? '' : ctx.signal.aborted ? '\n[interrupted]' : `\n[exit ${code}]`;
-        resolvePromise({
-          content: [{ type: 'text', text: body + tailNote }],
-          isError: code !== 0
-        });
+        finish(body + tailNote, code !== 0);
       });
     });
   }

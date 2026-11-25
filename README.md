@@ -302,7 +302,9 @@ reports every entry it could not represent (codex reads trusted `command = "…"
 `~/.codex/config.toml`, loose TOML scan, `path:` override for testing). Bash rules cover only
 the command segments they match: a risky command later in the same line (`git status; rm …`)
 still asks unless its own command word is allowed too. `/export` and `/insights` write into `~/.tango/exports/` (never dirty the repo). `/cd <dir>` moves the session working directory (agent,
-tools and checkpoints follow live); `/add_dir <dir>` registers an extra writable root.
+tools and checkpoints follow live). Bare `/cd` opens the directories used before; `/cd /path`
+or `/cd ~/path` switches directly. A prompt does not start when that directory is gone:
+tango opens the same picker instead of calling the model. `/add_dir <dir>` registers an extra writable root.
 
 ## Observability
 
@@ -505,7 +507,9 @@ and later web/IDE shells — plug into; the core never knows which face is attac
 Other frames: `notice` (a chat-line message such as a skipped config file or goal status),
 `retry` (`attempt`, `max`, `reason`, `delayMs`, `text`: a model request failed before any output
 and is retried after `delayMs`; the TUI prints `text` as a muted line),
-`error` (a failed command without a request id; `fatal: true` when serve cannot start), and
+`error` (a failed command without a request id; `fatal: true` when serve cannot start),
+`cwd_missing` (`cwd`, `dirs`: the session directory is gone; `dirs` are directories the user
+has used that still exist; the TUI opens a picker, and `/cd` or a typed `/路径` switches), and
 `trust_request` (`root`, `keys`, `files`: the project's config has trust-gated keys and no
 decision yet; answer with `set_trust`).
 
@@ -517,7 +521,7 @@ reply data. Most of these also skip the prompt queue.
 | settings | `set_effort` (`level`), `set_plan` (`on`), `set_autocompact` (`value`, 0 = off), `set_statusline` (`template`, null clears), `set_bubble` (`bubble`), `set_animations` (`animations`), `set_ascii` (`ascii`), `set_clipboard` (`clipboard`: auto, osc52 or native) |
 | config and trust | `config_show` (→ merged `config`, `sources`, `line`), `trust_status` (→ `root`, `trusted`, `gated`, `line`), `set_trust` (`trusted` → `reload`: restart serve to apply) |
 | permissions | `permissions_list` (→ `allow` with each rule's layer), `permissions_add` / `permissions_remove` (`rule` → `allow`, `path` of the file written), `import` (`source`: claude-code, grok or codex; `path` → `imported`, `skipped`) |
-| directories | `cd` (`dir` → `cwd`, `branch`), `pwd` (→ `cwd`), `add_dir` (`dir` → `extraDirs`, `path`) |
+| directories | `cd` (`dir` → `cwd`, `branch`; `~` expands), `pwd` (→ `cwd`), `cwds` (→ `dirs`, directories used before that still exist), `add_dir` (`dir` → `extraDirs`, `path`) |
 | background work | `bg` (`prompt`, `name`, `long`), `subtask` (`prompt`, `name`; runs in its own worktree), `tasks` (→ `tasks`), `stop_task` (task `id`) |
 | worktrees | `worktree_create` (`name`, `base`), `worktree_list`, `worktree_merge` (`name`), `worktree_remove` (`name`, `force`) |
 | goals | `goal` (`op`, `text`; → `goal`, `paused`, `maxRounds`), `loop` (`prompt`, `everySec`, or `off`) |

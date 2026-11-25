@@ -2936,3 +2936,4 @@ test('serve hooks: /bg and /subtask fire TaskCreated/SubagentStart (exit 2 refus
     await rm(work, { recursive: true, force: true });
   }
 });
+

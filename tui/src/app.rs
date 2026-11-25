@@ -467,6 +467,8 @@ enum Pending {
     PluginsList,
     Trust,
     TrustStatus,
+    /// bare /cd: the remembered-directory picker
+    Cwds,
     /// quiet fetches for argument completion: never print, never open a picker
     ArgModels,
     ArgSessions,
@@ -497,6 +499,8 @@ enum PickerKind {
     Worktree,
     /// first start in a project whose config would run commands or widen access
     Trust,
+    /// bare /cd, or the session cwd is gone: pick a directory used before, or type one
+    Cwd,
 }
 
 #[derive(Clone)]
@@ -568,11 +572,19 @@ impl Picker {
                 | PickerKind::TakeoverSource
                 | PickerKind::Command
                 | PickerKind::History
+                | PickerKind::Cwd
         )
     }
 
     fn filtered_items(&self) -> Vec<&PickItem> {
-        let query = self.query.trim().to_lowercase();
+        // a typed path is not a filter: keep every remembered directory visible
+        let raw = self.query.trim();
+        if self.kind == PickerKind::Cwd
+            && (raw.starts_with('/') || raw.starts_with('~') || raw.starts_with('.'))
+        {
+            return self.items.iter().collect();
+        }
+        let query = raw.to_lowercase();
         // every word must appear (as an in-order subsequence, separators skippable)
         // in the id, label or note — "glm54" finds zhipu-plan/glm-5.4. Matching stays
         // inside one token (a run of alphanumerics, '-', '.', '_'): matching across a
@@ -805,7 +817,10 @@ const SLASH: &[(&str, &str)] = &[
     ),
     ("/rewind", "打开时间轴：代码+对话+上下文整体回滚"),
     ("/add_dir <dir>", "添加 cwd 之外的额外可写目录（持久化）"),
-    ("/cd <dir>", "切换会话工作目录（工具与快照跟随）"),
+    (
+        "/cd <dir>",
+        "切换工作目录。裸 /cd 弹出用过的目录；/cd /路径 或 ~/路径 直接切换",
+    ),
     ("/pwd", "显示当前工作目录"),
     (
         "/agents [role model]",
@@ -4195,10 +4210,10 @@ impl App {
             }
             "/cd" => {
                 if rest.is_empty() {
-                    self.push("usage: /cd <dir>", Tone::Muted);
+                    let id = serve.command("cwds", vec![]);
+                    self.pending.push((id, Pending::Cwds));
                 } else {
-                    let id = serve.command("cd", vec![("dir", Value::String(rest.trim().into()))]);
-                    self.pending.push((id, Pending::Cd));
+                    self.cd_to(rest.trim(), serve);
                 }
             }
             "/add_dir" => {
@@ -5745,12 +5760,56 @@ impl App {
         false
     }
 
+    fn cd_to(&mut self, dir: &str, serve: &mut Serve) {
+        let id = serve.command("cd", vec![("dir", Value::String(dir.trim().into()))]);
+        self.pending.push((id, Pending::Cd));
+    }
+
+    fn open_cwd_picker(&mut self, dirs: &[String]) {
+        let mut items: Vec<PickItem> = dirs
+            .iter()
+            .map(|dir| PickItem {
+                group: String::new(),
+                id: dir.clone(),
+                label: dir.clone(),
+                note: String::new(),
+                warn: false,
+                current: self
+                    .serve_cwd
+                    .as_ref()
+                    .is_some_and(|c| c.to_string_lossy() == dir.as_str()),
+            })
+            .collect();
+        items.push(PickItem {
+            group: String::new(),
+            id: "__input__".into(),
+            label: "自己输入路径".into(),
+            note: "回车后在输入框里写 /路径 或 ~/路径".into(),
+            warn: false,
+            current: false,
+        });
+        self.picker = Some(Picker::new(PickerKind::Cwd, items));
+    }
+
     fn accept_picker(&mut self, serve: &mut Serve) {
+        let query = self
+            .picker
+            .as_ref()
+            .map(|p| p.query.trim().to_string())
+            .unwrap_or_default();
+        let cwd_pick = self.picker.as_ref().map(|p| p.kind) == Some(PickerKind::Cwd);
         let picked = self
             .picker
             .as_ref()
             .and_then(|p| p.selected_item().map(|item| (p.kind, item)));
         self.picker = None;
+        // a path typed in the cwd picker is the directory, not a filter
+        if cwd_pick
+            && (query.starts_with('/') || query.starts_with('~') || query.starts_with('.'))
+        {
+            self.cd_to(&query, serve);
+            return;
+        }
         if let Some((kind, item)) = picked {
             match kind {
                 PickerKind::Model => {
@@ -5848,6 +5907,19 @@ impl App {
                             self.push(format!("↻ resuming session {sid} …"), Tone::Muted);
                             self.switch_session(Some(sid.to_string()));
                         }
+                    }
+                }
+                PickerKind::Cwd => {
+                    if item.id == "__input__" {
+                        let prefill = if query.is_empty() {
+                            "/cd ".to_string()
+                        } else {
+                            format!("/cd {query}")
+                        };
+                        self.input = prefill.chars().collect();
+                        self.cursor = self.input.len();
+                    } else {
+                        self.cd_to(&item.id, serve);
                     }
                 }
                 PickerKind::Command => self.run_slash(&item.id, serve),
@@ -8263,6 +8335,17 @@ impl App {
                             self.serve_branch = d["branch"].as_str().unwrap_or("").to_string();
                             self.push(format!("cwd → {cwd}"), Tone::Success);
                         }
+                        (Pending::Cwds, true) => {
+                            let dirs = d["dirs"]
+                                .as_array()
+                                .map(|a| {
+                                    a.iter()
+                                        .filter_map(|v| v.as_str().map(str::to_string))
+                                        .collect::<Vec<_>>()
+                                })
+                                .unwrap_or_default();
+                            self.open_cwd_picker(&dirs);
+                        }
                         (Pending::AddDir, true) => {
                             let n = d["extraDirs"].as_array().map(|a| a.len()).unwrap_or(0);
                             let path = d["path"].as_str().unwrap_or("config.json");
@@ -8650,6 +8733,24 @@ impl App {
                 format!("error: {}", v["message"].as_str().unwrap_or("?")),
                 Tone::Error,
             ),
+            "cwd_missing" => {
+                let cwd = v["cwd"].as_str().unwrap_or("");
+                let msg = format!(
+                    "error: 工作目录不存在：{cwd}。请选择用过的目录，或输入 /路径（也可 /cd <目录>）。"
+                );
+                if self.lines.last().map(|l| l.text.as_str()) != Some(msg.as_str()) {
+                    self.push(msg, Tone::Error);
+                }
+                let dirs = v["dirs"]
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|x| x.as_str().map(str::to_string))
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                self.open_cwd_picker(&dirs);
+            }
             _ => {}
         }
     }
@@ -10000,8 +10101,11 @@ impl App {
                 PickerKind::Theme => "选择主题",
                 PickerKind::NvimBackend => "检测到 Neovim，如何查看？",
                 PickerKind::EditResolution => "内容已修改，如何处理？",
+                PickerKind::Cwd => "选择工作目录",
             };
-            let hint = if p.filterable() {
+            let hint = if p.kind == PickerKind::Cwd {
+                "输入 /路径 回车直接切换 · ↑↓ 选择用过的目录 · 末项自己输入 · esc 取消"
+            } else if p.filterable() {
                 "输入 过滤 · ↑↓/滚轮 选择 · enter 确认 · esc 取消"
             } else {
                 match p.kind {
@@ -10092,7 +10196,15 @@ impl App {
                 rows.insert(
                     0,
                     Line::from(Span::styled(
-                        format!(" 搜索: {}", p.query),
+                        format!(
+                            " {}: {}",
+                            if p.kind == PickerKind::Cwd {
+                                "目录"
+                            } else {
+                                "搜索"
+                            },
+                            p.query
+                        ),
                         self.theme.style(Tone::Muted),
                     )),
                 );
@@ -14605,6 +14717,47 @@ mod tests {
         let sent4: Value = serde_json::from_str(&serve.sent[2]).unwrap();
         assert_eq!(sent4["cmd"], "cd");
         assert_eq!(sent4["dir"], "sub");
+        app.run_slash("/cd", &mut serve);
+        let sent5: Value = serde_json::from_str(serve.sent.last().unwrap()).unwrap();
+        assert_eq!(sent5["cmd"], "cwds");
+    }
+
+    #[test]
+    fn missing_cwd_opens_a_picker_and_a_typed_path_switches() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.frame(
+            json!({"type": "cwd_missing", "cwd": "/gone", "dirs": ["/Users/lucas/tango", "/tmp"]}),
+            &mut serve,
+        );
+        assert!(app.lines.iter().any(|l| l.text.contains("工作目录不存在：/gone")));
+        let picker = app.picker.as_ref().unwrap();
+        assert_eq!(picker.kind, PickerKind::Cwd);
+        assert_eq!(picker.items[0].id, "/Users/lucas/tango");
+        assert_eq!(picker.items.last().unwrap().id, "__input__");
+        app.accept_picker(&mut serve);
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        assert_eq!(sent["cmd"], "cd");
+        assert_eq!(sent["dir"], "/Users/lucas/tango");
+
+        app.frame(
+            json!({"type": "cwd_missing", "cwd": "/gone", "dirs": ["/tmp"]}),
+            &mut serve,
+        );
+        app.picker.as_mut().unwrap().query = "/Users/lucas/other".into();
+        app.accept_picker(&mut serve);
+        let sent2: Value = serde_json::from_str(serve.sent.last().unwrap()).unwrap();
+        assert_eq!(sent2["dir"], "/Users/lucas/other");
+
+        app.frame(
+            json!({"type": "cwd_missing", "cwd": "/gone", "dirs": ["/tmp"]}),
+            &mut serve,
+        );
+        let last = app.picker.as_ref().unwrap().items.len() - 1;
+        app.picker.as_mut().unwrap().sel = last;
+        app.accept_picker(&mut serve);
+        assert!(app.picker.is_none());
+        assert_eq!(app.input.iter().collect::<String>(), "/cd ");
     }
 
     #[test]

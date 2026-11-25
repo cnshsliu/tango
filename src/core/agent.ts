@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { buildContext, findAgentsFiles } from './context.js';
 import { EventBus } from './events.js';
 import { adapterFor, costUsd } from './models/registry.js';
@@ -15,6 +16,11 @@ import type {
   ToolResult,
   ToolResultBlock
 } from './types.js';
+
+/** Shown when a turn would start in a directory that is no longer there. */
+export function cwdMissingMessage(cwd: string): string {
+  return `工作目录不存在：${cwd}。请选择用过的目录，或输入 /路径（也可 /cd <目录>）。`;
+}
 
 export interface AgentOptions {
   store: SessionStore;
@@ -174,6 +180,7 @@ export class Agent {
 
   /** Append a user message and loop (model → tools → model) until the model stops. */
   async prompt(text: string, onStream?: (ev: StreamEvent) => void, images?: ImageBlock[]): Promise<Message> {
+    if (!existsSync(this.cwd)) throw new Error(cwdMissingMessage(this.cwd));
     this.prompted = true;
     const rejected = await this.events.emit('before_prompt', { text });
     if (rejected && rejected.block) throw new Error(`prompt blocked by hook: ${rejected.reason}`);

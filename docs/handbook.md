@@ -393,7 +393,7 @@ while a turn is running unless noted. `/help` prints a short list inside the TUI
 | `/stop <id or name>` | Kill a running background task |
 | `/worktree` | List managed worktrees |
 | `/worktree new <name>` · `rm <name>` · `merge <name>` | Create, remove (refused if dirty) or merge one into the current branch |
-| `/cd <dir>` | Move the session's working directory. Tools and snapshots follow |
+| `/cd <dir>` | Move the session's working directory. Tools and snapshots follow. Bare `/cd` lists directories you have used and lets you type a `/path` or `~/path`. A turn does not start when that directory is gone; the same picker opens |
 | `/pwd` | Show the working directory |
 | `/add_dir <dir>` | Add a writable directory outside the project (saved) |
 
