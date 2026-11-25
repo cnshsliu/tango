@@ -28,6 +28,12 @@ const RISKY_BASH: [RegExp, string][] = [
   [/git\s+reset\s+--hard/, 'discards uncommitted work'],
   [/git\s+(clean|checkout\s+--|restore)\b/, 'discards local changes'],
   [/git\s+branch\s+-D/, 'deletes a branch'],
+  [/git\s+checkout\s+(\.(\s|$)|-f\b|--force\b)|git\s+switch\s+.*(-f\b|--force\b|--discard-changes)/, 'discards local changes'],
+  [/git\s+stash\s+(drop|clear)\b/, 'deletes stashed work'],
+  [/git\s+worktree\s+remove\b/, 'deletes a worktree'],
+  [/(^|[\s;&|(])find\s.*\s(-delete\b|-exec(dir)?\s+rm\b)/, 'deletes files'],
+  [/(^|[\s;&|(])rsync\s.*--delete/, 'deletes files at the destination'],
+  [/(docker|podman)\s+(\S+\s+)?prune\b/, 'deletes containers, images or volumes'],
   [/(npm|pnpm|yarn)\s+publish/, 'publishes a package'],
   [/(curl|wget)[^|]*\|\s*(ba|z)?sh/, 'runs a downloaded script'],
   // /dev/null is the universal sink — redirecting there is never a system write.

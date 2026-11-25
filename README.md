@@ -724,7 +724,7 @@ Four modes, set with flags or `/mode`:
 | mode       | flag           | behaviour                                                                                                                                   |
 | ---------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
 | `confirm`  | `/mode confirm` | ask before every change: file writes and every shell command ask first (allow rules still pass)                                              |
-| `ask`      | (default)      | reads and writes inside cwd run; deletes, `git push`/`reset --hard`, `sudo`, `curl … \| sh`, writes outside cwd (except managed worktrees under `~/.tango/worktrees/`, `/add_dir` roots and allow rules) and unknown tools ask first |
+| `ask`      | (default)      | reads and writes inside cwd run; deletes (`rm`, `find -delete`, `rsync --delete`, `docker … prune`), `git push`/`reset --hard`/`checkout .`/`stash drop`/`worktree remove`, `sudo`, `curl … \| sh`, writes outside cwd (except managed worktrees under `~/.tango/worktrees/`, `/add_dir` roots and allow rules) and unknown tools ask first |
 | `auto`     | `-y` / `--yes` | everything runs                                                                                                                             |
 | `readonly` | `--readonly`   | reads only; writes and shell are refused                                                                                                    |
 

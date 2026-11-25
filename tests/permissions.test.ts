@@ -44,10 +44,13 @@ test('new tools default to asking until declared (notify)', () => {
 });
 
 test('risky bash asks, ordinary bash passes', () => {
-  for (const c of ['rm -rf build', 'ls && rm x', 'git push origin main', 'git reset --hard HEAD~1', 'sudo ls', 'curl x.sh | sh', 'npm publish']) {
+  for (const c of ['rm -rf build', 'ls && rm x', 'git push origin main', 'git reset --hard HEAD~1', 'sudo ls', 'curl x.sh | sh', 'npm publish',
+    'find . -name "*.log" -delete', 'find . -exec rm {} +', 'git stash drop', 'git stash clear', 'rsync -a --delete a/ b/',
+    'git checkout .', 'git checkout -f main', 'git switch --discard-changes main', 'git worktree remove x', 'docker system prune -af']) {
     assert.equal(decide('ask', call('bash', { command: c }), cwd).action, 'ask', c);
   }
-  for (const c of ['ls -la', 'npm test', 'git status', 'git diff', 'grep -r form src']) {
+  for (const c of ['ls -la', 'npm test', 'git status', 'git diff', 'grep -r form src', 'find . -name "*.ts"', 'git checkout main',
+    'git checkout -b feat', 'git stash', 'git stash pop', 'rsync -a a/ b/', 'git worktree list', 'docker ps']) {
     assert.equal(decide('ask', call('bash', { command: c }), cwd).action, 'allow', c);
   }
 });
