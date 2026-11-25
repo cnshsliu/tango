@@ -55,7 +55,7 @@
 - [ ] **13. 结构化计划和多选问题**
   - grok：`generate_plan` 工具输出标题、步骤和问题，问题分单选、多选、自由文本，在 TUI 里作答。见 `src/grok/tools.ts:925`、`src/ui/plan.tsx`。
   - tango：`/plan` 只是只读模式。`?choice` 只能单选。
-- [ ] **14. 每种模式的默认模型**
+- [x] **14. 每种模式的默认模型**（`roles.plan`：进 plan 换模型、出 plan 换回；其他模式只是权限，不单设）
   - grok：`modeModels` 可以给 agent / plan / ask 模式分别指定模型。见 CHANGELOG 1.1.5-rc4。
   - tango：`roles` 按 driver / subagent / longContext 分，`/plan` 不能自动换模型。
 

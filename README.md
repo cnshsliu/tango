@@ -170,8 +170,9 @@ match fuzzily everywhere (`-m` too): case-insensitive subsequence — `glm54` fi
   the notice (ending `· 本回合结束后写入会话`) and `SubagentStop` come at once; the summary enters the
   session (what the model sees) only after the turn ends.
 - **/agents [role model]** — role-based routing: `driver` (live), `subagent` (/subagent, /bg and
-  the `task` tool), `longContext` (/bg --long). Defaults to the current model. `/agents` also
-  lists the `task` sub-agents.
+  the `task` tool), `longContext` (/bg --long), `plan` (plan mode switches to it and back when
+  plan ends, unless you picked another model meanwhile; not saved as the default). Defaults to the
+  current model. `/agents` also lists the `task` sub-agents.
 - **/mcp** — MCP servers from config `mcpServers: {name: {command, args}}` (stdio JSON-RPC);
   tools bridge as `mcp_<server>_<tool>` (collision-suffixed), treated as write-effect
   (permission rules apply). Dead servers lazily reconnect on the next call (capped at 3
@@ -549,7 +550,7 @@ reply data. Most of these also skip the prompt queue.
 
 | group | commands |
 | --- | --- |
-| settings | `set_effort` (`level`), `set_plan` (`on`), `set_autocompact` (`value`, 0 = off), `set_statusline` (`template`, null clears), `set_bubble` (`bubble`), `set_animations` (`animations`), `set_ascii` (`ascii`), `set_clipboard` (`clipboard`: auto, osc52 or native) |
+| settings | `set_effort` (`level`), `set_plan` (`on`; → `plan`, `model`, `contextWindow`, `warning` when `roles.plan` is unknown), `set_autocompact` (`value`, 0 = off), `set_statusline` (`template`, null clears), `set_bubble` (`bubble`), `set_animations` (`animations`), `set_ascii` (`ascii`), `set_clipboard` (`clipboard`: auto, osc52 or native) |
 | config and trust | `config_show` (→ merged `config`, `sources`, `line`), `trust_status` (→ `root`, `trusted`, `gated`, `line`), `set_trust` (`trusted` → `reload`: restart serve to apply) |
 | permissions | `permissions_list` (→ `allow` with each rule's layer), `permissions_add` / `permissions_remove` (`rule` → `allow`, `path` of the file written), `import` (`source`: claude-code, grok or codex; `path` → `imported`, `skipped`) |
 | directories | `cd` (`dir` → `cwd`, `branch`; `~` expands), `pwd` (→ `cwd`), `cwds` (→ `dirs`, directories used before that still exist), `add_dir` (`dir` → `extraDirs`, `path`) |
@@ -897,7 +898,7 @@ used as the literal key. Nothing is inferred. `tango --models` shows which varia
 | `permissions` | `{ "allow": [rules] }` (see "Permissions rules"; trust-gated in project files) | `/permissions add` |
 | `extraDirs` | extra writable directories (trust-gated in project files) | `/add_dir` |
 | `hooks` | lifecycle hooks (see "Hooks"; trust-gated in project files) | edit |
-| `roles` | models for `driver`, `subagent`, `longContext` | `/agents` |
+| `roles` | models for `driver`, `subagent`, `longContext`, `plan` | `/agents` |
 | `subAgents` | named sub-agents for the `task` tool: `[{ "name", "description", "instruction", "model", "readonly" }]` (see "Sub-agents: the task tool") | edit |
 | `mcpServers` | MCP servers `{ name: { command, args, env } }` (trust-gated in project files) | edit |
 

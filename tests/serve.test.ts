@@ -1445,6 +1445,44 @@ test('debug-zip packages diagnostics without secrets', async () => {
   }
 });
 
+test('roles.plan: plan mode switches to its model and back; a manual switch in between wins', async () => {
+  const mock = await startMock();
+  const home = await mkdtemp(join(tmpdir(), 'tango-serve-home-'));
+  const work = await mkdtemp(join(tmpdir(), 'tango-serve-work-'));
+  const spec = (id: string, ctx: number) => ({ id, provider: 'mock', model: id, api: 'openai-completions', baseUrl: `http://127.0.0.1:${(mock.server.address() as AddressInfo).port}/v1`, apiKey: 'MOCK_SERVE_KEY', contextWindow: ctx });
+  await writeFile(join(home, 'models.json'), JSON.stringify([spec('mock/mock', 200), spec('mock/thinker', 900), spec('mock/other', 300)]));
+  await writeFile(join(home, 'config.json'), JSON.stringify({ roles: { plan: 'mock/thinker' } }));
+  mock.setScript(() => SSE({ choices: [{ delta: { content: 'ok' }, finish_reason: 'stop' }] }) + 'data: [DONE]\n\n');
+  const s = await startServe(home, work, 0);
+  let id = 300;
+  const call = async (cmd: object) => {
+    const n = id++;
+    s.send({ id: n, ...cmd });
+    return (await s.until((f: any) => f.type === 'result' && f.id === n, JSON.stringify(cmd))).data;
+  };
+  try {
+    await s.next();
+    assert.deepEqual(await call({ cmd: 'set_plan', on: true }), { plan: true, model: 'mock/thinker', contextWindow: 900 });
+    await call({ cmd: 'prompt', text: 'plan it' });
+    assert.equal(mock.requests.at(-1).model, 'mock/thinker', 'the plan turn uses roles.plan');
+    assert.equal((await call({ cmd: 'set_plan', on: false })).model, 'mock/mock', 'off restores');
+    // switching models while planning: leaving plan keeps the user's pick
+    await call({ cmd: 'set_plan', on: true });
+    await call({ cmd: 'set_model', modelId: 'mock/other' });
+    assert.equal((await call({ cmd: 'set_plan', on: false })).model, 'mock/other');
+    // an unknown plan model warns and stays
+    await writeFile(join(home, 'config.json'), JSON.stringify({ roles: { plan: 'mock/missing' } }));
+    const r = await call({ cmd: 'set_plan', on: true });
+    assert.equal(r.model, 'mock/other');
+    assert.match(r.warning, /unknown model "mock\/missing"/);
+  } finally {
+    s.child.kill();
+    mock.server.close();
+    await rm(home, { recursive: true, force: true });
+    await rm(work, { recursive: true, force: true });
+  }
+});
+
 test('plan mode: writes vetoed even when a rule allows; reads fine; off restores', async () => {
   const mock = await startMock();
   const home = await mkdtemp(join(tmpdir(), 'tango-serve-home-'));

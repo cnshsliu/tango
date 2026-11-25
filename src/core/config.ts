@@ -64,7 +64,8 @@ export interface Config {
    */
   hooks?: { beforeTool?: string; afterTool?: string } & Record<string, unknown>;
   /** Role-based model routing (/agents): driver / subagent / longContext */
-  roles?: { driver?: string; subagent?: string; longContext?: string };
+  /** plan: the model plan mode switches to (and back from) */
+  roles?: { driver?: string; subagent?: string; longContext?: string; plan?: string };
   /** Named sub-agents for the `task` tool: { name, description?, instruction?, model?, readonly? } */
   subAgents?: { name: string; description?: string; instruction?: string; model?: string; readonly?: boolean }[];
   /** MCP servers (stdio JSON-RPC); tools bridge in as mcp_<server>_<tool> */

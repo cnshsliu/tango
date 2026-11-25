@@ -531,6 +531,8 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
   }
 
   let promptInFlight = false;
+  /** set while plan mode runs on roles.plan: the model to go back to, and the plan model itself */
+  let modelBeforePlan: { prev: string; plan: string } | undefined;
   // idle poll for /send mail (declared here: the callback reads promptInFlight)
   const mailTimer = setInterval(() => {
     if (!promptInFlight) void receiveMail();
@@ -1005,8 +1007,8 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
       case 'agents_set': {
         const role = String(cmd.role ?? '');
         const modelId = String(cmd.model ?? '');
-        if (!['driver', 'subagent', 'longContext'].includes(role)) {
-          return reply(cmd, false, undefined, 'agents_set: role must be driver | subagent | longContext');
+        if (!['driver', 'subagent', 'longContext', 'plan'].includes(role)) {
+          return reply(cmd, false, undefined, 'agents_set: role must be driver | subagent | longContext | plan');
         }
         const models = await loadModels();
         const found = models.find((m) => m.id === modelId);
@@ -1238,8 +1240,32 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
       }
       case 'set_plan': {
         perm.plan = perm.plan ?? { on: false };
+        const was = perm.plan.on;
         perm.plan.on = cmd.on === true;
-        reply(cmd, true, { plan: perm.plan.on });
+        // roles.plan: plan mode thinks with its own model; leaving plan restores the one before it
+        // (unless the user picked another model meanwhile). Not saved as the default.
+        let note: string | undefined;
+        if (perm.plan.on && !was) {
+          const planId = (await effectiveConfig()).config.roles?.plan;
+          if (planId && planId !== agent.model.id) {
+            const found = (await loadModels()).find((m) => m.id === planId);
+            if (found) {
+              modelBeforePlan = { prev: agent.model.id, plan: found.id };
+              agent.setModel(found);
+            } else note = `roles.plan: unknown model "${planId}", staying on ${agent.model.id}`;
+          }
+        } else if (!perm.plan.on && was && modelBeforePlan) {
+          const back = modelBeforePlan;
+          modelBeforePlan = undefined;
+          const found = agent.model.id === back.plan ? (await loadModels()).find((m) => m.id === back.prev) : undefined;
+          if (found) agent.setModel(found);
+        }
+        reply(cmd, true, {
+          plan: perm.plan.on,
+          model: agent.model.id,
+          contextWindow: agent.model.contextWindow ?? 128_000,
+          ...(note ? { warning: note } : {})
+        });
         return;
       }
       case 'cd': {

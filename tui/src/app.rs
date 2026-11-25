@@ -857,7 +857,7 @@ const SLASH: &[(&str, &str)] = &[
     ("/pwd", "显示当前工作目录"),
     (
         "/agents [role model]",
-        "角色模型路由：driver/subagent/longContext（/bg 自动用 subagent）",
+        "角色模型路由：driver/subagent/longContext/plan（/bg 自动用 subagent，plan 模式用 plan）",
     ),
     (
         "/bg [--long] <任务>",
@@ -4356,7 +4356,7 @@ impl App {
                     self.pending.push((id, Pending::AgentsSet));
                 } else {
                     self.push(
-                        "usage: /agents [driver|subagent|longContext] <model>",
+                        "usage: /agents [driver|subagent|longContext|plan] <model>",
                         Tone::Muted,
                     );
                 }
@@ -8519,6 +8519,16 @@ impl App {
                         }
                         (Pending::Plan, true) => {
                             self.plan_mode = d["plan"].as_bool().unwrap_or(false);
+                            // roles.plan may have switched the model (and switches it back)
+                            if let Some(m) = d["model"].as_str()
+                                && m != self.model
+                            {
+                                self.model = m.into();
+                                self.push(format!("模型 → {m}"), Tone::Muted);
+                            }
+                            if let Some(w) = d["warning"].as_str() {
+                                self.push(w.to_string(), Tone::Error);
+                            }
                             self.push(
                                 if self.plan_mode {
                                     "PLAN 模式开启 · 只读研究，写操作将被拒绝 · /plan 恢复"
@@ -8724,6 +8734,7 @@ impl App {
                                 ("driver", "主会话（立即生效）"),
                                 ("subagent", "/subagent、/bg 与 task 工具默认"),
                                 ("longContext", "/bg --long 长上下文"),
+                                ("plan", "plan 模式期间切换到它，退出后换回"),
                             ] {
                                 text.push_str(&format!("  {role:<12} {} · {note}\n", get(role)));
                             }
