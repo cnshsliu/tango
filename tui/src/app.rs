@@ -1687,6 +1687,9 @@ pub struct App {
     /// every open dialog's bottom-hint keys as buttons, drawn this frame: a click on
     /// one is handled as that key press, so every dialog key is also clickable
     hint_buttons: Vec<HintButton>,
+    /// the topmost modal dialog drawn this frame (permission, picker, viewer, /queue, /todo,
+    /// the message menu): everything outside it is dimmed behind it
+    modal_rect: Option<Rect>,
     /// user-message style: true = right-positioned bubble (default),
     /// false = Claude Code style (same theme, left, full-width bg) — /bubble
     user_bubble: bool,
@@ -1837,6 +1840,7 @@ impl App {
             footer_mode_area: Rect::default(),
             footer_palette_area: Rect::default(),
             hint_buttons: Vec::new(),
+            modal_rect: None,
             user_bubble: true,
             animations: true,
             ascii: false,
@@ -9106,6 +9110,7 @@ impl App {
     pub fn draw(&mut self, f: &mut Frame) {
         let area = f.area();
         self.hint_buttons.clear();
+        self.modal_rect = None;
         // short terminals give the rows to the conversation: no wordmark in the chat
         self.chat_roomy = area.height >= 20;
         let input_h = self.input_height(area.width);
@@ -9532,6 +9537,7 @@ impl App {
                 width: w,
                 height: h,
             };
+            self.modal_rect = Some(pop);
             let inner = dialog_frame(&mut self.hint_buttons, f,
                 pop,
                 "提示队列",
@@ -9627,6 +9633,7 @@ impl App {
                 width: w,
                 height: h,
             };
+            self.modal_rect = Some(pop);
             let inner = dialog_frame(&mut self.hint_buttons, f,
                 pop,
                 "待定 · To be considered",
@@ -9721,6 +9728,7 @@ impl App {
                 width: w,
                 height: h,
             };
+            self.modal_rect = Some(pop);
             let inner = dialog_frame(&mut self.hint_buttons, f, pop, "这条消息", "数字键或点击 · esc 关闭", self.theme);
             self.prompt_menu_buttons.clear();
             let mut y = inner.y;
@@ -10115,6 +10123,7 @@ impl App {
                     _ => "↑↓ 选择 · enter 确认 · esc 取消",
                 }
             };
+            self.modal_rect = Some(pop);
             let inner = dialog_frame(&mut self.hint_buttons, f, pop, title, hint, self.theme);
             let label_w = (inner.width as usize).saturating_sub(28);
             let sel_row = display
@@ -10270,6 +10279,7 @@ impl App {
                     hint
                 );
             }
+            self.modal_rect = Some(popup);
             let inner = dialog_frame(&mut self.hint_buttons, f, popup, &p.name, &hint, self.theme);
             let mut body = Vec::new();
             if !p.brief.is_empty() {
@@ -10302,6 +10312,7 @@ impl App {
             } else {
                 "空格 勾选了解风险 · esc 取消".to_string()
             };
+            self.modal_rect = Some(popup);
             let inner = dialog_frame(&mut self.hint_buttons, f, popup, "⚠ 要启用完全访问吗？", &hint, self.theme);
             let mut body = vec![
                 Line::from(Span::styled(
@@ -10351,6 +10362,7 @@ impl App {
             } else {
                 "y 复制 · esc 关闭 · ↑↓/滚轮滚动 · ctrl+e 用 nvim 打开"
             };
+            self.modal_rect = Some(pop);
             let inner = dialog_frame(&mut self.hint_buttons, f, pop, &title, hint, self.theme);
             let inner_width = inner.width.max(1) as usize;
             let search_rows =
@@ -10403,6 +10415,11 @@ impl App {
                     ));
                 }
             }
+        }
+        // a modal dialog stands on a scrim: the rest of the screen is dimmed, so its surface is
+        // set apart whatever the terminal's own background is
+        if let Some(keep) = self.modal_rect {
+            crate::dialog::dim_outside(f, keep, self.theme);
         }
     }
 
@@ -15308,6 +15325,70 @@ mod tests {
         app.frame(json!({"type": "retry", "attempt": 2, "max": 3, "reason": "HTTP 503"}), &mut serve);
         assert!(app.lines.iter().any(|l| l.text.contains("第 1/3 次重试")));
         assert!(app.lines.iter().any(|l| l.text.contains("retry 2/3: HTTP 503")));
+    }
+
+    #[test]
+    fn a_modal_dialog_dims_the_rest_of_the_screen_in_both_themes() {
+        use crate::dialog::DialogPalette;
+        use ratatui::{Terminal, backend::TestBackend};
+        for theme in [Theme::dark(), Theme::light()] {
+            let mut app = App::new();
+            app.theme = theme;
+            app.permission = Some(Permission {
+                request: 1,
+                name: "bash".into(),
+                detail: "git push origin main".into(),
+                reason: "publishes to a remote".into(),
+                brief: String::new(),
+            });
+            let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
+            term.draw(|f| app.draw(f)).unwrap();
+            let keep = app.modal_rect.expect("the permission dialog is modal");
+            let p = DialogPalette::for_theme(theme);
+            let b = term.backend().buffer();
+            let mut undimmed = 0;
+            let mut surface = 0;
+            for y in 0..30u16 {
+                for x in 0..100u16 {
+                    let bg = b[(x, y)].bg;
+                    if keep.contains(Position::new(x, y)) {
+                        if bg == p.surface {
+                            surface += 1;
+                        }
+                    } else if bg != p.scrim {
+                        undimmed += 1;
+                    }
+                }
+            }
+            assert_eq!(undimmed, 0, "every cell outside the dialog is on the scrim");
+            assert!(surface > 0, "the dialog keeps its own surface");
+        }
+    }
+
+    #[test]
+    fn nothing_is_dimmed_without_a_modal_and_not_behind_the_completion_popup() {
+        use crate::dialog::DialogPalette;
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let scrim = DialogPalette::for_theme(app.theme).scrim;
+        term.draw(|f| app.draw(f)).unwrap();
+        assert!(app.modal_rect.is_none());
+        assert_ne!(term.backend().buffer()[(0, 0)].bg, scrim);
+        // typing "/mo" opens the command completion: a helper at the cursor, not a modal
+        type_str(&mut app, &mut serve, "/mo");
+        assert!(app.popup.is_some(), "the completion list is open");
+        term.draw(|f| app.draw(f)).unwrap();
+        assert!(app.modal_rect.is_none());
+        assert_ne!(term.backend().buffer()[(0, 0)].bg, scrim, "the conversation stays as it is");
+        // while the viewer, say, is a modal
+        app.clear_input();
+        app.popup = None;
+        app.viewer = Some(Viewer::read_only("看看", "正文"));
+        term.draw(|f| app.draw(f)).unwrap();
+        assert!(app.modal_rect.is_some());
+        assert_eq!(term.backend().buffer()[(0, 0)].bg, scrim);
     }
 
     #[test]

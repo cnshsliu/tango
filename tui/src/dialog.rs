@@ -5,7 +5,7 @@
 
 use crate::theme::Theme;
 use ratatui::Frame;
-use ratatui::layout::Rect;
+use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -18,25 +18,34 @@ pub struct DialogPalette {
     border: Color,
     title_fg: Color,
     hint: Color,
+    /// behind a modal dialog: the rest of the screen, dimmed, so the surface stands out
+    /// whatever the terminal's own background is
+    pub scrim: Color,
+    /// what text under the scrim keeps: readable as a shape, clearly behind the dialog
+    pub scrim_text: Color,
 }
 
 impl DialogPalette {
     pub fn for_theme(theme: Theme) -> Self {
         if theme.light {
             Self {
-                surface: Color::Rgb(247, 247, 243),
+                surface: Color::Rgb(251, 251, 249),
                 title_bg: Color::Rgb(218, 228, 238),
                 border: Color::Rgb(115, 120, 128),
                 title_fg: Color::Rgb(24, 35, 48),
                 hint: Color::Rgb(80, 85, 90),
+                scrim: Color::Rgb(223, 225, 228),
+                scrim_text: Color::Rgb(168, 172, 178),
             }
         } else {
             Self {
-                surface: Color::Rgb(22, 24, 29),
+                surface: Color::Rgb(35, 39, 47),
                 title_bg: Color::Rgb(50, 64, 82),
                 border: Color::Rgb(94, 102, 116),
                 title_fg: Color::Rgb(215, 225, 240),
                 hint: Color::Rgb(150, 158, 171),
+                scrim: Color::Rgb(11, 12, 16),
+                scrim_text: Color::Rgb(58, 64, 76),
             }
         }
     }
@@ -218,6 +227,26 @@ fn hint_layout(
     (spans, buttons)
 }
 
+/// A modal dialog's backdrop: everything outside `keep` goes to the scrim color, its text to
+/// the faint one (styles dropped, so a reversed cell cannot light up). The dialog itself is
+/// untouched — it was drawn last, and sits on top.
+pub fn dim_outside(f: &mut Frame, keep: Rect, theme: Theme) {
+    let palette = DialogPalette::for_theme(theme);
+    let buf = f.buffer_mut();
+    let width = buf.area.width;
+    if width == 0 {
+        return;
+    }
+    for (i, cell) in buf.content.iter_mut().enumerate() {
+        let at = Position::new((i as u16) % width, (i as u16) / width);
+        if keep.contains(at) {
+            continue;
+        }
+        cell.set_fg(palette.scrim_text).set_bg(palette.scrim);
+        cell.modifier = Modifier::empty();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -302,6 +331,57 @@ mod tests {
         let a = alternatives("{/}");
         assert_eq!(a, vec![("", "{"), ("/", "}")]);
         assert_eq!(alternatives("/"), vec![("", "/")]);
+    }
+
+    fn luminance(c: Color) -> u32 {
+        match c {
+            Color::Rgb(r, g, b) => (u32::from(r) * 299 + u32::from(g) * 587 + u32::from(b) * 114) / 1000,
+            _ => 0,
+        }
+    }
+
+    #[test]
+    fn the_scrim_sets_the_surface_apart_in_both_themes() {
+        for (name, theme) in [("dark", Theme::dark()), ("light", Theme::light())] {
+            let p = DialogPalette::for_theme(theme);
+            assert_ne!(p.scrim, p.surface, "{name}");
+            // the scrim is clearly darker than the surface: gray under near-white, near-black under slate
+            assert!(luminance(p.scrim) + 20 < luminance(p.surface), "{name}: {:?} vs {:?}", p.scrim, p.surface);
+            // the text under it is a little lighter: a shape, clearly behind the dialog
+            let step = luminance(p.scrim_text).abs_diff(luminance(p.scrim));
+            assert!((15..60).contains(&step), "{name}: {:?} on {:?} = {step}", p.scrim_text, p.scrim);
+            // and the surface is not a common terminal background in disguise: it sits well
+            // above the darkest dark themes' #16181d / #1a1b26 and below paper white
+            let l = luminance(p.surface);
+            if theme.light {
+                assert!(l >= 248, "{name}: {l}");
+            } else {
+                assert!(l >= 30, "{name}: {l}");
+            }
+        }
+    }
+
+    #[test]
+    fn dim_outside_recolors_everything_but_the_dialog() {
+        let mut terminal = Terminal::new(TestBackend::new(20, 8)).unwrap();
+        let keep = Rect::new(5, 2, 10, 4);
+        let theme = Theme::dark();
+        terminal
+            .draw(|f| {
+                f.render_widget(
+                    Paragraph::new("hi").style(Style::new().add_modifier(Modifier::REVERSED)),
+                    Rect::new(0, 0, 2, 1),
+                );
+                dim_outside(f, keep, theme);
+            })
+            .unwrap();
+        let p = DialogPalette::for_theme(theme);
+        let b = terminal.backend().buffer();
+        // the text stays, faint; a reversed cell cannot light up
+        let cell = &b[(0, 0)];
+        assert_eq!((cell.symbol(), cell.fg, cell.bg, cell.modifier), ("h", p.scrim_text, p.scrim, Modifier::empty()));
+        assert_eq!((b[(19, 7)].fg, b[(19, 7)].bg), (p.scrim_text, p.scrim), "the far corner too");
+        assert_eq!(b[(keep.x, keep.y)].bg, Color::Reset, "inside the dialog is not ours to paint");
     }
 
     #[test]

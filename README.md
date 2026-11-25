@@ -600,7 +600,12 @@ is always the built-in dialog (80% of the screen, ↑↓/PgUp/PgDn/wheel scroll,
 the clipboard, Esc closes), never Neovim, whatever `nvimViewer` says; Ctrl+E inside it still hands the
 item to Neovim. Closing the viewer restores the original chat position. All overlays use the shared `tui/src/dialog.rs` frame:
 rounded complete borders, a themed surface and title background, bottom key hints, and content
-confined to the inner rectangle. Focus is viewer → permission → picker → completion → chat; modal
+confined to the inner rectangle. A modal dialog (a permission
+prompt, the full-access prompt, a picker, the viewer, `/queue`, `/todo`, the message menu) stands
+on a scrim: the rest of the screen is dimmed behind it — near-black `#0b0c10` under a `#23272f`
+surface in the dark theme, gray `#dfe1e4` under `#fbfbf9` in the light one — so it stands out
+whatever the terminal's own background is. The completion list and the `?choice` panel are not
+modals and dim nothing. Focus is viewer → permission → picker → completion → chat; modal
 scrolling never leaks into the chat, pickers support wheel/click, and Esc closes the focused layer.
 Other full-content views (session previews and the like) check `nvim` and `vim` with `--version`; only an actual `NVIM` is used,
 never standard Vim. On first detection, choose one-time read-only, persistent read-only
