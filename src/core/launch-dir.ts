@@ -7,7 +7,8 @@ import { homedir } from 'node:os';
  * at startup with `ENOENT … uv_cwd` (the TUI: "tango serve exited"). Move to the home directory
  * once, before any subcommand asks.
  *
- * Returns the notice to show, or null when the launch directory is fine.
+ * Returns the first half of the notice (what happened), or null when the launch directory is
+ * fine; what is used instead depends on the session, so the caller finishes the sentence.
  */
 export function rescueLaunchDir(): string | null {
   let gone = true;
@@ -19,5 +20,5 @@ export function rescueLaunchDir(): string | null {
   try {
     process.chdir(home);
   } catch {}
-  return `⚠ tango 是在一个已不存在的目录里启动的（比如终端还停在已删除的 worktree 里）— 本次改用 ${home}；/cd <目录> 可切换`;
+  return '⚠ tango 是在一个已不存在的目录里启动的（比如终端还停在已删除的 worktree 里）';
 }

@@ -10,6 +10,7 @@
  * frames:    hello | stream | btw_stream | message | notice (chat line) | tool_result | permission_request | turn_end | error | result
  */
 import { spawnSync } from 'node:child_process';
+import { existsSync, realpathSync } from 'node:fs';
 import { createRequire as nodeCreateRequire } from 'node:module';
 import { createInterface } from 'node:readline';
 import { randomUUID } from 'node:crypto';
@@ -344,7 +345,20 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
   // started from a directory that no longer exists: the CLI moved to the home directory first
   const rescued = process.env.TANGO_LAUNCH_NOTICE;
   delete process.env.TANGO_LAUNCH_NOTICE; // the tools' children don't need it
-  if (rescued) out({ type: 'notice', text: rescued });
+  if (rescued) {
+    // what is used now depends on the session: a new one moved to the home directory, a resumed
+    // one keeps its own directory — or has lost it (the cwd_missing frame that follows asks)
+    let here = '';
+    try {
+      here = realpathSync(cwd);
+    } catch {}
+    const tail = !existsSync(cwd)
+      ? `— 会话目录 ${cwd} 也不存在了，请 /cd <目录>`
+      : here === process.cwd()
+        ? `— 本次改用 ${cwd}；/cd <目录> 可切换`
+        : `— 会话仍在 ${cwd} 里运行，不受影响`;
+    out({ type: 'notice', text: `${rescued}${tail}` });
+  }
   for (const src of opened.resolved.sources) {
     if (src.error) out({ type: 'notice', text: `⚠ 配置文件已跳过：${src.path}（${src.error}）` });
   }

@@ -581,7 +581,7 @@ async function main(): Promise<void> {
     // serve (and so the TUI) shows it as a chat line: serve.ts reads the variable; a
     // one-shot or REPL run prints it here
     process.env.TANGO_LAUNCH_NOTICE = rescued;
-    if (!args.serve && !args.tui) console.error(dim(`⚠ 启动目录已不存在 — 本次改用 ${homedir()}`));
+    if (!args.serve && !args.tui) console.error(dim(`${rescued} — 本次改用 ${homedir()}`));
   }
   if (args.task) return taskMain(args, args.task);
   if (args.version) return console.log(VERSION);

@@ -38,8 +38,8 @@ test('launch directory deleted (macOS: cwd() throws): move to the home directory
   }) as typeof process.cwd;
   const text = notice();
   assert.ok(text, 'a notice is returned');
-  assert.ok(text.includes(fakeHome), `names the directory used now: ${text}`);
-  assert.ok(text.includes('/cd'), `names the way out: ${text}`);
+  assert.ok(text.includes('已不存在的目录里启动'), `says what happened: ${text}`);
+  assert.ok(!text.includes('改用'), `what is used instead is the caller's to say: ${text}`);
   process.cwd = realCwdFn;
   assert.equal(process.cwd(), realFakeHome, 'the process runs in the home directory from now on');
   // from there everything is ordinary again
