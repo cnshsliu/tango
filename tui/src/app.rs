@@ -1680,8 +1680,8 @@ pub struct App {
     /// the mode label (`auto`, `plan` …) at the start of that row: a click opens
     /// the mode picker
     mode_area: Rect,
-    /// the footer's key hints: `shift+tab mode` does what Shift+Tab does (the next mode),
-    /// `ctrl+p commands` the command palette (like ctrl+p)
+    /// the footer's key hints: a click on `shift+tab mode` opens the mode picker (like a click
+    /// on the mode label; the key itself cycles), `ctrl+p commands` the command palette
     footer_mode_area: Rect,
     footer_palette_area: Rect,
     /// every open dialog's bottom-hint keys as buttons, drawn this frame: a click on
@@ -5595,13 +5595,7 @@ impl App {
                     {
                         let on_label = self.mode_area.width > 0 && self.mode_area.contains(pos);
                         let on_hint = self.footer_mode_area.width > 0 && self.footer_mode_area.contains(pos);
-                        if on_hint {
-                            // the shift+tab hint switches like the key does, whatever is open
-                            self.picker = None;
-                            self.cycle_mode(serve);
-                            return false;
-                        }
-                        if on_label {
+                        if on_label || on_hint {
                             self.picker = None;
                             if kind != PickerKind::Mode {
                                 self.open_mode_picker();
@@ -5708,14 +5702,13 @@ impl App {
                                 self.run_slash("/model", serve);
                                 return false;
                             }
-                            // …the mode label opens the mode picker on the current mode; the
-                            // footer's shift+tab hint does what Shift+Tab does (the next mode)
-                            if self.mode_area.width > 0 && self.mode_area.contains(pos) {
+                            // …the mode label (or the footer's shift+tab hint) opens the mode
+                            // picker on the current mode; the Shift+Tab key itself cycles
+                            if self.mode_area.width > 0 && self.mode_area.contains(pos)
+                                || self.footer_mode_area.width > 0
+                                    && self.footer_mode_area.contains(pos)
+                            {
                                 self.open_mode_picker();
-                                return false;
-                            }
-                            if self.footer_mode_area.width > 0 && self.footer_mode_area.contains(pos) {
-                                self.cycle_mode(serve);
                                 return false;
                             }
                             // the footer's ctrl+p hint opens the command palette
@@ -6402,7 +6395,7 @@ impl App {
             return;
         }
         // Shift+Tab steps to the next mode at once, no dialog: ask → plan → confirm → readonly
-        // → ask. The footer's shift+tab hint does the same.
+        // → ask. (A click on the footer's shift+tab hint opens the mode picker instead.)
         if k.code == KeyCode::BackTab
             && self.picker.is_none()
             && self.popup.is_none()
@@ -7052,7 +7045,7 @@ impl App {
     /// acknowledgement (`/mode auto` or the picker); from auto the next press goes to plan.
     const MODE_CYCLE: [&'static str; 4] = ["ask", "plan", "confirm", "readonly"];
 
-    /// Shift+Tab and the footer's `shift+tab mode` hint: switch to the next mode in
+    /// Shift+Tab: switch to the next mode in
     /// `MODE_CYCLE` right away. The local state moves at once, so quick presses keep stepping
     /// instead of all starting from the same mode; serve's replies then confirm it.
     fn cycle_mode(&mut self, serve: &mut Serve) {
@@ -12937,17 +12930,19 @@ mod tests {
         click(&mut app, &mut serve, p);
         assert!(app.picker.is_none());
         assert!(serve.sent.is_empty(), "the palette hint does not talk to serve");
-        // shift+tab hint → what Shift+Tab does: the next mode at once (auto → plan), no picker
+        // shift+tab hint → the mode picker on the current mode (the key cycles; a click asks)
+        click(&mut app, &mut serve, m);
+        let picker = app.picker.as_ref().expect("a click on the hint opens the picker");
+        assert_eq!(picker.kind, PickerKind::Mode);
+        assert_eq!(picker.items[picker.sel].id, "auto", "the current mode is selected");
+        assert!(serve.sent.is_empty(), "nothing switches until a mode is picked");
+        // a second click closes it; from the command palette it swaps to the mode picker
         click(&mut app, &mut serve, m);
         assert!(app.picker.is_none());
-        assert!(app.plan_mode);
-        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
-        assert_eq!((sent["cmd"].as_str(), sent["on"].as_bool()), (Some("set_plan"), Some(true)));
-        // with a picker open, the shift+tab hint closes it and still switches
         click(&mut app, &mut serve, p);
         click(&mut app, &mut serve, m);
-        assert!(app.picker.is_none());
-        assert!(!app.plan_mode, "plan → confirm");
+        assert_eq!(app.picker.as_ref().map(|p| p.kind), Some(PickerKind::Mode));
+        assert!(serve.sent.is_empty());
     }
 
     #[test]

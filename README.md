@@ -575,8 +575,8 @@ same label again closes its picker, clicking the other one swaps to that picker,
 picker row picks it.
 The draft starts right under the rule, with no blank padding rows around it. Under the block, on
 terminals of 24+ rows, a footer shows `~/dir:branch` on the left (refreshed by `/cd`) and key hints
-(`shift+tab mode`, `ctrl+p commands`) on the right when they fit. Both hints are clickable and do what their key does: `shift+tab mode`
-switches to the next mode, `ctrl+p commands` opens the command palette. Clicking the mode label opens the mode picker on the current mode. The bottom status bar (cost ·
+(`shift+tab mode`, `ctrl+p commands`) on the right when they fit. Both hints are clickable: `shift+tab mode`
+opens the mode picker on the current mode (like clicking the mode label; pressing Shift+Tab itself switches to the next mode), `ctrl+p commands` opens the command palette. The bottom status bar (cost ·
 session · ctx, fitted to the terminal width — on a narrow screen ctx and sess go first, then the
 pinned ▶, while cost and the ❓ badge stay) no longer repeats the model and mode. Session ids are shown
 short everywhere (status bar, `/send`, handoff/takeover, mail notices, `/tasks`, `tango --sessions`): a uuid's
