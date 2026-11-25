@@ -29,6 +29,7 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { listCwds, rememberCwd } from './core/cwds.js';
 import { SessionStore, relativeTime, shortId } from './core/session.js';
+import { allSubAgents } from './core/tools/task.js';
 import { cancelHandoff, drainHandoffs, listHandoffs, purgeExpiredHandoffs, queueHandoff } from './core/handoff.js';
 import { drainMail, sendMail } from './core/mail.js';
 import { holdSessionLock, sessionHolder } from './core/session-lock.js';
@@ -328,6 +329,14 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
       contextTokens: e.usage.input,
       contextWindow: agent.model.contextWindow ?? 128_000
     });
+  });
+  // in-process `task` sub-agents (core/tools/task.ts): cost joins the session total;
+  // a background one also says it finished (its report is already with the model)
+  agent.events.on('task_done', (e) => {
+    sessionCostUsd += e.costUsd;
+    if (!e.background) return;
+    const tail = agent.busy ? '报告已交给模型' : '报告已写入会话，下一条消息时模型会读到';
+    out({ type: 'notice', text: `⑂ 后台 ${e.agent} ${e.id}「${e.description}」${e.ok ? '完成' : '失败'} · ${tail} · /resume ${shortId(e.sessionId)} 看全程` });
   });
   agent.events.on('after_tool', ({ call, result, ms }) =>
     out({
@@ -982,7 +991,12 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
       }
       case 'agents_show': {
         const cfg0 = (await effectiveConfig()).config;
-        reply(cmd, true, { roles: cfg0.roles ?? {}, driver: agent.model.id });
+        const custom = Array.isArray(cfg0.subAgents) ? cfg0.subAgents : [];
+        reply(cmd, true, {
+          roles: cfg0.roles ?? {},
+          driver: agent.model.id,
+          subAgents: allSubAgents(custom).map((d) => ({ name: d.name, readonly: !!d.readonly, model: d.model ?? '', description: d.description ?? '' }))
+        });
         return;
       }
       case 'agents_set': {
@@ -1531,7 +1545,8 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
         return;
       }
       case 'sessions': {
-        const list = await SessionStore.list(sessionsDir());
+        // task sub-agent sessions stay out of the picker (/resume <id> still opens them)
+        const list = (await SessionStore.list(sessionsDir())).filter((x) => !x.parent);
         reply(cmd, true, {
           sessions: list.slice(0, 40).map((s) => ({
             id: s.id,

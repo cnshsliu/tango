@@ -15,7 +15,7 @@ import { EventBus } from './core/events.js';
 import { mergeHookConfigs, runHooks, type HookConfig, type HookOutcome } from './core/hooks.js';
 import { resolveConfig, type Resolved } from './core/project-config.js';
 import { worktreeRoot } from './core/worktrees.js';
-import { installPermissionGate, parseRule, type AllowRule, type AskFn, type PermissionMode } from './core/permissions.js';
+import { READ_TOOLS, installPermissionGate, parseRule, type AllowRule, type AskFn, type PermissionMode } from './core/permissions.js';
 import { SessionStore, shortId } from './core/session.js';
 import { ToolRegistry } from './core/tools/registry.js';
 import { bashTool } from './core/tools/bash.js';
@@ -28,6 +28,7 @@ import { findTool, grepTool, lsTool } from './core/tools/search.js';
 import { sessionSearchTool } from './core/tools/session-search.js';
 import { webFetchTool } from './core/tools/web-fetch.js';
 import { webSearchTool } from './core/tools/web-search.js';
+import { makeTaskTool, type SubAgentDef, type TaskDeps, type TaskInput } from './core/tools/task.js';
 import type { ModelSpec } from './core/types.js';
 
 export const VERSION = '0.1.0';
@@ -117,7 +118,7 @@ export function loadPluginHooks(): {
 function installLifecycleHooks(
   events: EventBus,
   hooks: HookConfig,
-  ctx: { cwd: () => string; sessionId: () => string; projectDir?: string; resumed: () => boolean; addContext: (t: string) => void; stop: (reason: string) => void }
+  ctx: { cwd: () => string; sessionId: () => string; projectDir?: string; resumed: () => boolean; addContext: (t: string) => void; stop: (reason: string) => void; toolsOnly?: boolean }
 ): void {
   const base = () => ({ session_id: ctx.sessionId(), cwd: ctx.cwd() });
   const run = (ev: keyof HookConfig, payload: Record<string, unknown>, tool?: string) =>
@@ -163,6 +164,8 @@ function installLifecycleHooks(
       if (r.stop) ctx.stop(r.stop);
     });
   }
+  // a `task` sub-agent: only the tool hooks; session, prompt and Stop hooks belong to the main turn
+  if (ctx.toolsOnly) return;
   if (hooks.StopFailure) {
     // the turn died on an error (model/API failure, the tool-round cap): observe only
     events.on('error', async ({ error }) => {
@@ -247,7 +250,10 @@ function installLifecycleHooks(
   }
 }
 
-export function makeAgent(model: ModelSpec, store: SessionStore, cwd: string, perm: PermState, cfg: { checkpoint?: string; permissions?: { allow: string[] }; extraDirs?: string[]; hooks?: { beforeTool?: string; afterTool?: string } & Record<string, unknown>; maxTurns?: number; retries?: number; projectDir?: string } = {}): Agent {
+type AgentCfg = { checkpoint?: string; permissions?: { allow: string[] }; extraDirs?: string[]; hooks?: { beforeTool?: string; afterTool?: string } & Record<string, unknown>; maxTurns?: number; retries?: number; projectDir?: string; roles?: { subagent?: string }; subAgents?: SubAgentDef[] };
+
+/** `sub`: a `task` sub-agent — given tools, tool hooks only, no checkpoints (the parent's covers it). */
+export function makeAgent(model: ModelSpec, store: SessionStore, cwd: string, perm: PermState, cfg: AgentCfg = {}, sub?: { tools: ToolRegistry; readonly: boolean }): Agent {
   const events = new EventBus();
   // gate first: a vetoed call is never announced as running
   const rules = perm.rules ?? { allow: cfg.permissions?.allow ? [...cfg.permissions.allow] : [] };
@@ -267,7 +273,8 @@ export function makeAgent(model: ModelSpec, store: SessionStore, cwd: string, pe
   const retries = Number.isFinite(cfg.retries) ? Math.max(0, Math.min(10, Math.floor(cfg.retries as number))) : undefined;
   // decided at assembly: the first prompt's user message is already stored when SessionStart runs
   const resumed = store.messageCount() > 0;
-  const agent = new Agent({ store, tools: buildTools(), model, cwd, events, maxTurns, retries });
+  const agent = new Agent({ store, tools: sub?.tools ?? buildTools(), model, cwd, events, maxTurns, retries });
+  if (!sub) agent.tools.register(makeTaskTool(taskDeps(agent, store, perm, cfg)));
   const plugins = loadPluginHooks();
   // lifecycle hooks before the gate: a policy hook can refuse a call before anyone is asked
   installLifecycleHooks(events, mergeHookConfigs([cfg.hooks, ...plugins.lifecycle]), {
@@ -276,10 +283,11 @@ export function makeAgent(model: ModelSpec, store: SessionStore, cwd: string, pe
     sessionId: () => store.id,
     resumed: () => resumed,
     addContext: (t) => agent.addContext(t),
-    stop: (reason) => agent.requestStop(reason)
+    stop: (reason) => agent.requestStop(reason),
+    toolsOnly: !!sub
   });
   installPermissionGate(events, {
-    mode: () => perm.mode,
+    mode: () => (sub?.readonly ? 'readonly' : perm.mode),
     cwd: () => agent.cwd,
     ask: async (c, r) => {
       if (!perm.ask) return false;
@@ -308,8 +316,87 @@ export function makeAgent(model: ModelSpec, store: SessionStore, cwd: string, pe
       for (const script of afterChain) runHook(script, { phase: 'after', name: call.name, isError: !!result.isError, ms });
     });
   }
-  if (checkpointEnabled(cfg)) installCheckpoints(events, { cwd: () => agent.cwd, store });
+  if (!sub && checkpointEnabled(cfg)) installCheckpoints(events, { cwd: () => agent.cwd, store });
   return agent;
+}
+
+/** at most this many background sub-agents per session at once */
+export const MAX_BG_TASKS = 4;
+
+function subAgentPrompt(def: SubAgentDef): string {
+  return (
+    `\n\n# Sub-agent\nYou are the \`${def.name}\` sub-agent. Another agent delegated ONE task to you; you do not ` +
+    'see its conversation, only the task below. You cannot delegate further (there is no task tool). ' +
+    'Work on your own: never ask the user anything (no ?choice, no ?suggest). ' +
+    'End with a self-contained report for that agent: what you found or did, exact paths and ' +
+    'line numbers, commands and their results, and anything you could not verify. ' +
+    (def.readonly ? 'You are read-only: you can read, search and browse, but not edit files or run commands. ' : '') +
+    (def.instruction ? `\n\n${def.instruction}` : '')
+  );
+}
+
+/** Wires the parent's `task` tool: sub-agents share its permission state, cwd and tool hooks. */
+function taskDeps(parent: Agent, store: SessionStore, perm: PermState, cfg: AgentCfg): TaskDeps {
+  let seq = 0;
+  let running = 0;
+  const run = async (def: SubAgentDef, input: TaskInput, signal: AbortSignal, id: string, background: boolean) => {
+    // the sub-agent's own model, else roles.subagent (read now: /agents set applies at once), else the parent's
+    const models = await loadModels();
+    const roles = (await resolveConfig(parent.cwd).catch(() => undefined))?.config.roles ?? cfg.roles;
+    const wanted = def.model ?? roles?.subagent;
+    const model = (wanted && models.find((m) => m.id === wanted)) || parent.model;
+    const label = `task:${def.name} ${String(input.description ?? '')}`.slice(0, 80);
+    const subStore = await SessionStore.create(sessionsDir(), parent.cwd, label, undefined, undefined, store.meta()?.branch, store.id);
+    // the parent's live registry (MCP bridges included), never `task` itself: no recursion
+    const tools = new ToolRegistry();
+    for (const name of parent.tools.names()) {
+      if (name === 'task' || (def.readonly && !READ_TOOLS.has(name))) continue;
+      tools.register(parent.tools.get(name)!);
+    }
+    const sub = makeAgent(model, subStore, parent.cwd, perm, cfg, { tools, readonly: !!def.readonly });
+    sub.systemSuffix = subAgentPrompt(def) + (parent.systemSuffix ?? '');
+    const stop = () => sub.abort();
+    signal.addEventListener('abort', stop);
+    let text = '';
+    let ok = false;
+    try {
+      const msg = await sub.prompt(String(input.prompt));
+      text = msg.content.map((b) => (b.type === 'text' ? b.text : '')).join('').trim();
+      ok = msg.stopReason !== 'aborted' && msg.stopReason !== 'error';
+      if (!ok && !text) text = 'aborted';
+    } catch (e: any) {
+      text = `sub-agent failed: ${e?.message ?? e}`;
+    } finally {
+      signal.removeEventListener('abort', stop);
+    }
+    parent.totalCostUsd += sub.totalCostUsd;
+    const done = { id, agent: def.name, description: String(input.description ?? ''), ok, sessionId: subStore.id, costUsd: sub.totalCostUsd, background };
+    return { text, ok, sessionId: subStore.id, done };
+  };
+  return {
+    subAgents: () => (Array.isArray(cfg.subAgents) ? cfg.subAgents : []),
+    run: async (def, input, ctx) => {
+      const r = await run(def, input, ctx.signal, `t${++seq}`, false);
+      await parent.events.emit('task_done', r.done);
+      return r;
+    },
+    start: (def, input) => {
+      if (running >= MAX_BG_TASKS) return { error: `${MAX_BG_TASKS} background tasks already running; wait for one to report` };
+      const id = `t${++seq}`;
+      running++;
+      // its own signal: interrupting the parent turn does not cancel background work
+      void run(def, input, new AbortController().signal, id, true)
+        .then(async (r) => {
+          await parent.deliver(
+            `（后台任务 ${id} · ${def.name}：${input.description} ${r.ok ? '完成' : '失败'} · session ${shortId(r.sessionId)}）\n${r.text}`
+          );
+          await parent.events.emit('task_done', r.done);
+        })
+        .catch(() => {})
+        .finally(() => running--);
+      return { id };
+    }
+  };
 }
 
 export async function resolveSessionId(prefix: string): Promise<string> {
@@ -350,7 +437,8 @@ export async function openAgent(args: HostArgs, perm: PermState): Promise<Opened
   if (args.resume) {
     store = await SessionStore.open(sessionsDir(), await resolveSessionId(args.resume));
   } else if (args.continue) {
-    const [latest] = await SessionStore.list(sessionsDir());
+    // --continue means the user's last conversation, never a task sub-agent's
+    const [latest] = (await SessionStore.list(sessionsDir())).filter((x) => !x.parent);
     if (!latest) throw new Error('no sessions to continue yet');
     store = await SessionStore.open(sessionsDir(), latest.id);
   } else {

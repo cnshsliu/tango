@@ -81,7 +81,7 @@ export class Agent {
   /** transient system-prompt suffix (plan mode) — never persisted into history */
   systemSuffix?: string;
   /** mid-turn supplements (Alt+Enter): appended as user messages before the next model call */
-  private supplements: { text: string; images?: ImageBlock[] }[] = [];
+  private supplements: { text: string; images?: ImageBlock[]; raw?: boolean }[] = [];
   /** hook additionalContext: appended as user notes before the next model call */
   private hookContext: string[] = [];
   /** a hook's continue: false — the turn ends at the next safe point with this reason */
@@ -127,6 +127,25 @@ export class Agent {
     }
   }
 
+  /** true while prompt() runs */
+  get busy(): boolean {
+    return this.controller !== undefined;
+  }
+
+  /**
+   * A report from outside the turn (a background `task` sub-agent) for the model to read:
+   * mid-turn it rides the next request like a supplement; idle, it is stored now and the
+   * next prompt carries it. Always a user message: the model must not take it for its own words.
+   */
+  async deliver(text: string): Promise<'supplement' | 'stored'> {
+    if (this.busy) {
+      this.supplements.push({ text, raw: true });
+      return 'supplement';
+    }
+    await this.store.appendMessage({ role: 'user', content: [{ type: 'text', text }] });
+    return 'stored';
+  }
+
   /** Hook additionalContext: the model sees it before its next request (this turn or the next). */
   addContext(text: string): void {
     if (text.trim()) this.hookContext.push(text.trim());
@@ -147,7 +166,7 @@ export class Agent {
       const s = this.supplements.shift()!;
       await this.store.appendMessage({
         role: 'user',
-        content: [{ type: 'text', text: `（补充）${s.text}` }, ...(s.images ?? [])]
+        content: [{ type: 'text', text: s.raw ? s.text : `（补充）${s.text}` }, ...(s.images ?? [])]
       });
     }
   }
@@ -255,8 +274,10 @@ export class Agent {
       await this.events.emit('error', { error: e instanceof Error ? e : new Error(String(e)) });
       throw e;
     } finally {
-      await this.events.emit('prompt_end', {});
       this.controller = undefined;
+      // a report that arrived during the final model call lands now, not after the next prompt
+      await this.flushSupplements().catch(() => {});
+      await this.events.emit('prompt_end', {});
     }
   }
 

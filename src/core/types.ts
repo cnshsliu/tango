@@ -162,14 +162,15 @@ export interface ToolResult {
 
 export interface Tool<TInput = unknown> extends ToolSchema {
   execute(input: TInput, ctx: ToolContext): Promise<ToolResult>;
-  /** true when a call can change the workspace; checkpoints key off this */
-  writeEffect?: boolean;
+  /** true when a call can change the workspace; checkpoints and plan mode key off this.
+   * A function decides per call (task: explore reads, general writes). */
+  writeEffect?: boolean | ((input: TInput) => boolean);
 }
 
 // ---------- Session ----------
 
 export type SessionEntry =
-  | { kind: 'meta'; id: string; createdAt: string; cwd: string; name?: string; branch?: string; forkOf?: { sessionId: string; entryIndex: number } }
+  | { kind: 'meta'; id: string; createdAt: string; cwd: string; name?: string; branch?: string; forkOf?: { sessionId: string; entryIndex: number }; parent?: string }
   | { kind: 'message'; ts: string; message: Message }
   | { kind: 'model'; ts: string; modelId: string }
   | { kind: 'task_run'; ts: string; ok: boolean }
@@ -184,6 +185,11 @@ export type SessionEntry =
   | { kind: 'rewind'; ts: string; to: number };
 
 // ---------- Events (the extension point) ----------
+
+/** Does this call change the workspace? (writeEffect may depend on the input) */
+export function writesWorkspace(tool: Tool<any>, input: unknown): boolean {
+  return typeof tool.writeEffect === 'function' ? !!tool.writeEffect(input) : !!tool.writeEffect;
+}
 
 export interface TangoEvents {
   session_start: { sessionId: string; cwd: string };
@@ -220,6 +226,8 @@ export interface TangoEvents {
   before_tool: { call: ToolCallBlock; tool: Tool };
   after_tool: { call: ToolCallBlock; result: ToolResult; ms: number };
   turn_end: { stopReason: StopReason; usage: Usage; costUsd: number };
+  /** a `task` sub-agent finished (foreground or background); a background report is already delivered */
+  task_done: { id: string; agent: string; description: string; ok: boolean; sessionId: string; costUsd: number; background: boolean };
   /** a model request failed before any output and is about to be retried */
   retry: RetryInfo;
   error: { error: Error };

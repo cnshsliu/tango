@@ -6,6 +6,7 @@ the [README](../README.md).
 - [Get started](#get-started)
 - [Everyday workflows](#everyday-workflows)
   - [Sessions](#sessions)
+  - [Sub-agents the model starts itself](#sub-agents-the-model-starts-itself)
   - [Background work: /bg vs /subagent](#background-work-bg-vs-subagent)
   - [Worktrees](#worktrees)
   - [Time travel](#time-travel)
@@ -128,6 +129,32 @@ first) and is part of the model's context from its next prompt. Mail is delivery
 never starts a turn, so two sessions cannot reply-loop on their own — and messages expire after
 7 days. Remember that a received message does reach the other session's model, i.e. it can
 influence its behavior; permission checks still apply to whatever it then does.
+
+### Sub-agents the model starts itself
+
+For investigation the model can delegate on its own with the `task` tool. You don't type a
+command; you see a tool line such as `⚙ task explore · find where tokens are refreshed`, and
+when it ends, the sub-agent's report goes back to the model, which carries on from there.
+
+- `explore` is read-only. The model sends it to search the codebase, explain how something
+  works, review a change or research the web, so that dozens of file reads never fill your
+  session's context. It can run in the background: the model keeps working, and the report
+  arrives later. A `⑂ 后台 explore … 完成` notice tells you when.
+- `general` can edit files and run commands in your current directory. It goes through the
+  same permission prompts as the main session. In plan mode and `readonly` mode the model
+  can only use read-only sub-agents.
+
+To get a sub-agent, just ask ("use explore to find every caller of X", "review this diff with a
+sub-agent"). Each run is saved as its own session. They are hidden from the `/resume` list; the
+tool result shows the session id, so `/resume <id>` opens the full run. `/agents subagent
+<model>` puts sub-agents on a cheaper model.
+
+Define your own in `config.json` with `subAgents`, for example a read-only reviewer with
+fixed rules. `/agents` lists them all. See README "Sub-agents: the task tool" for the fields.
+
+Pick `task` sub-agents for questions and reviews in the current checkout. Pick `/bg` or
+`/subagent` when the work should happen in a separate worktree while you keep going. `/tasks`
+lists only `/bg` and `/subagent` runs.
 
 ### Background work: /bg vs /subagent
 
@@ -376,7 +403,7 @@ while a turn is running unless noted. `/help` prints a short list inside the TUI
 | Command | What it does |
 | --- | --- |
 | `/model [id]` | Switch model and save it as the default. Bare: open the model picker (its filter is fuzzy too); clicking the model name in the input box's info row opens the same picker, the current model selected (click it again to close; click a row to pick). The id matches fuzzily, case-insensitive: `glm54` → `zhipu-plan/glm-5.4`; with several words each must match (`zp glm5.4`); several matches list the candidates instead of guessing. `-m` on the command line uses the same matching |
-| `/agents [role model]` | Show or set role models: `driver`, `subagent` (`/bg`, `/subagent`), `longContext` (`/bg --long`) |
+| `/agents [role model]` | Show or set role models: `driver`, `subagent` (`/bg`, `/subagent`, `task` sub-agents), `longContext` (`/bg --long`); also lists the `task` sub-agents |
 | `/mode [confirm\|ask\|auto\|readonly]` | Show or set the permission mode. Bare: a picker with all modes (clicking the mode label in the input box's info row opens it too, the current mode selected; click it again to close, or click the model name to swap to the model picker); switching to auto asks for the risk acknowledgement first |
 | `/plan` | Toggle plan mode: writes refused, the model produces a plan |
 | `/effort [low\|medium\|high\|off]` | Show or set reasoning effort for this session |

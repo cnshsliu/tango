@@ -6,6 +6,7 @@
 import { takeSnapshot } from './git-snapshot.js';
 import type { EventBus } from './events.js';
 import type { SessionStore } from './session.js';
+import { writesWorkspace } from './types.js';
 
 export interface CheckpointOpts {
   /** live: /cd moves the working directory mid-session */
@@ -29,7 +30,7 @@ export function installCheckpoints(events: EventBus, opts: CheckpointOpts): void
     armed = true; // a fresh prompt re-arms; its first write tool snapshots
   });
   events.on('before_tool', async ({ call, tool }) => {
-    if (!armed || !tool.writeEffect) return;
+    if (!armed || !writesWorkspace(tool, call.input)) return;
     armed = false;
     dirty = true;
     try {
