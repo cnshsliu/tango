@@ -141,6 +141,13 @@ match fuzzily everywhere (`-m` too): case-insensitive subsequence — `glm54` fi
   trigger the "writes outside cwd" prompt, whatever the session's cwd. Dirty worktrees refuse removal;
   `/worktree merge <name>` merges back into the main workspace (which must be clean). A bare
   subcommand (`/worktree new`) prints its usage; `/worktree` alone lists (or picks) worktrees.
+  `/worktree rm <name>` removes one. It is refused while the worktree has uncommitted changes and
+  while a live session is working in it — the error names that session; `/cd` it to another
+  directory (or close it) first. Never delete the directory a session works in by hand either:
+  the session's prompts are refused until it `/cd`s to a directory that exists, and a terminal
+  still sitting there starts tango without a working directory. That launch no longer dies with
+  `tango serve exited`: the CLI moves to the home directory first and passes the note to serve as
+  `TANGO_LAUNCH_NOTICE`, shown as a notice frame after `hello`.
 - **/bg <prompt>** — a background prompt: fresh worktree + independent serve child; the task
   runs to completion (detached), its session lands in the shared sessions dir (`/tasks` shows
   status + session, `/stop` kills the process group). `/bg --long` uses the longContext role.

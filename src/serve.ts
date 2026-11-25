@@ -341,6 +341,10 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
     statusline: config.statusline,
     tools: agent.tools.schemas().map(({ name, description }) => ({ name, description }))
   });
+  // started from a directory that no longer exists: the CLI moved to the home directory first
+  const rescued = process.env.TANGO_LAUNCH_NOTICE;
+  delete process.env.TANGO_LAUNCH_NOTICE; // the tools' children don't need it
+  if (rescued) out({ type: 'notice', text: rescued });
   for (const src of opened.resolved.sources) {
     if (src.error) out({ type: 'notice', text: `⚠ 配置文件已跳过：${src.path}（${src.error}）` });
   }

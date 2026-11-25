@@ -198,7 +198,12 @@ unless you `/add_dir` it.
 | `/worktree` | List managed worktrees with their uncommitted-change counts |
 | `/worktree new <name>` | Create one (names: letters, digits, `.`, `_`, `-`, up to 40 chars) |
 | `/worktree merge <name>` | `git merge` its branch into your current branch |
-| `/worktree rm <name>` | Remove it. Refused while it has uncommitted changes |
+| `/worktree rm <name>` | Remove it. Refused while it has uncommitted changes, or while a live session is working in it — the error names that session; `/cd` it to another directory (or close it) first |
+
+Never delete the directory a session is working in, by hand either. The session's prompts are
+refused until it `/cd`s to a directory that exists, and a terminal still sitting there starts
+tango without a working directory — tango then runs in the home directory for that launch and
+says so in a chat line.
 
 A subcommand without a name (`/worktree new`) prints its usage line instead of falling back to
 the list. Registrations can go stale if a worktree is deleted outside tango — `rm` cleans the

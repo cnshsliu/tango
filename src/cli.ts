@@ -2,6 +2,7 @@ import { createInterface } from 'node:readline';
 import * as http from 'node:http';
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Agent } from './core/agent.js';
@@ -16,6 +17,7 @@ import {
   tangoDir
 } from './core/config.js';
 import type { Config } from './core/config.js';
+import { rescueLaunchDir } from './core/launch-dir.js';
 import { listDrafts, promoteDraft, saveDraft } from './core/skills.js';
 import { keyEnvName, retryText } from './core/models/util.js';
 import { groupModels } from './core/models/registry.js';
@@ -574,6 +576,13 @@ async function launchTui(args: Args): Promise<void> {
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
+  const rescued = rescueLaunchDir();
+  if (rescued) {
+    // serve (and so the TUI) shows it as a chat line: serve.ts reads the variable; a
+    // one-shot or REPL run prints it here
+    process.env.TANGO_LAUNCH_NOTICE = rescued;
+    if (!args.serve && !args.tui) console.error(dim(`⚠ 启动目录已不存在 — 本次改用 ${homedir()}`));
+  }
   if (args.task) return taskMain(args, args.task);
   if (args.version) return console.log(VERSION);
   if (args.help) return console.log(HELP);

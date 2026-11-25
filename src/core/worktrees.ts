@@ -4,10 +4,12 @@
  * Layout: ~/.tango/worktrees/<name>/ on branch tango/<name>, registered in worktrees.json.
  */
 import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
-import { tangoDir } from './config.js';
+import { join, sep } from 'node:path';
+import { sessionsDir, tangoDir } from './config.js';
+import { liveSessionLocks } from './session-lock.js';
+import { SessionStore, shortId } from './session.js';
 
 export interface WorktreeEntry {
   name: string;
@@ -68,10 +70,48 @@ export async function worktreeList(): Promise<(WorktreeEntry & { dirty: number }
   });
 }
 
+/** Live sessions whose working directory is inside `path`: pulling it away leaves them unable
+ *  to run anything. A lock records where a session was opened, but /cd moves it, so the
+ *  session's latest meta entry is the truth. */
+export async function sessionsInDir(path: string): Promise<{ id: string; pid: number }[]> {
+  let root: string;
+  try {
+    root = realpathSync(path);
+  } catch {
+    return []; // already gone: nothing can be working in it
+  }
+  const prefix = root.endsWith(sep) ? root : root + sep;
+  const found: { id: string; pid: number }[] = [];
+  for (const { sessionId, lock } of await liveSessionLocks()) {
+    let cwd = lock.cwd;
+    try {
+      cwd = (await SessionStore.open(sessionsDir(), sessionId)).meta()?.cwd ?? cwd;
+    } catch {}
+    if (typeof cwd !== 'string' || !cwd) continue;
+    let real: string;
+    try {
+      real = realpathSync(cwd);
+    } catch {
+      continue; // the session's own directory is gone: it isn't inside one that exists
+    }
+    if (real === root || real.startsWith(prefix)) found.push({ id: sessionId, pid: lock.pid });
+  }
+  return found;
+}
+
 export async function worktreeRemove(cwd: string, name: string, force = false): Promise<void> {
   const entries = await readRegistry();
   const entry = entries.find((e) => e.name === name);
   if (!entry) throw new Error(`no such worktree: ${name}`);
+  // A live session working there would lose its directory, so this is refused with or without
+  // force: force is about uncommitted files, this is about another running session.
+  const inUse = await sessionsInDir(entry.path);
+  if (inUse.length) {
+    const who = inUse.map((s) => `${shortId(s.id)} (pid ${s.pid})`).join(', ');
+    throw new Error(
+      `worktree "${name}" is in use: session ${who} works in it — /cd that session to another directory (or close it) first`
+    );
+  }
   const status = git(entry.path, ['status', '--porcelain']);
   if (!force && status.ok && status.out.trim()) {
     throw new Error(`worktree "${name}" has uncommitted changes (commit/merge first, or force)`);

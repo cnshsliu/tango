@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import { readFileSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { tangoDir } from './config.js';
@@ -49,4 +49,28 @@ export async function sessionHolder(sessionId: string): Promise<SessionLock | nu
   } catch {
     return null;
   }
+}
+
+/** One live lock: which session, and the process that holds it open. */
+export interface LiveSessionLock {
+  sessionId: string;
+  lock: SessionLock;
+}
+
+/** Every session a live process holds open, this one included: stale locks count as closed. */
+export async function liveSessionLocks(): Promise<LiveSessionLock[]> {
+  let files: string[];
+  try {
+    files = (await readdir(lockDir())).filter((f) => f.endsWith('.json'));
+  } catch {
+    return [];
+  }
+  const live: LiveSessionLock[] = [];
+  for (const f of files) {
+    try {
+      const lock = JSON.parse(await readFile(join(lockDir(), f), 'utf8')) as SessionLock;
+      if (lock.pid > 1 && alive(lock.pid)) live.push({ sessionId: f.slice(0, -'.json'.length), lock });
+    } catch {}
+  }
+  return live;
 }
