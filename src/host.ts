@@ -1,5 +1,6 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 /**
  * Shared host wiring: every frontend (terminal REPL, serve protocol, task daemon)
@@ -331,6 +332,9 @@ export interface Opened {
   agent: Agent;
   store: SessionStore;
   cwd: string;
+  /** the session's recorded directory, when it no longer exists and the session was moved to
+   *  `cwd` instead (a removed worktree); the host tells the user */
+  movedFrom?: string;
   /** why the current model can't be called right now (missing key); the host decides how to show it */
   warning?: string;
   /** the layered config this session was assembled from (resolved once, for the session cwd) */
@@ -353,7 +357,15 @@ export async function openAgent(args: HostArgs, perm: PermState): Promise<Opened
     store = await SessionStore.create(sessionsDir(), args.cwd ?? process.cwd(), undefined, undefined, undefined, branch || undefined);
   }
 
-  const cwd = args.cwd ?? store.meta()?.cwd ?? process.cwd();
+  // A resumed session keeps its recorded directory — unless that is gone (the worktree was
+  // removed): then it runs where tango was started (after the launch rescue: the home directory
+  // at worst) instead of sitting in a directory where nothing can run.
+  let movedFrom: string | undefined;
+  let cwd = args.cwd ?? store.meta()?.cwd ?? process.cwd();
+  if (!args.cwd && !existsSync(cwd)) {
+    movedFrom = cwd;
+    cwd = existsSync(process.cwd()) ? process.cwd() : homedir();
+  }
   // config depends on where the session runs: global, then that project's layers
   const resolved = await resolveConfig(cwd);
   const cfg = resolved.config;
@@ -364,5 +376,5 @@ export async function openAgent(args: HostArgs, perm: PermState): Promise<Opened
   const effective = stored ? models.find((m) => m.id === stored) ?? model : model;
   const maxTurns = args.maxToolRounds ?? cfg.maxTurns;
   const agent = makeAgent(effective, store, cwd, perm, { ...cfg, maxTurns, projectDir: resolved.project?.root });
-  return { agent, store, cwd, warning: keyProblem(effective), resolved };
+  return { agent, store, cwd, movedFrom, warning: keyProblem(effective), resolved };
 }

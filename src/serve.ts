@@ -345,19 +345,20 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
   // started from a directory that no longer exists: the CLI moved to the home directory first
   const rescued = process.env.TANGO_LAUNCH_NOTICE;
   delete process.env.TANGO_LAUNCH_NOTICE; // the tools' children don't need it
-  if (rescued) {
-    // what is used now depends on the session: a new one moved to the home directory, a resumed
-    // one keeps its own directory — or has lost it (the cwd_missing frame that follows asks)
+  // Started from a directory that no longer exists (`rescued`) and/or resumed a session whose own
+  // directory is gone (`movedFrom`): say what happened, and what this session runs in now.
+  const movedFrom = opened.movedFrom;
+  if (rescued || movedFrom) {
+    const what = [rescued, movedFrom && `会话目录 ${movedFrom} 已不存在`].filter(Boolean).join('；');
     let here = '';
     try {
       here = realpathSync(cwd);
     } catch {}
-    const tail = !existsSync(cwd)
-      ? `— 会话目录 ${cwd} 也不存在了，请 /cd <目录>`
-      : here === process.cwd()
+    const tail =
+      movedFrom || here === process.cwd()
         ? `— 本次改用 ${cwd}；/cd <目录> 可切换`
         : `— 会话仍在 ${cwd} 里运行，不受影响`;
-    out({ type: 'notice', text: `${rescued}${tail}` });
+    out({ type: 'notice', text: `⚠ ${what.replace(/^⚠ /, '')} ${tail}` });
   }
   for (const src of opened.resolved.sources) {
     if (src.error) out({ type: 'notice', text: `⚠ 配置文件已跳过：${src.path}（${src.error}）` });

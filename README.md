@@ -145,10 +145,12 @@ match fuzzily everywhere (`-m` too): case-insensitive subsequence — `glm54` fi
   `/worktree rm <name>` removes one. It is refused while the worktree has uncommitted changes and
   while a live session is working in it — the error names that session; `/cd` it to another
   directory (or close it) first. Never delete the directory a session works in by hand either:
-  the session's prompts are refused until it `/cd`s to a directory that exists, and a terminal
-  still sitting there starts tango without a working directory. That launch no longer dies with
-  `tango serve exited`: the CLI moves to the home directory first and passes the note to serve as
-  `TANGO_LAUNCH_NOTICE`, shown as a notice frame after `hello`.
+  a session that is open there is stuck until it `/cd`s to a directory that exists. A session
+  resumed after its directory is gone runs in the directory tango was started in instead, and
+  says so in a chat line (`/cd` picks another; until then the session keeps its recorded
+  directory, so the next resume says so again). A terminal still sitting in the deleted directory
+  starts tango without a working directory: the CLI moves to the home directory first and passes
+  the note to serve as `TANGO_LAUNCH_NOTICE`, shown as a notice frame after `hello`.
 - **/bg <prompt>** — a background prompt: fresh worktree + independent serve child; the task
   runs to completion (detached), its session lands in the shared sessions dir (`/tasks` shows
   status + session, `/stop` kills the process group). `/bg --long` uses the longContext role.

@@ -102,7 +102,7 @@ Every conversation is a session, stored as an append-only JSONL file in
 | Task | Command |
 | --- | --- |
 | Continue the latest session | `tango -c` |
-| Open a specific session | `tango -r <id or prefix>` (the id's last `-` part also works, e.g. `tango -r 0ad2040a8182`), or `/resume` inside the TUI for a picker |
+| Open a specific session | `tango -r <id or prefix>` (the id's last `-` part also works, e.g. `tango -r 0ad2040a8182`), or `/resume` inside the TUI for a picker. If the session's directory no longer exists, it runs in the directory you start tango from, for that run, and says so |
 | Start fresh, same model and mode | `/new` |
 | Go back to the previous session (e.g. from a subagent's session to its parent) | `/back`; `/forward` undoes it |
 | Name the session | `/rename <name>` |
@@ -200,10 +200,11 @@ unless you `/add_dir` it.
 | `/worktree merge <name>` | `git merge` its branch into your current branch |
 | `/worktree rm <name>` | Remove it. Refused while it has uncommitted changes, or while a live session is working in it — the error names that session; `/cd` it to another directory (or close it) first |
 
-Never delete the directory a session is working in, by hand either. The session's prompts are
-refused until it `/cd`s to a directory that exists, and a terminal still sitting there starts
-tango without a working directory — tango then runs in the home directory for that launch and
-says so in a chat line.
+Never delete the directory a session is working in, by hand either. A session that is open
+there is stuck until it `/cd`s to a directory that exists. A session you resume afterwards runs
+in the directory you started tango from, with a chat line saying so (`/cd` to pick another). A
+terminal still sitting in the deleted directory starts tango without a working directory — it
+then runs in the home directory for that launch and says so.
 
 A subcommand without a name (`/worktree new`) prints its usage line instead of falling back to
 the list. Registrations can go stale if a worktree is deleted outside tango — `rm` cleans the
