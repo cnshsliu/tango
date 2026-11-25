@@ -338,6 +338,8 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
     const tail = agent.busy ? '报告已交给模型' : '报告已写入会话，下一条消息时模型会读到';
     out({ type: 'notice', text: `⑂ 后台 ${e.agent} ${e.id}「${e.description}」${e.ok ? '完成' : '失败'} · ${tail} · /resume ${shortId(e.sessionId)} 看全程` });
   });
+  // a running `task` sub-agent's steps: the UI shows the latest under that task's line
+  agent.events.on('task_progress', (e) => out({ type: 'task_progress', ...e }));
   agent.events.on('after_tool', ({ call, result, ms }) =>
     out({
       type: 'tool_result',

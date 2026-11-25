@@ -252,3 +252,56 @@ test('deliver: idle reports are stored now, mid-turn ones ride the next request 
     await done();
   }
 });
+
+test('task: an interrupted sub-agent hands back its work so far; each of its steps is announced', async () => {
+  const { host, store, work, done } = await setup();
+  await writeFile(join(work, 'notes.txt'), 'YINGZHI-DECK at /dev/pitch/a.pptx\n');
+  let parent: any;
+  const m = await mockModel((body) => {
+    if (isSub(body)) {
+      // step 1: read; when its result comes back, the user interrupts the turn
+      if (fresh(body)) return call('read', { path: join(work, 'notes.txt') }, 's1');
+      parent.abort();
+      return say('never seen');
+    }
+    if (fresh(body)) return call('task', { agent: 'explore', description: 'find deck', prompt: 'find the deck' }, 'p1');
+    return say('parent done');
+  });
+  try {
+    parent = host.makeAgent(m.model, store, work, { mode: 'ask' });
+    const progress: any[] = [];
+    parent.events.on('task_progress', (e: any) => void progress.push(e));
+    let result = '';
+    parent.events.on('after_tool', ({ call, result: r }: any) => {
+      if (call.name === 'task') result = r.content.map((b: any) => b.text ?? '').join('');
+    });
+    await parent.prompt('where is the deck?');
+    // the tool result carries what the sub-agent had read, not a bare "aborted"
+    assert.match(result, /interrupted before its report/);
+    assert.match(result, /\[read .*notes\.txt\]\n.*YINGZHI-DECK/);
+    // its step was announced, tagged with the parent's task call id
+    assert.deepEqual(
+      progress.map((p) => [p.callId, p.agent, p.step, p.tool]),
+      [['p1', 'explore', 1, 'read']]
+    );
+    assert.match(progress[0].detail, /notes\.txt$/);
+  } finally {
+    m.server.close();
+    await done();
+  }
+});
+
+test('partialReport: newest results first, within the cap', async () => {
+  const { partialReport } = await import('../src/host.js');
+  const msgs: any[] = [
+    { role: 'assistant', content: [{ type: 'text', text: 'looking' }, { type: 'tool_call', id: 'a', name: 'grep', input: { pattern: 'x' } }] },
+    { role: 'user', content: [{ type: 'tool_result', toolCallId: 'a', content: [{ type: 'text', text: 'OLD'.repeat(10) }] }] },
+    { role: 'assistant', content: [{ type: 'tool_call', id: 'b', name: 'find', input: { pattern: 'y' } }] },
+    { role: 'user', content: [{ type: 'tool_result', toolCallId: 'b', content: [{ type: 'text', text: 'NEW' }] }] }
+  ];
+  const r = partialReport(msgs);
+  assert.ok(r.startsWith('last note: looking'));
+  assert.ok(r.indexOf('[find y]\nNEW') < r.indexOf('[grep x]'));
+  assert.ok(partialReport(msgs, 260).length <= 260);
+  assert.equal(partialReport([]), '');
+});

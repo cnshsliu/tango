@@ -7186,6 +7186,28 @@ impl App {
                 }
             }
             "message" => self.commit_stream(),
+            // a running `task` sub-agent took a step: its live line shows the latest one
+            // (`⚙ task explore · 第3步 grep 英智`); the result line replaces it when it ends
+            "task_progress" => {
+                self.last_output = Some(std::time::Instant::now());
+                let id = v["callId"].as_str().unwrap_or_default();
+                let detail: String = v["detail"].as_str().unwrap_or("").chars().take(80).collect();
+                let text = format!(
+                    "⚙ task {} · 第{}步 {} {}",
+                    v["agent"].as_str().unwrap_or("?"),
+                    v["step"].as_u64().unwrap_or(0),
+                    v["tool"].as_str().unwrap_or("?"),
+                    detail
+                );
+                if let Some(line) = self
+                    .lines
+                    .iter_mut()
+                    .rev()
+                    .find(|l| !id.is_empty() && l.tool_id.as_deref() == Some(id))
+                {
+                    line.text = text.trim_end().to_string();
+                }
+            }
             // chat-line notices from serve (warnings, goal/subtask status) — never part of a stream
             // serve found trust-gated keys in an undecided project: ask once
             "trust_request" => {
@@ -11183,6 +11205,28 @@ mod tests {
 
     use super::*;
     use std::collections::BTreeSet;
+
+    #[test]
+    fn task_progress_updates_the_running_task_line() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.frame(json!({"type":"stream","event":{"type":"tool_call_start","id":"c7","name":"task"}}), &mut serve);
+        app.frame(
+            json!({"type":"task_progress","callId":"c7","agent":"explore","step":2,"tool":"grep","detail":"英智"}),
+            &mut serve,
+        );
+        let line = app.lines.iter().find(|l| l.tool_id.as_deref() == Some("c7")).unwrap();
+        assert_eq!(line.text, "⚙ task explore · 第2步 grep 英智");
+        // another call's progress leaves this line alone
+        app.frame(json!({"type":"task_progress","callId":"zz","agent":"explore","step":9,"tool":"ls","detail":""}), &mut serve);
+        assert!(app.lines.iter().all(|l| !l.text.contains("第9步")));
+        // the result freezes it into the usual summary line
+        app.frame(
+            json!({"type":"tool_result","call":{"id":"c7","name":"task","input":{"agent":"explore","description":"find","prompt":"p"}},"ms":5,"isError":false,"output":"r"}),
+            &mut serve,
+        );
+        assert!(app.lines.iter().any(|l| l.text.starts_with("⚙ task explore · find")));
+    }
 
     #[test]
     fn task_calls_summarize_as_agent_and_description() {

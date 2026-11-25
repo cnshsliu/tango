@@ -441,6 +441,7 @@ export class Agent {
       result = await tool.execute(call.input, {
         cwd: this.cwd,
         sessionId: this.store.id,
+        callId: call.id,
         signal: this.controller?.signal ?? new AbortController().signal
       });
     } catch (e: any) {

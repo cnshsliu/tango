@@ -133,8 +133,10 @@ influence its behavior; permission checks still apply to whatever it then does.
 ### Sub-agents the model starts itself
 
 For investigation the model can delegate on its own with the `task` tool. You don't type a
-command; you see a tool line such as `⚙ task explore · find where tokens are refreshed`, and
-when it ends, the sub-agent's report goes back to the model, which carries on from there.
+command; you see a tool line such as `⚙ task explore · find where tokens are refreshed`. While
+the sub-agent works, that line shows its latest step (`⚙ task explore · 第3步 grep 英智`). When
+it ends, the sub-agent's report goes back to the model, which carries on from there. If you
+interrupt the turn first, the model still gets what the sub-agent had found so far.
 
 - `explore` is read-only. The model sends it to search the codebase, explain how something
   works, review a change or research the web, so that dozens of file reads never fill your

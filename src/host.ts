@@ -29,7 +29,7 @@ import { sessionSearchTool } from './core/tools/session-search.js';
 import { webFetchTool } from './core/tools/web-fetch.js';
 import { webSearchTool } from './core/tools/web-search.js';
 import { makeTaskTool, type SubAgentDef, type TaskDeps, type TaskInput } from './core/tools/task.js';
-import type { ModelSpec } from './core/types.js';
+import type { Message, ModelSpec } from './core/types.js';
 
 export const VERSION = '0.1.0';
 
@@ -320,6 +320,43 @@ export function makeAgent(model: ModelSpec, store: SessionStore, cwd: string, pe
   return agent;
 }
 
+/** One-line gist of a tool call for progress lines: its main argument, clipped. */
+function callGist(input: unknown): string {
+  const o = (input && typeof input === 'object' ? input : {}) as Record<string, unknown>;
+  const v = ['command', 'path', 'pattern', 'query', 'url'].map((k) => o[k]).find((x) => typeof x === 'string');
+  return String(v ?? '').replace(/\s+/g, ' ').slice(0, 120);
+}
+
+/**
+ * What an interrupted sub-agent had already: its last words and its latest tool results, so the
+ * parent keeps the work done so far instead of a bare "aborted". Capped; newest results first.
+ */
+export function partialReport(messages: Message[], cap = 8_000): string {
+  const texts: string[] = [];
+  const results: string[] = [];
+  const names = new Map<string, string>();
+  for (const m of messages) {
+    for (const b of m.content) {
+      if (b.type === 'tool_call') names.set(b.id, `${b.name} ${callGist(b.input)}`.trim());
+      if (m.role === 'assistant' && b.type === 'text' && b.text.trim()) texts.push(b.text.trim());
+      if (b.type === 'tool_result') {
+        const body = b.content.map((c) => (c.type === 'text' ? c.text : '')).join('\n').trim();
+        if (body && body !== 'aborted') results.push(`[${names.get(b.toolCallId) ?? 'tool'}]\n${body}`);
+      }
+    }
+  }
+  const parts: string[] = [];
+  if (texts.length) parts.push(`last note: ${texts[texts.length - 1]}`);
+  let room = cap - parts.join('\n\n').length;
+  for (const r of results.reverse()) {
+    if (room <= 200) break;
+    const piece = r.length > room ? `${r.slice(0, room - 20)}\n…(truncated)` : r;
+    parts.push(piece);
+    room -= piece.length + 2;
+  }
+  return parts.join('\n\n');
+}
+
 /** at most this many background sub-agents per session at once */
 export const MAX_BG_TASKS = 4;
 
@@ -339,7 +376,7 @@ function subAgentPrompt(def: SubAgentDef): string {
 function taskDeps(parent: Agent, store: SessionStore, perm: PermState, cfg: AgentCfg): TaskDeps {
   let seq = 0;
   let running = 0;
-  const run = async (def: SubAgentDef, input: TaskInput, signal: AbortSignal, id: string, background: boolean) => {
+  const run = async (def: SubAgentDef, input: TaskInput, signal: AbortSignal, id: string, background: boolean, callId?: string) => {
     // the sub-agent's own model, else roles.subagent (read now: /agents set applies at once), else the parent's
     const models = await loadModels();
     const roles = (await resolveConfig(parent.cwd).catch(() => undefined))?.config.roles ?? cfg.roles;
@@ -355,6 +392,14 @@ function taskDeps(parent: Agent, store: SessionStore, perm: PermState, cfg: Agen
     }
     const sub = makeAgent(model, subStore, parent.cwd, perm, cfg, { tools, readonly: !!def.readonly });
     sub.systemSuffix = subAgentPrompt(def) + (parent.systemSuffix ?? '');
+    // each tool the sub-agent runs shows up under the parent's task line (foreground only:
+    // a background run's line has already finished)
+    let step = 0;
+    if (!background) {
+      sub.events.on('before_tool', ({ call }) => {
+        void parent.events.emit('task_progress', { callId, agent: def.name, step: ++step, tool: call.name, detail: callGist(call.input) });
+      });
+    }
     const stop = () => sub.abort();
     signal.addEventListener('abort', stop);
     let text = '';
@@ -363,7 +408,11 @@ function taskDeps(parent: Agent, store: SessionStore, perm: PermState, cfg: Agen
       const msg = await sub.prompt(String(input.prompt));
       text = msg.content.map((b) => (b.type === 'text' ? b.text : '')).join('').trim();
       ok = msg.stopReason !== 'aborted' && msg.stopReason !== 'error';
-      if (!ok && !text) text = 'aborted';
+      if (!ok && !text) {
+        // interrupted: hand back what it had found so far
+        const partial = partialReport(subStore.allMessages());
+        text = partial ? `interrupted before its report; work so far:\n\n${partial}` : 'aborted';
+      }
     } catch (e: any) {
       text = `sub-agent failed: ${e?.message ?? e}`;
     } finally {
@@ -376,7 +425,7 @@ function taskDeps(parent: Agent, store: SessionStore, perm: PermState, cfg: Agen
   return {
     subAgents: () => (Array.isArray(cfg.subAgents) ? cfg.subAgents : []),
     run: async (def, input, ctx) => {
-      const r = await run(def, input, ctx.signal, `t${++seq}`, false);
+      const r = await run(def, input, ctx.signal, `t${++seq}`, false, ctx.callId);
       await parent.events.emit('task_done', r.done);
       return r;
     },

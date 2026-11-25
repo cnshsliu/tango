@@ -153,6 +153,8 @@ export interface ToolContext {
   signal: AbortSignal;
   /** id of the session making the call (session_search skips it) */
   sessionId?: string;
+  /** id of this tool call (task: its sub-agent's progress names the call it belongs to) */
+  callId?: string;
 }
 
 export interface ToolResult {
@@ -227,6 +229,8 @@ export interface TangoEvents {
   after_tool: { call: ToolCallBlock; result: ToolResult; ms: number };
   turn_end: { stopReason: StopReason; usage: Usage; costUsd: number };
   /** a `task` sub-agent finished (foreground or background); a background report is already delivered */
+  /** a `task` sub-agent is about to run one of its tools (callId: the parent's task call) */
+  task_progress: { callId?: string; agent: string; step: number; tool: string; detail: string };
   task_done: { id: string; agent: string; description: string; ok: boolean; sessionId: string; costUsd: number; background: boolean };
   /** a model request failed before any output and is about to be retried */
   retry: RetryInfo;

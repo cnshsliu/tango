@@ -513,7 +513,8 @@ snapshot flags), `rewind`/`undo`/`redo` (time travel; refused while a turn runs)
 skip that queue so they land mid-turn. A client switches sessions by respawning the child with
 `TANGO_RESUME=<id or prefix>` (and optionally `TANGO_MODE`, `TANGO_MODEL`) in the environment —
 serve takes them from there, no flags. Frames: `hello` (session/model/tools/context) → `stream`
-(token deltas) → `tool_result` / `permission_request` → `message` → `turn_end` (usage, context
+(token deltas) → `tool_result` / `permission_request` (a running `task` call also sends
+`task_progress`: `callId`, `agent`, `step`, `tool`, `detail` per sub-agent tool) → `message` → `turn_end` (usage, context
 window/tokens + running cost) → `result` (per command). Side questions use request-id-tagged
 `btw_stream` frames and never enter session history. stdin EOF lets queued work finish, so pipes
 work too. This is the seam the TUI —
@@ -738,7 +739,10 @@ Both tools count as reads for permissions.
 `explore`), `description` (a short label), `prompt` (the complete brief, since the sub-agent sees
 none of the conversation) and optional `background`. The sub-agent runs in the same process and
 cwd, and only its final reply comes back, as the tool result
-`[explore · session 1a2b3c4d5e6f]\n<report>` (capped at 20 000 characters). The system prompt
+`[explore · session 1a2b3c4d5e6f]\n<report>` (capped at 20 000 characters). While it runs, the
+TUI's task line shows its latest step (`⚙ task explore · 第3步 grep 英智`). Interrupted before
+its report (Esc, `/restart` …), it still hands back its work so far: `interrupted before its
+report; work so far:` with its last note and its newest tool results (up to 8 000 characters). The system prompt
 tells the model to send `explore` for broad searches, code explanations, reviews and root-cause
 hunts.
 
