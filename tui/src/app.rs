@@ -1680,8 +1680,8 @@ pub struct App {
     /// the mode label (`auto`, `plan` …) at the start of that row: a click opens
     /// the mode picker
     mode_area: Rect,
-    /// the footer's key hints: `shift+tab mode` does what Shift+Tab does (the mode picker,
-    /// plan toggle preselected), `ctrl+p commands` the command palette (like ctrl+p)
+    /// the footer's key hints: `shift+tab mode` does what Shift+Tab does (the next mode),
+    /// `ctrl+p commands` the command palette (like ctrl+p)
     footer_mode_area: Rect,
     footer_palette_area: Rect,
     /// every open dialog's bottom-hint keys as buttons, drawn this frame: a click on
@@ -5595,14 +5595,16 @@ impl App {
                     {
                         let on_label = self.mode_area.width > 0 && self.mode_area.contains(pos);
                         let on_hint = self.footer_mode_area.width > 0 && self.footer_mode_area.contains(pos);
-                        if on_label || on_hint {
+                        if on_hint {
+                            // the shift+tab hint switches like the key does, whatever is open
+                            self.picker = None;
+                            self.cycle_mode(serve);
+                            return false;
+                        }
+                        if on_label {
                             self.picker = None;
                             if kind != PickerKind::Mode {
-                                if on_hint {
-                                    self.open_mode_toggle();
-                                } else {
-                                    self.open_mode_picker();
-                                }
+                                self.open_mode_picker();
                             }
                             return false;
                         }
@@ -5707,13 +5709,13 @@ impl App {
                                 return false;
                             }
                             // …the mode label opens the mode picker on the current mode; the
-                            // footer's shift+tab hint does what Shift+Tab does (plan preselected)
+                            // footer's shift+tab hint does what Shift+Tab does (the next mode)
                             if self.mode_area.width > 0 && self.mode_area.contains(pos) {
                                 self.open_mode_picker();
                                 return false;
                             }
                             if self.footer_mode_area.width > 0 && self.footer_mode_area.contains(pos) {
-                                self.open_mode_toggle();
+                                self.cycle_mode(serve);
                                 return false;
                             }
                             // the footer's ctrl+p hint opens the command palette
@@ -6399,18 +6401,14 @@ impl App {
             self.open_command_palette();
             return;
         }
-        // Shift+Tab opens the mode picker on the plan toggle (plan, or back to the permission
-        // mode when plan is on); a second Shift+Tab confirms it. The footer hint does the same.
+        // Shift+Tab steps to the next mode at once, no dialog: ask → plan → confirm → readonly
+        // → ask. The footer's shift+tab hint does the same.
         if k.code == KeyCode::BackTab
             && self.picker.is_none()
             && self.popup.is_none()
             && self.viewer.is_none()
         {
-            self.open_mode_toggle();
-            return;
-        }
-        if k.code == KeyCode::BackTab && self.picker.as_ref().is_some_and(|p| p.kind == PickerKind::Mode) {
-            self.accept_picker(serve);
+            self.cycle_mode(serve);
             return;
         }
         if ctrl && k.code == KeyCode::Char('r') && self.picker.is_none() && self.popup.is_none() {
@@ -7050,17 +7048,32 @@ impl App {
         self.picker = Some(Picker::new(PickerKind::Mode, items));
     }
 
-    /// Shift+Tab and the footer's `shift+tab mode` hint: the mode picker with the plan toggle
-    /// preselected — plan when it is off, the current permission mode when it is on — so a
-    /// second Shift+Tab (or enter) flips plan and leaves the permission mode as it was.
-    fn open_mode_toggle(&mut self) {
-        self.open_mode_picker();
-        let target = if self.plan_mode { self.mode.clone() } else { "plan".to_string() };
-        if let Some(p) = self.picker.as_mut()
-            && let Some(i) = p.items.iter().position(|it| it.id == target)
-        {
-            p.sel = i;
+    /// Shift+Tab's cycle. `auto` is left out: full access only ever comes through its
+    /// acknowledgement (`/mode auto` or the picker); from auto the next press goes to plan.
+    const MODE_CYCLE: [&'static str; 4] = ["ask", "plan", "confirm", "readonly"];
+
+    /// Shift+Tab and the footer's `shift+tab mode` hint: switch to the next mode in
+    /// `MODE_CYCLE` right away. The local state moves at once, so quick presses keep stepping
+    /// instead of all starting from the same mode; serve's replies then confirm it.
+    fn cycle_mode(&mut self, serve: &mut Serve) {
+        let now = if self.plan_mode { "plan" } else { self.mode.as_str() };
+        let at = Self::MODE_CYCLE.iter().position(|m| *m == now).unwrap_or(0);
+        let next = Self::MODE_CYCLE[(at + 1) % Self::MODE_CYCLE.len()];
+        if next == "plan" {
+            // plan lies over the permission mode, which stays as it was
+            let id = serve.command("set_plan", vec![("on", Value::Bool(true))]);
+            self.pending.push((id, Pending::Plan));
+            self.plan_mode = true;
+            return;
         }
+        if self.plan_mode {
+            let id = serve.command("set_plan", vec![("on", Value::Bool(false))]);
+            self.pending.push((id, Pending::Plan));
+            self.plan_mode = false;
+        }
+        let id = serve.command("set_mode", vec![("mode", Value::String(next.into()))]);
+        self.pending.push((id, Pending::Mode));
+        self.mode = next.into();
     }
 
     fn send_prompt(&mut self, serve: &mut Serve) {
@@ -7623,6 +7636,9 @@ impl App {
                             // badges follow the serve truth (goal cleared by interrupt etc.)
                             self.goal_text = d["goal"].as_str().map(|g| g.to_string());
                             self.plan_mode = d["plan"].as_bool().unwrap_or(self.plan_mode);
+                            if let Some(m) = d["mode"].as_str() {
+                                self.mode = m.into();
+                            }
                             let t = &d["sessionTokens"];
                             let (tin, tout, tcache) = (
                                 t["input"].as_u64().unwrap_or(0),
@@ -8757,10 +8773,17 @@ impl App {
                             ),
                             Tone::Error,
                         ),
-                        (_, false) => self.push(
-                            format!("error: {}", v["error"].as_str().unwrap_or("?")),
-                            Tone::Error,
-                        ),
+                        (pending, false) => {
+                            self.push(
+                                format!("error: {}", v["error"].as_str().unwrap_or("?")),
+                                Tone::Error,
+                            );
+                            // Shift+Tab moved the badge before serve answered: put it back
+                            if matches!(pending, Pending::Mode | Pending::Plan) {
+                                let id = serve.command("status", vec![]);
+                                self.pending.push((id, Pending::Status));
+                            }
+                        }
                     }
                 }
             }
@@ -12908,20 +12931,23 @@ mod tests {
                 serve,
             );
         };
-        // shift+tab hint → what Shift+Tab does: the mode picker, plan preselected
-        click(&mut app, &mut serve, m);
-        assert_eq!(app.picker.as_ref().map(|p| p.kind), Some(PickerKind::Mode));
-        let p0 = app.picker.as_ref().unwrap();
-        assert_eq!(p0.items[p0.sel].id, "plan");
-        // ctrl+p hint while a picker is open swaps to the command palette
+        // ctrl+p hint opens the command palette; a second click closes it
         click(&mut app, &mut serve, p);
         assert_eq!(app.picker.as_ref().map(|p| p.kind), Some(PickerKind::Command));
-        // a second click closes it
         click(&mut app, &mut serve, p);
         assert!(app.picker.is_none());
+        assert!(serve.sent.is_empty(), "the palette hint does not talk to serve");
+        // shift+tab hint → what Shift+Tab does: the next mode at once (auto → plan), no picker
+        click(&mut app, &mut serve, m);
+        assert!(app.picker.is_none());
+        assert!(app.plan_mode);
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        assert_eq!((sent["cmd"].as_str(), sent["on"].as_bool()), (Some("set_plan"), Some(true)));
+        // with a picker open, the shift+tab hint closes it and still switches
         click(&mut app, &mut serve, p);
-        assert_eq!(app.picker.as_ref().map(|p| p.kind), Some(PickerKind::Command));
-        assert!(serve.sent.is_empty(), "neither hint talks to serve");
+        click(&mut app, &mut serve, m);
+        assert!(app.picker.is_none());
+        assert!(!app.plan_mode, "plan → confirm");
     }
 
     #[test]
@@ -14957,47 +14983,55 @@ mod tests {
     }
 
     #[test]
-    fn shift_tab_toggles_plan_and_the_block_recolors() {
+    fn shift_tab_cycles_modes_without_a_dialog() {
         let mut app = App::new();
         let mut serve = Serve::mock();
         app.mode = "ask".into();
         let ask = app.mode_color();
         let shift_tab = || crossterm::event::KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT);
-        // first press: the mode picker, plan preselected; nothing is sent yet
+        let sent = |serve: &Serve, i: usize| -> Value { serde_json::from_str(&serve.sent[i]).unwrap() };
+        // ask → plan: plan goes on over the permission mode, at once, no picker
         app.key(shift_tab(), &mut serve);
-        let p = app.picker.as_ref().expect("shift+tab opens the mode picker");
-        assert_eq!(p.kind, PickerKind::Mode);
-        assert_eq!(p.items[p.sel].id, "plan");
-        assert!(serve.sent.is_empty());
-        // second press confirms it
+        assert!(app.picker.is_none(), "no dialog");
+        assert_eq!((sent(&serve, 0)["cmd"].as_str(), sent(&serve, 0)["on"].as_bool()), (Some("set_plan"), Some(true)));
+        assert!(app.plan_mode);
+        assert_eq!(app.mode, "ask", "plan leaves the permission mode alone");
+        assert_ne!(app.mode_color(), ask, "plan has its own accent");
+        // plan → confirm: plan off, then the mode
         app.key(shift_tab(), &mut serve);
-        assert!(app.picker.is_none());
-        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
-        assert_eq!(sent["cmd"], "set_plan");
-        assert_eq!(sent["on"], true);
+        assert_eq!(sent(&serve, 1)["on"], false);
+        assert_eq!((sent(&serve, 2)["cmd"].as_str(), sent(&serve, 2)["mode"].as_str()), (Some("set_mode"), Some("confirm")));
+        assert!(!app.plan_mode);
+        // confirm → readonly → ask: quick presses keep stepping before serve answers
+        app.key(shift_tab(), &mut serve);
+        app.key(shift_tab(), &mut serve);
+        assert_eq!(sent(&serve, 3)["mode"], "readonly");
+        assert_eq!(sent(&serve, 4)["mode"], "ask");
+        assert_eq!(app.mode, "ask");
+        assert_eq!(serve.sent.len(), 5);
+        // auto is never stepped into; from auto the next press is plan
+        app.mode = "auto".into();
+        app.key(shift_tab(), &mut serve);
+        assert_eq!(sent(&serve, 5)["cmd"], "set_plan");
+        assert!(app.full_access.is_none(), "no full-access dialog either");
+    }
+
+    #[test]
+    fn a_refused_mode_switch_resyncs_from_serve() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.mode = "ask".into();
+        app.plan_mode = true;
+        app.key(crossterm::event::KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT), &mut serve);
+        let set_mode: Value = serde_json::from_str(&serve.sent[1]).unwrap();
+        app.frame(json!({"type": "result", "id": set_mode["id"], "ok": false, "error": "nope"}), &mut serve);
+        let status: Value = serde_json::from_str(serve.sent.last().unwrap()).unwrap();
+        assert_eq!(status["cmd"], "status");
         app.frame(
-            json!({"type": "result", "id": sent["id"], "ok": true, "data": {"plan": true}}),
+            json!({"type": "result", "id": status["id"], "ok": true, "data": {"mode": "ask", "plan": true}}),
             &mut serve,
         );
-        assert!(app.plan_mode);
-        assert_ne!(app.mode_color(), ask, "plan has its own accent");
-        assert_eq!(app.mode, "ask", "shift+tab never touches the permission mode");
-        // in plan: the permission mode is preselected, so two presses turn plan off again
-        app.key(shift_tab(), &mut serve);
-        let p = app.picker.as_ref().unwrap();
-        assert_eq!(p.items[p.sel].id, "ask");
-        app.key(shift_tab(), &mut serve);
-        let sent2: Value = serde_json::from_str(&serve.sent[1]).unwrap();
-        assert_eq!(sent2["cmd"], "set_plan");
-        assert_eq!(sent2["on"], false);
-        let sent3: Value = serde_json::from_str(&serve.sent[2]).unwrap();
-        assert_eq!((sent3["cmd"].as_str(), sent3["mode"].as_str()), (Some("set_mode"), Some("ask")));
-        // esc after the first press changes nothing
-        let n = serve.sent.len();
-        app.key(shift_tab(), &mut serve);
-        app.key(KeyCode::Esc.into(), &mut serve);
-        assert!(app.picker.is_none());
-        assert_eq!(serve.sent.len(), n);
+        assert_eq!((app.mode.as_str(), app.plan_mode), ("ask", true));
     }
 
     #[test]
