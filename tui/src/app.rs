@@ -890,7 +890,8 @@ const SLASH: &[(&str, &str)] = &[
         "/name [名字]",
         "查看/重命名当前会话（选择窗 ctrl+r 改任意会话）",
     ),
-    ("/mode <m>", "ask | auto | readonly"),
+    ("/mode <m>", "ask | auto | readonly | confirm | plan"),
+    ("/auto", "同 /mode auto：完全放行，先过风险确认"),
     ("/plan", "计划模式开关：禁止一切写操作，只出执行计划"),
     (
         "/permissions [add|rm <rule>]",
@@ -1153,7 +1154,14 @@ struct TodoItem {
     kind: TodoKind,
 }
 
-/// A clickable action in the /todo dialog.
+/// A click target in the full-access acknowledgement dialog.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum FullAccessAction {
+    Toggle, // the "我已了解风险" row
+    Enable, // 启用 (treats an unchecked box as checked only on a second, explicit click)
+}
+
+/// A click target in the /todo dialog.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum TodoAction {
     Expand(usize), // re-open this unanswered choice's option panel
@@ -1652,6 +1660,8 @@ pub struct App {
     chat_roomy: bool,
     /// the full-access (auto) acknowledgement dialog: the "我已了解风险" checkbox state
     full_access: Option<bool>,
+    /// where that dialog's checkbox row and 启用 button were drawn (click targets)
+    full_access_buttons: Vec<(Rect, FullAccessAction)>,
     /// serve-side working directory (/cd moves it); @file resolves against it
     serve_cwd: Option<std::path::PathBuf>,
     /// `git ls-files` of serve_cwd for fuzzy @file search: (dir, built at, paths); rebuilt after 30 s
@@ -1849,6 +1859,7 @@ impl App {
             think_frame: 0,
             chat_roomy: false,
             full_access: None,
+            full_access_buttons: Vec::new(),
             prompt_id: 0,
             btw_id: None,
             btw_title: None,
@@ -5116,6 +5127,18 @@ impl App {
                     Tone::Muted,
                 );
             }
+            // /auto is short for /mode auto (same acknowledgement dialog)
+            "/auto" => {
+                if rest.is_empty() {
+                    if self.mode == "auto" {
+                        self.push("已经是完全放行（auto）· /mode ask 恢复确认", Tone::Muted);
+                    } else {
+                        self.full_access = Some(false);
+                    }
+                } else {
+                    self.push("usage: /auto（不带参数）", Tone::Muted);
+                }
+            }
             "/mode" => {
                 if rest.is_empty() {
                     self.open_mode_picker();
@@ -5743,6 +5766,19 @@ impl App {
                         self.hint_buttons.iter().rev().find(|(r, _)| r.contains(pos)).copied()
                     {
                         self.key(key, serve);
+                        return false;
+                    }
+                }
+                // the full-access dialog's checkbox row and 启用 button
+                if self.full_access.is_some()
+                    && let MouseEventKind::Down(MouseButton::Left) = m.kind
+                {
+                    let pos = Position::new(m.column, m.row);
+                    if let Some((_, action)) = self.full_access_buttons.iter().find(|(r, _)| r.contains(pos)).copied() {
+                        match action {
+                            FullAccessAction::Toggle => self.full_access = self.full_access.map(|v| !v),
+                            FullAccessAction::Enable => self.key(KeyCode::Enter.into(), serve),
+                        }
                         return false;
                     }
                 }
@@ -10705,18 +10741,51 @@ impl App {
                 "出错时可能无法撤销。建议只在可信的仓库或隔离环境里使用。",
                 self.theme.style(Tone::Warning),
             )));
-            body.push(Line::from(""));
-            let box_char = if ack { "☑" } else { "☐" };
+            body.pop(); // the last blank row: the checkbox takes it
+            let ascii = self.ascii;
+            let box_char = if ascii {
+                if ack { "[x]" } else { "[ ]" }
+            } else if ack {
+                "☑"
+            } else {
+                "☐"
+            };
             let check_style = if ack {
                 self.theme.style(Tone::Error)
             } else {
                 self.theme.style(Tone::Muted)
             };
-            body.push(Line::from(Span::styled(
-                format!("{box_char} 我已了解风险，并对自己的数据安全负责"),
-                check_style,
-            )));
+            let check_text = format!("{box_char} 我已了解风险，并对自己的数据安全负责");
             f.render_widget(Paragraph::new(body), inner);
+            // last inner row: the checkbox (a button) on the left, 启用 on the right
+            let row_y = inner.y + inner.height.saturating_sub(1);
+            self.full_access_buttons.clear();
+            let check_w = inner.width.saturating_sub(12).max(1);
+            let check_rect = Rect { x: inner.x, y: row_y, width: check_w, height: 1 };
+            let marker_style = self.theme.style(Tone::Badge);
+            f.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled("❯ ", marker_style),
+                    Span::styled(
+                        check_text.chars().take(check_w as usize - 2).collect::<String>(),
+                        check_style,
+                    ),
+                ])),
+                check_rect,
+            );
+            self.full_access_buttons.push((check_rect, FullAccessAction::Toggle));
+            let enable_rect = Rect { x: inner.x + inner.width.saturating_sub(9), y: row_y, width: 8, height: 1 };
+            f.render_widget(
+                Paragraph::new(if ack { "[ 启用 ]" } else { "[ 启用 ]" }).style(if ack {
+                    self.theme.style(Tone::Error)
+                } else {
+                    Style::default().add_modifier(Modifier::DIM)
+                }),
+                enable_rect,
+            );
+            self.full_access_buttons.push((enable_rect, FullAccessAction::Enable));
+        } else {
+            self.full_access_buttons.clear();
         }
 
         if let Some(viewer) = self.viewer.as_mut() {
@@ -12458,6 +12527,81 @@ mod tests {
             .map(|x| buffer[(x, 7)].symbol())
             .collect::<String>();
         assert!(status.contains("ctx 160/200 80%"));
+    }
+
+    #[test]
+    fn full_access_dialog_renders_the_checkbox_and_button_on_one_row() {
+        use ratatui::{Terminal, backend::TestBackend};
+        for width in [39, 64, 100] {
+            let mut app = App::new();
+            app.full_access = Some(false);
+            let mut term = Terminal::new(TestBackend::new(width, 30)).unwrap();
+            term.draw(|f| app.draw(f)).unwrap();
+            let y = app.full_access_buttons[0].0.y;
+            let row: String = (0..width).map(|x| term.backend().buffer().content[y as usize * width as usize + x as usize].symbol()).collect();
+            // a wide glyph's second cell renders as a space: "启 用", "☑ "
+            let compact: String = row.chars().filter(|c| !c.is_whitespace()).collect();
+            assert!(compact.contains("☐") && compact.contains("启用"), "{width}: {row:?}");
+            let toggle = app.full_access_buttons.iter().find(|(_, a)| *a == FullAccessAction::Toggle).unwrap().0;
+            let enable = app.full_access_buttons.iter().find(|(_, a)| *a == FullAccessAction::Enable).unwrap().0;
+            assert!(toggle.right() <= enable.x, "{width}: no overlap {:?} {:?}", toggle, enable);
+            // the whole text fits on a normal terminal; a narrow one is cut, never wrapped over the button
+            if width == 64 {
+                assert!(compact.contains("并对自己的数据安全负责"), "{row:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn auto_is_short_for_mode_auto_and_the_ack_dialog_is_clickable() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.mode = "ask".into();
+        // /auto (and /yolo) open the same acknowledgement as /mode auto; nothing is sent yet
+        for cmd in ["/auto", "/mode auto"] {
+            app.run_slash(cmd, &mut serve);
+            assert_eq!(app.full_access, Some(false), "{cmd}");
+            app.key(KeyCode::Esc.into(), &mut serve);
+        }
+        assert!(serve.sent.is_empty(), "no set_mode before the acknowledgement");
+        // the checkbox row and the 启用 button are drawn as click targets
+        app.run_slash("/auto", &mut serve);
+        let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        term.draw(|f| app.draw(f)).unwrap();
+        let target = |app: &App, a: FullAccessAction| app.full_access_buttons.iter().find(|(_, x)| *x == a).map(|(r, _)| *r).unwrap();
+        let click = |app: &mut App, serve: &mut Serve, r: Rect| {
+            app.handle(
+                Event::Mouse(crossterm::event::MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    column: r.x + 2,
+                    row: r.y,
+                    modifiers: KeyModifiers::NONE,
+                }),
+                serve,
+            );
+        };
+        let toggle = target(&app, FullAccessAction::Toggle);
+        let enable = target(&app, FullAccessAction::Enable);
+        assert!(toggle.y == enable.y && toggle.x < enable.x, "same row, 启用 on the right");
+        // 启用 while unchecked is refused, like Enter (the acknowledgement is not one click)
+        click(&mut app, &mut serve, enable);
+        assert_eq!(app.full_access, Some(false));
+        assert!(serve.sent.is_empty());
+        // clicking the checkbox row ticks it; clicking 启用 enables
+        click(&mut app, &mut serve, toggle);
+        assert_eq!(app.full_access, Some(true), "clicking the row ticks the box");
+        term.draw(|f| app.draw(f)).unwrap();
+        let enable = target(&app, FullAccessAction::Enable);
+        click(&mut app, &mut serve, enable);
+        assert!(app.full_access.is_none());
+        let sent: String = serve.sent.concat();
+        assert!(sent.contains("\"set_mode\"") && sent.contains("\"auto\""), "{sent}");
+        // already in auto: /auto says so instead of opening the dialog again
+        app.mode = "auto".into();
+        app.run_slash("/auto", &mut serve);
+        assert!(app.full_access.is_none());
+        assert!(app.lines.iter().any(|l| l.text.contains("已经是完全放行")));
     }
 
     #[test]

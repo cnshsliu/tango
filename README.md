@@ -128,7 +128,7 @@ tango task run [--loop]  run due tasks once, or keep running as a daemon
 one-shot runs permission asks are refused, as in text mode, unless `--yes` is given. Example:
 `tango --format json --max-tool-rounds 10 -y "run the tests" | jq -c 'select(.type=="done")'`.
 
-TUI commands: `/model`, `/agents`, `/resume`, `/back`, `/forward`, `/new`, `/restart`, `/rename`, `/send`, `/mode`, `/plan`, `/goal`,
+TUI commands: `/model`, `/agents`, `/resume`, `/back`, `/forward`, `/new`, `/restart`, `/rename`, `/send`, `/mode`, `/auto`, `/plan`, `/goal`,
 `/loop`, `/effort`, `/review`, `/security-review`, `/bg`, `/tasks`, `/stop`, `/subagent`,
 `/worktree`, `/mcp`, `/plugins`, `/vim`, `/nvim`, `/editor`, `/multiline`, `/btw`, `/diff`,
 `/focus`, `/density`, `/mouse`, `/animations`, `/ascii`, `/clipboard`, `/theme`, `/compact`, `/autocompact`, `/skill`, `/skills`,
@@ -756,7 +756,10 @@ In the TUI, bare `/mode` opens the mode picker (one line per mode with its descr
 included). Its Chinese names, also used in `/mode ` completion: plan 只出计划, confirm 每步确认,
 ask 风险确认（默认）, auto 完全放行, readonly 只读. Switching to `auto` first shows the full-access acknowledgement: what it allows (any
 file path, any shell command, network), a warning that mistakes may be irreversible, and the
-`☐ 我已了解风险，并对自己的数据安全负责` checkbox — Space checks it, Enter enables, Esc cancels.
+`☐ 我已了解风险，并对自己的数据安全负责` checkbox — Space checks it, Enter enables, Esc cancels. With the
+mouse, click the checkbox row, then `启用` on the same row (each of them, and the hint's `空格` / `enter`, is a
+button); `启用` while unchecked does nothing, like Enter. `/auto` is short for `/mode auto`: the same dialog, two
+fewer keys. In auto already, `/auto` only says so.
 
 In the TUI's permission dialog, answer `y`, `n` or `a` (always: saves allow rules for the
 commands in the call, taking effect mid-turn). One-shot runs

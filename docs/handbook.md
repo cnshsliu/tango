@@ -309,7 +309,8 @@ Chinese name (`plan`, below, is 只出计划):
 | `auto` 完全放行 | `tango -y` | Everything runs |
 | `readonly` 只读 | `tango --readonly` | Reads only. Writes and shell are refused |
 
-Switch at any time with `/mode <mode>` — bare `/mode` opens a picker listing all modes with a one-line description each (plan included). Switching to `auto` (完全放行) first shows an acknowledgement: what it allows (any file path, any shell command, network), a warning that mistakes may be irreversible, and a `☐ 我已了解风险，并对自己的数据安全负责` checkbox — press Space to check it, then Enter to enable; Esc cancels. Answering `a` (始终允许) in a permission
+Switch at any time with `/mode <mode>` — bare `/mode` opens a picker listing all modes with a one-line description each (plan included). Switching to `auto` (完全放行) first shows an acknowledgement: what it allows (any file path, any shell command, network), a warning that mistakes may be irreversible, and a `☐ 我已了解风险，并对自己的数据安全负责` checkbox — press Space to check it, then Enter to enable; Esc cancels.
+With the mouse, click the checkbox row and then `启用`; `启用` does nothing while the box is unchecked. Answering `a` (始终允许) in a permission
 dialog saves persistent allow rules for that call and allows it — `bash:git branch` for
 `git branch -D x`, the written file's directory for an outside write, `tool:<name>` otherwise —
 so the same thing never asks again, in this session or the next. A command line with several
@@ -443,6 +444,7 @@ while a turn is running unless noted. `/help` prints a short list inside the TUI
 | `/model [id]` | Switch model and save it as the default. Bare: open the model picker (its filter is fuzzy too); clicking the model name in the input box's info row opens the same picker, the current model selected (click it again to close; click a row to pick). The id matches fuzzily, case-insensitive: `glm54` → `zhipu-plan/glm-5.4`; with several words each must match (`zp glm5.4`); several matches list the candidates instead of guessing. `-m` on the command line uses the same matching |
 | `/agents [role model]` | Show or set role models: `driver`, `subagent` (`/bg`, `/subagent`, `task` sub-agents), `longContext` (`/bg --long`), `plan` (plan mode thinks with it, then switches back); also lists the `task` sub-agents |
 | `/mode [confirm\|ask\|auto\|readonly]` | Show or set the permission mode. Bare: a picker with all modes (clicking the mode label in the input box's info row opens it too, the current mode selected; click it again to close, or click the model name to swap to the model picker); switching to auto asks for the risk acknowledgement first |
+| `/auto` | Short for `/mode auto` (完全放行): opens the same risk acknowledgement. Its checkbox row and `启用` button are clickable |
 | `/plan` | Toggle plan mode: writes refused, the model produces a plan |
 | `/effort [low\|medium\|high\|off]` | Show or set reasoning effort for this session |
 | `/goal <text>` | Keep working toward a goal. After each turn tango checks whether it's done and continues if not |
