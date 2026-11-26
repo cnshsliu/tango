@@ -85,9 +85,14 @@ export async function loadConfig(): Promise<Config> {
   return (await readJson<Config>(join(tangoDir(), 'config.json'))) ?? {};
 }
 
+/**
+ * `~/.tango/config.json` is created readable by its owner only (mode 600): it can hold a webhook
+ * URL. The mode applies when the file is first written; one that already exists keeps whatever
+ * mode its owner gave it.
+ */
 export async function saveConfig(cfg: Config): Promise<void> {
   await mkdir(tangoDir(), { recursive: true });
-  await writeFile(join(tangoDir(), 'config.json'), JSON.stringify(cfg, null, 2) + '\n', 'utf8');
+  await writeFile(join(tangoDir(), 'config.json'), JSON.stringify(cfg, null, 2) + '\n', { encoding: 'utf8', mode: 0o600 });
 }
 
 /**

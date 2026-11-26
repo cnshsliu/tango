@@ -386,7 +386,8 @@ Details and payload fields: README, "Hooks".
 
 A repo can carry its own `.tango/config.json` (committed), and you can keep a personal
 `.tango/config.local.json` next to it that git ignores. Both sit on top of
-`~/.tango/config.json`: single values come from the nearest file, rule and hook lists add up.
+`~/.tango/config.json`: single values come from the nearest file, rule and hook lists add up. The
+global file is created readable by you only (mode 600), because it can hold the Feishu webhook.
 `/config` shows every file and the merged result.
 
 Instructions work the same way. tango reads `AGENTS.md` from the current directory up to the

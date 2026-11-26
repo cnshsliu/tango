@@ -946,6 +946,9 @@ All user state lives in `~/.tango/` (override with `TANGO_HOME`):
 | `sessions/*.jsonl`       | append-only sessions, one line per entry                                                                                                                 |
 | `trusted.json`           | your trust decision per project (keyed by the main checkout), see below                                                                                  |
 
+`config.json` is created readable by its owner only (mode `600`), since it can hold
+`feishuWebhook`; a file that already exists keeps the mode its owner gave it.
+
 `apiKey` is either an environment variable name or the key itself. A value made only of uppercase
 letters, digits and underscores (`"DEEPSEEK_API_KEY"`) is read from that variable; anything else is
 used as the literal key. Nothing is inferred. `tango --models` shows which variable each preset reads.
