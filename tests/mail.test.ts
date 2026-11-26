@@ -89,3 +89,20 @@ test('/send mail: expired messages are dropped with a report, never merged; long
   assert.equal((await readdir(dir)).length, before, 'the broken file stays');
   assert.ok(MAIL_TTL_MS === 7 * 24 * 3600 * 1000);
 });
+
+test('/send mail: messages queued in the same millisecond keep their order', async (t) => {
+  await freshHome();
+  const { sendMail, drainMail, mailInbox } = await import('../src/core/mail.js');
+  const target = await storeIn();
+  const other = await storeIn();
+  // freeze the clock: every name gets the same time stamp, so only the stamp rule decides the order
+  const frozen = Date.now();
+  t.mock.method(Date, 'now', () => frozen);
+  const texts = ['一', '二', '三', '四', '五', '六'];
+  for (const text of texts) await sendMail(target.id, { from: other.id, text });
+  const names = (await readdir(mailInbox(target.id))).filter((f) => f.endsWith('.json')).sort();
+  assert.equal(names.length, texts.length, 'one file per message');
+  assert.equal(new Set(names.map((n) => n.split('-')[0])).size, texts.length, 'every name has a time stamp of its own');
+  assert.deepEqual((await drainMail(target)).received.map((m) => m.text), texts, 'merged in the order they were sent');
+  assert.match((await drainMail(target)).received.length === 0 ? 'drained' : '', /^drained$/);
+});

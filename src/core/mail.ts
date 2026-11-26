@@ -23,11 +23,20 @@ export const MAIL_MAX_CHARS = 4000;
 
 export const mailInbox = (targetId: string) => join(tangoDir(), 'messages', targetId);
 
-/** Queue a message for `targetId`. */
+/** The time stamp of the last queued message's name: names must increase even within one millisecond. */
+let lastStamp = 0;
+
+/**
+ * Queue a message for `targetId`. The file name starts with the time, and a drain merges oldest
+ * first, so two messages queued in the same millisecond would otherwise trade places with every
+ * other run (their names differ only by the random suffix). The stamp therefore never goes back:
+ * within this process it is "now", or one more than the last one. `queuedAt` keeps the real time.
+ */
 export async function sendMail(targetId: string, m: Omit<QueuedMail, 'queuedAt'>): Promise<void> {
   const dir = mailInbox(targetId);
   await mkdir(dir, { recursive: true });
-  const name = `${Date.now()}-${randomUUID().slice(0, 8)}`;
+  const stamp = (lastStamp = Date.now() > lastStamp ? Date.now() : lastStamp + 1);
+  const name = `${stamp}-${randomUUID().slice(0, 8)}`;
   // write then rename: a draining reader never sees a half-written file
   await writeFile(join(dir, `${name}.tmp`), JSON.stringify({ ...m, queuedAt: new Date().toISOString() }), 'utf8');
   await rename(join(dir, `${name}.tmp`), join(dir, `${name}.json`));

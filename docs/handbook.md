@@ -125,7 +125,8 @@ command rewrites the other session's history.
 
 For a quick word instead of a full brief, `/send <session> <消息>` messages the other session's
 user: it appears in that session's chat while it is idle (within ~2s; a running turn finishes
-first) and is part of the model's context from its next prompt. Mail is delivery-only — receiving
+first) and is part of the model's context from its next prompt; several messages arrive in the
+order they were sent. Mail is delivery-only — receiving
 never starts a turn, so two sessions cannot reply-loop on their own — and messages expire after
 7 days. Remember that a received message does reach the other session's model, i.e. it can
 influence its behavior; permission checks still apply to whatever it then does.
