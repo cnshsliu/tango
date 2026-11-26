@@ -34,7 +34,7 @@
 - [x] **6. LSP 工具**（`lsp`：8 种操作，TS/Python/Rust/Go/C；不自动安装，缺了就报出找过哪里）
   - grok：`lsp` 工具支持跳转定义、查引用、hover、文档符号、工作区符号、实现和调用层级。内置语言服务器清单，缺的会通过 npm 自动安装。见 `src/lsp/builtins.ts`、`src/lsp/manager.ts`、`src/grok/tools.ts:290`。
   - tango：只在写文件后跑 tsc / pyright / cargo 这类检查（`src/core/diagnostics.ts`），模型找定义只能靠 grep。
-- [ ] **7. 远程 MCP 服务器和常用清单**
+- [x] **7. 远程 MCP 服务器和常用清单**（streamable HTTP、旧版 SSE、`auto` 回退、请求头 `${VAR}`；清单只收实测可用、令牌放环境变量的四个）
   - grok：MCP 除了 stdio，还支持 HTTP / SSE 加自定义请求头。内置 GitHub、Supabase、Notion、Sentry、Figma 等常用服务器清单，可以在 `/mcps` 里添加和管理。见 `src/mcp/runtime.ts:11`、`src/mcp/catalog.ts`、`src/ui/mcp-modal.tsx`。
   - tango：只支持 stdio（`src/core/mcp.ts`），只能手写 config。
 - [x] **8. `AGENTS.override.md`**（按目录替换，不限于 git 根以下，沿用 tango 一直往上找的做法）

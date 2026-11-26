@@ -497,6 +497,7 @@ enum Pending {
     AgentsSet,
     Subtask,
     McpList,
+    McpAdd,
     PluginsList,
     Trust,
     TrustStatus,
@@ -895,7 +896,7 @@ const SLASH: &[(&str, &str)] = &[
         "/permissions [add|rm <rule>]",
         "允许规则：tool:<名> · path:<前缀> · bash:<命令前缀>",
     ),
-    ("/mcp", "MCP 服务器与桥接工具状态"),
+    ("/mcp [add <名字>]", "MCP 服务器与桥接工具状态 · /mcp add 添加常用远程服务器"),
     ("/plugins", "本地插件列表（~/.tango/plugins）"),
     ("/memory", "查看长期记忆（全局 AGENTS.md，ctrl+e 编辑）"),
     ("/remember <text>", "记住一条偏好 → 全局记忆，所有会话生效"),
@@ -2738,6 +2739,54 @@ impl App {
         }
     }
 
+    /// /mcp and /mcp add: configured servers (with their address and last error), then the catalog.
+    fn render_mcp_list(&mut self, d: &Value) {
+        let mut text = String::from("MCP 服务器：\n\n");
+        if let Some(list) = d["servers"].as_array() {
+            for s in list {
+                let connected = s["connected"].as_bool().unwrap_or(false);
+                let target = s["target"].as_str().unwrap_or("").chars().take(90).collect::<String>();
+                text.push_str(&format!(
+                    "  {} {}\n",
+                    s["name"].as_str().unwrap_or("?"),
+                    if connected { "· 已连接" } else { "· 未连接" }
+                ));
+                if !target.is_empty() {
+                    text.push_str(&format!("      {target}\n"));
+                }
+                if let Some(e) = s["error"].as_str() {
+                    let e: String = e.chars().take(160).collect();
+                    text.push_str(&format!("      {e}\n"));
+                }
+            }
+        }
+        if d["servers"].as_array().is_none_or(|a| a.is_empty()) {
+            text.push_str("  （无）\n");
+        }
+        text.push_str("\n工具以 mcp_<server>_<tool> 形式出现在模型工具表里\n");
+        if let Some(list) = d["catalog"].as_array()
+            && !list.is_empty()
+        {
+            text.push_str("\n常用远程服务器 · /mcp add <名字> 添加到 ~/.tango/config.json（然后 /restart）：\n\n");
+            for c in list {
+                let added = d["servers"]
+                    .as_array()
+                    .is_some_and(|ss| ss.iter().any(|s| s["name"].as_str() == c["id"].as_str()));
+                text.push_str(&format!(
+                    "  {:<10} {}{}\n",
+                    format!("/mcp add {}", c["id"].as_str().unwrap_or("?")),
+                    c["description"].as_str().unwrap_or(""),
+                    if added { "  ✓ 已添加" } else { "" }
+                ));
+                let auth = c["auth"].as_str().unwrap_or("none");
+                if auth != "none" {
+                    text.push_str(&format!("              需要：{auth}\n"));
+                }
+            }
+        }
+        self.viewer = Some(Viewer::read_only("MCP", text));
+    }
+
     /// merge one queued item into the RUNNING turn (clickable [并入当前])
     fn queue_supplement_one(&mut self, serve: &mut Serve, idx: usize) {
         if !self.busy {
@@ -4509,8 +4558,16 @@ impl App {
                 self.pending.push((id, Pending::PluginsList));
             }
             "/mcp" => {
-                let id = serve.command("mcp_list", vec![]);
-                self.pending.push((id, Pending::McpList));
+                // `/mcp add <name>`: a catalog server into the global config
+                if let Some(name) = rest.trim().strip_prefix("add ") {
+                    let id = serve.command("mcp_add", vec![("name", Value::String(name.trim().into()))]);
+                    self.pending.push((id, Pending::McpAdd));
+                } else if rest.trim() == "add" {
+                    self.push("usage: /mcp add <名字>（/mcp 里列出可添加的）", Tone::Muted);
+                } else {
+                    let id = serve.command("mcp_list", vec![]);
+                    self.pending.push((id, Pending::McpList));
+                }
             }
             "/tasks" => {
                 let id = serve.command("tasks", vec![]);
@@ -8903,26 +8960,17 @@ impl App {
                             );
                         }
                         (Pending::McpList, true) => {
-                            let mut text = String::from("MCP 服务器：\n\n");
-                            if let Some(list) = d["servers"].as_array() {
-                                for s in list {
-                                    let connected = s["connected"].as_bool().unwrap_or(false);
-                                    text.push_str(&format!(
-                                        "  {} {}\n",
-                                        s["name"].as_str().unwrap_or("?"),
-                                        if connected {
-                                            "· 已连接"
-                                        } else {
-                                            "· 未连接（config.json 的 mcpServers 配置）"
-                                        }
-                                    ));
-                                }
+                            self.render_mcp_list(d);
+                        }
+                        (Pending::McpAdd, true) => {
+                            let auth = d["auth"].as_str().unwrap_or("none");
+                            let id = d["added"].as_str().unwrap_or("?");
+                            if auth != "none" {
+                                self.push(format!("已添加 MCP {id} · 还需要：{auth}"), Tone::Warning);
+                            } else {
+                                self.push(format!("已添加 MCP {id}"), Tone::Success);
                             }
-                            if text.trim() == "MCP 服务器：" {
-                                text.push_str("  （无）· config.json 里配 mcpServers");
-                            }
-                            text.push_str("\n工具以 mcp_<server>_<tool> 形式出现在模型工具表里");
-                            self.viewer = Some(Viewer::read_only("MCP", text));
+                            self.push("/restart 后连接并加载工具".to_string(), Tone::Muted);
                         }
                         (Pending::PluginsList, true) => {
                             let mut text = String::from("本地插件：\n\n");
@@ -15714,6 +15762,58 @@ mod tests {
         let v = app.viewer.as_ref().unwrap();
         assert!(v.text.contains("demo"));
         assert!(v.text.contains("已连接"));
+    }
+
+    #[test]
+    fn mcp_list_shows_addresses_errors_and_the_catalog() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.run_slash("/mcp", &mut serve);
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        app.frame(
+            json!({"type": "result", "id": sent["id"], "ok": true, "data": {
+                "servers": [
+                    {"name": "demo", "connected": true, "target": "node x.mjs --stdio"},
+                    {"name": "github", "connected": false, "target": "https://api.githubcopilot.com/mcp/", "error": "POST …: HTTP 401 missing required Authorization header"}
+                ],
+                "catalog": [
+                    {"id": "github", "description": "Repos, issues, pull requests", "auth": "a GitHub PAT in the environment: export GITHUB_PAT=…"},
+                    {"id": "context7", "description": "Library docs", "auth": "none"}
+                ]
+            }}),
+            &mut serve,
+        );
+        let v = app.viewer.as_ref().unwrap();
+        assert!(v.text.contains("https://api.githubcopilot.com/mcp/"), "remote servers show their URL");
+        assert!(v.text.contains("HTTP 401"), "and why they did not connect");
+        assert!(v.text.contains("/mcp add context7") && v.text.contains("Library docs"));
+        assert!(v.text.contains("需要：a GitHub PAT"), "what the user must provide");
+        assert!(v.text.contains("✓ 已添加"), "the configured one is marked");
+        assert!(!v.text.contains("/mcp add github\n  "), "…but still listed under its add line");
+    }
+
+    #[test]
+    fn mcp_add_sends_the_name_and_tells_what_is_left() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        let chat_text = |a: &App| a.lines.iter().map(|l| l.text.as_str()).collect::<Vec<_>>().join("\n");
+        app.run_slash("/mcp add context7", &mut serve);
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        assert_eq!((sent["cmd"].as_str(), sent["name"].as_str()), (Some("mcp_add"), Some("context7")));
+        app.frame(json!({"type": "result", "id": sent["id"], "ok": true, "data": {"added": "context7", "auth": "none"}}), &mut serve);
+        assert!(chat_text(&app).contains("已添加 MCP context7"));
+        assert!(chat_text(&app).contains("/restart"));
+        app.run_slash("/mcp add github", &mut serve);
+        let sent: Value = serde_json::from_str(&serve.sent[1]).unwrap();
+        app.frame(json!({"type": "result", "id": sent["id"], "ok": true, "data": {"added": "github", "auth": "a GitHub PAT in the environment: export GITHUB_PAT=…"}}), &mut serve);
+        assert!(chat_text(&app).contains("还需要：a GitHub PAT"));
+        // bare "add" and an unknown name don't blow up
+        app.run_slash("/mcp add", &mut serve);
+        assert!(chat_text(&app).contains("usage: /mcp add"));
+        app.run_slash("/mcp add nope", &mut serve);
+        let sent: Value = serde_json::from_str(&serve.sent[2]).unwrap();
+        app.frame(json!({"type": "result", "id": sent["id"], "ok": false, "error": "mcp_add: not in the catalog (context7, deepwiki, github, sentry)"}), &mut serve);
+        assert!(chat_text(&app).contains("not in the catalog"));
     }
 
     #[test]

@@ -7,11 +7,16 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { VERSION } from '../host.js';
+import { HttpStatusError, RemoteTransport, expandHeaders, type RemoteKind } from './mcp-remote.js';
 
+/** stdio: `command` (+ args, env). Remote: `url` (+ headers, transport http | sse | auto). */
 export interface McpServerSpec {
-  command: string;
+  command?: string;
   args?: string[];
   env?: Record<string, string>;
+  url?: string;
+  headers?: Record<string, string>;
+  transport?: RemoteKind;
 }
 
 export interface BridgedTool {
@@ -34,18 +39,73 @@ export function bridgeName(server: string, tool: string, taken: Set<string>): st
 export class McpServer {
   readonly name: string;
   connected = false;
+  /** why the last connect failed, for /mcp */
+  lastError?: string;
   private child?: ChildProcessWithoutNullStreams;
   private seq = 0;
   private pending = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void; timer: NodeJS.Timeout }>();
   private lines = new EventEmitter();
+  private remote?: RemoteTransport;
 
   constructor(name: string, private spec: McpServerSpec) {
     this.name = name;
     this.lines.on('line', (line: string) => this.handleLine(line));
   }
 
+  /** where it runs, for /mcp: the URL or the command */
+  get target(): string {
+    return this.spec.url ?? [this.spec.command, ...(this.spec.args ?? [])].join(' ');
+  }
+
+  private get alive(): boolean {
+    if (this.spec.url) return !!this.remote?.alive;
+    return !!this.child && this.child.exitCode === null && !this.child.killed;
+  }
+
+  private rejectAll(why: string) {
+    for (const { reject, timer } of this.pending.values()) {
+      clearTimeout(timer);
+      reject(new Error(why));
+    }
+    this.pending.clear();
+  }
+
+  private async startRemote(): Promise<void> {
+    const kind = this.spec.transport ?? 'auto';
+    if (!['http', 'sse', 'auto'].includes(kind)) throw new Error(`transport must be http, sse or auto, got "${kind}"`);
+    const headers = expandHeaders(this.spec.headers);
+    const make = () =>
+      new RemoteTransport(this.spec.url!, headers, kind, (m) => this.handleMessage(m), (why) => {
+        this.connected = false;
+        this.rejectAll(`mcp ${this.name}: ${why}`);
+      });
+    this.remote = make();
+    await this.remote.open();
+    try {
+      await this.handshake();
+    } catch (e) {
+      // spec: a 4xx to the streamable-HTTP initialize means an old HTTP+SSE server
+      if (kind !== 'auto' || !(e instanceof HttpStatusError) || e.status < 400 || e.status >= 500) throw e;
+      this.remote = make();
+      await this.remote.fallBackToSse();
+      await this.handshake();
+    }
+  }
+
+  private async handshake(): Promise<void> {
+    await this.request('initialize', {
+      protocolVersion: this.spec.url ? '2025-03-26' : '2024-11-05',
+      capabilities: {},
+      clientInfo: { name: 'tango', version: VERSION }
+    });
+    this.notify('notifications/initialized', {});
+    this.connected = true;
+  }
+
   async start(): Promise<void> {
     this.stop(); // a restart replaces any half-dead child
+    if (this.spec.url) return this.startRemote();
+    if (!this.spec.command) throw new Error('needs command (stdio) or url (remote)');
     this.child = spawn(this.spec.command, this.spec.args ?? [], {
       stdio: ['pipe', 'pipe', 'pipe'],
       env: { ...process.env, ...(this.spec.env ?? {}) }
@@ -84,13 +144,7 @@ export class McpServer {
       const t = d.toString().trim();
       if (t) process.stderr.write(`[mcp ${this.name}] ${t}`.slice(0, 300) + '\n');
     });
-    await this.request('initialize', {
-      protocolVersion: '2024-11-05',
-      capabilities: {},
-      clientInfo: { name: 'tango', version: VERSION }
-    });
-    this.notify('notifications/initialized', {});
-    this.connected = true;
+    await this.handshake();
   }
 
   async listTools(): Promise<BridgedTool[]> {
@@ -107,7 +161,7 @@ export class McpServer {
     // lazy reconnect: a dead server restarts on the next call (capped, lock-guarded so two
     // concurrent calls cannot kill each other's fresh child), instead of staying
     // disconnected for the whole session
-    if (!this.connected || !this.child || this.child.exitCode !== null || this.child.killed) {
+    if (!this.connected || !this.alive) {
       if (this.reconnecting) {
         // another call is already bringing the server back; wait for its outcome
         await this.reconnecting.catch(() => {});
@@ -147,6 +201,8 @@ export class McpServer {
     try {
       this.child?.kill('SIGTERM');
     } catch {}
+    this.remote?.close();
+    this.remote = undefined;
   }
 
   private handleLine(line: string): void {
@@ -156,6 +212,10 @@ export class McpServer {
     } catch {
       return;
     }
+    this.handleMessage(msg);
+  }
+
+  private handleMessage(msg: any): void {
     if (msg.id !== undefined && this.pending.has(msg.id)) {
       const p = this.pending.get(msg.id)!;
       this.pending.delete(msg.id);
@@ -168,41 +228,53 @@ export class McpServer {
   private request(method: string, params: unknown): Promise<any> {
     const id = ++this.seq;
     return new Promise((resolve, reject) => {
-      if (!this.child || this.child.killed) return reject(new Error(`mcp server "${this.name}" is not running`));
+      const transportReady = this.spec.url ? !!this.remote?.alive : !!this.child && !this.child.killed && this.child.exitCode === null;
+      if (!transportReady) return reject(new Error(`mcp server "${this.name}" is not running`));
       const timer = setTimeout(() => {
         // a slow call fails, but does NOT permanently kill a live server (I2)
         this.pending.delete(id);
         reject(new Error(`mcp ${this.name}: ${method} timed out`));
-      }, 10_000);
+      }, this.spec.url ? 30_000 : 10_000);
       this.pending.set(id, { resolve, reject, timer });
-      if (this.child.exitCode !== null || this.child.killed) {
-        clearTimeout(timer);
-        this.pending.delete(id);
-        return reject(new Error(`mcp server "${this.name}" is not running`));
-      }
-      this.child!.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n');
+      const msg = { jsonrpc: '2.0', id, method, params };
+      if (this.remote) {
+        // the reply usually arrives inside send() (JSON or SSE body); an HTTP error rejects at once
+        this.remote.send(msg).catch((e) => {
+          if (!this.pending.has(id)) return;
+          clearTimeout(timer);
+          this.pending.delete(id);
+          reject(e instanceof HttpStatusError ? e : new Error(`mcp ${this.name}: ${e?.message ?? e}`));
+        });
+      } else this.child!.stdin.write(JSON.stringify(msg) + '\n');
     });
   }
 
   private notify(method: string, params: unknown): void {
+    const msg = { jsonrpc: '2.0', method, params };
+    if (this.remote) {
+      void this.remote.send(msg).catch(() => {});
+      return;
+    }
     try {
-      this.child?.stdin.write(JSON.stringify({ jsonrpc: '2.0', method, params }) + '\n');
+      this.child?.stdin.write(JSON.stringify(msg) + '\n');
     } catch {}
   }
 }
 
 /** Spawn+handshake every configured server; failures degrade to a disconnected entry. */
 export async function connectServers(servers: Record<string, McpServerSpec> | undefined): Promise<McpServer[]> {
-  const out: McpServer[] = [];
-  for (const [name, spec] of Object.entries(servers ?? {})) {
-    const s = new McpServer(name, spec);
-    try {
-      await s.start();
-    } catch (e: any) {
-      process.stderr.write(`[mcp ${name}] connect failed: ${e?.message ?? e}\n`);
-      s.connected = false;
-    }
-    out.push(s);
-  }
-  return out;
+  // in parallel: one slow remote server must not delay the others (order is kept)
+  return Promise.all(
+    Object.entries(servers ?? {}).map(async ([name, spec]) => {
+      const s = new McpServer(name, spec);
+      try {
+        await s.start();
+      } catch (e: any) {
+        s.lastError = String(e?.message ?? e);
+        process.stderr.write(`[mcp ${name}] connect failed: ${s.lastError}\n`);
+        s.connected = false;
+      }
+      return s;
+    })
+  );
 }

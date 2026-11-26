@@ -173,10 +173,28 @@ match fuzzily everywhere (`-m` too): case-insensitive subsequence — `glm54` fi
   the `task` tool), `longContext` (/bg --long), `plan` (plan mode switches to it and back when
   plan ends, unless you picked another model meanwhile; not saved as the default). Defaults to the
   current model. `/agents` also lists the `task` sub-agents.
-- **/mcp** — MCP servers from config `mcpServers: {name: {command, args}}` (stdio JSON-RPC);
-  tools bridge as `mcp_<server>_<tool>` (collision-suffixed), treated as write-effect
-  (permission rules apply). Dead servers lazily reconnect on the next call (capped at 3
-  attempts); spawn failures and EPIPE never take serve down.
+- **/mcp** — MCP servers from config `mcpServers: {name: {…}}`; tools bridge as
+  `mcp_<server>_<tool>` (collision-suffixed), treated as write-effect (permission rules apply).
+  Dead servers lazily reconnect on the next call (capped at 3 attempts); spawn failures and EPIPE
+  never take serve down. `/mcp` lists every server with its address and, when it is down, the last
+  error, then the catalog of well-known remote servers.
+
+  Two kinds of server:
+  - stdio: `{ "command", "args", "env" }` (newline-delimited JSON-RPC).
+  - remote: `{ "url", "headers", "transport" }`. `transport` is `http` (streamable HTTP,
+    MCP 2025-03-26: each message a POST; replies as JSON or an SSE body; `Mcp-Session-Id`
+    echoed), `sse` (the older HTTP+SSE: a GET stream, messages POSTed to the endpoint it
+    announces), or `auto` (the default: HTTP first, falling back to SSE when `initialize`
+    gets a 4xx). Header values may use `${VAR}` to read a token from the environment, so keys
+    stay out of config files. Servers connect in parallel, so one slow remote server doesn't
+    hold up startup; a request times out after 30 s (10 s for stdio).
+
+  `/mcp add <name>` puts a catalog server into `~/.tango/config.json`; `/restart` connects it.
+  The catalog (URLs checked live on 2026-11-25): `context7` (library docs) and `deepwiki`
+  (questions about GitHub repos) work without a token; `github`
+  (`https://api.githubcopilot.com/mcp/`) and `sentry` (`https://mcp.sentry.dev/mcp`) need a
+  token in `GITHUB_PAT` / `SENTRY_ACCESS_TOKEN`. Servers that only offer OAuth are not listed
+  (tango has no OAuth flow).
 - **/plugins** — local plugins: `~/.tango/plugins/<name>/plugin.json` with
   `{name, description, enabled?, hooks?}`; `hooks` takes the same keys as config hooks and
   runs after them; `enabled: false` skips.
@@ -565,7 +583,7 @@ reply data. Most of these also skip the prompt queue.
 | sessions | `session_preview` (`session` → `preview`), `session_rename` (`session`, `name`), `session_resolve` (`session` id, prefix or last `-` part → `id`; fails on no match or an ambiguous prefix), `queue` (→ `running`, `queued`) |
 | memory and skills | `memory` (→ `text`, `path`), `remember` (`text`), `skills` (→ `skills`), `preset_save` / `preset_get` (`name`, `text`), `preset_list` (→ `presets`), `init` (`force`; writes AGENTS.md) |
 | models and agents | `agents_show` (→ `roles`, `driver`, `subAgents`: name, readonly, model, description), `agents_set` (`role`, `model`) |
-| usage and diagnostics | `usage` / `stats` (requests and cost by model and session), `insights` (→ `path` of an HTML report), `doctor` (→ `checks`), `debug_zip` (→ `path`), `mcp_list` (→ `servers`), `plugins_list` (→ `plugins`) |
+| usage and diagnostics | `usage` / `stats` (requests and cost by model and session), `insights` (→ `path` of an HTML report), `doctor` (→ `checks`), `debug_zip` (→ `path`), `mcp_list` (→ `servers` with `target` / `error`, `catalog`), `mcp_add` (`name`; → `added`, `auth`), `plugins_list` (→ `plugins`) |
 
 ## TUI
 
@@ -939,7 +957,7 @@ used as the literal key. Nothing is inferred. `tango --models` shows which varia
 | `hooks` | lifecycle hooks (see "Hooks"; trust-gated in project files) | edit |
 | `roles` | models for `driver`, `subagent`, `longContext`, `plan` | `/agents` |
 | `subAgents` | named sub-agents for the `task` tool: `[{ "name", "description", "instruction", "model", "readonly" }]` (see "Sub-agents: the task tool") | edit |
-| `mcpServers` | MCP servers `{ name: { command, args, env } }` (trust-gated in project files) | edit |
+| `mcpServers` | MCP servers `{ name: { command, args, env } \| { url, headers, transport } }` (trust-gated in project files) | edit, `/mcp add` |
 
 ### Project config and trust
 

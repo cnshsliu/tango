@@ -18,6 +18,7 @@ import { cwdMissingMessage } from './core/agent.js';
 import { buildContext } from './core/context.js';
 import { reconcileTasks, startBgTask, stopTask, updateTask, type BgTask } from './core/bgtask.js';
 import { bridgeName, connectServers } from './core/mcp.js';
+import { MCP_CATALOG } from './core/mcp-catalog.js';
 import { worktreeCreate, worktreeList, worktreeMerge, worktreeRemove } from './core/worktrees.js';
 import { parseRule } from './core/permissions.js';
 import { briefCommand } from './core/bash-brief.js';
@@ -1027,13 +1028,27 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
         reply(cmd, true, { roles });
         return;
       }
+      case 'mcp_add': {
+        // a catalog server goes into the global config (project files need trust; this is the user's own choice)
+        const id = String(cmd.name ?? '').trim().toLowerCase();
+        const entry = MCP_CATALOG.find((c) => c.id === id || c.name.toLowerCase() === id);
+        if (!entry) return reply(cmd, false, undefined, `mcp_add: not in the catalog (${MCP_CATALOG.map((c) => c.id).join(', ')})`);
+        const cfg = await loadConfig();
+        const mcpServers = { ...(cfg.mcpServers ?? {}) };
+        if (mcpServers[entry.id]) return reply(cmd, false, undefined, `mcp "${entry.id}" is already configured`);
+        mcpServers[entry.id] = entry.spec;
+        await saveConfig({ ...cfg, mcpServers });
+        reply(cmd, true, { added: entry.id, auth: entry.auth });
+        return;
+      }
       case 'plugins_list': {
         reply(cmd, true, { plugins: loadPluginHooks().plugins });
         return;
       }
       case 'mcp_list': {
         reply(cmd, true, {
-          servers: mcpServers.map((s) => ({ name: s.name, connected: s.connected }))
+          servers: mcpServers.map((s) => ({ name: s.name, connected: s.connected, target: s.target, ...(s.lastError ? { error: s.lastError } : {}) })),
+          catalog: MCP_CATALOG
         });
         return;
       }
@@ -2191,7 +2206,7 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
     // (e.g. "always allow" from a permission dialog), so they skip the prompt queue too
     const guarded = (p: Promise<unknown>) =>
       void p.catch((e) => out({ type: 'error', message: String(e?.message ?? e) }));
-    if (['set_mode', 'status', 'timeline', 'context', 'queue', 'usage', 'stats', 'insights', 'preset_save', 'preset_list', 'preset_get', 'permissions_list', 'permissions_add', 'permissions_remove', 'import', 'cd', 'pwd', 'cwds', 'add_dir', 'config_show', 'init', 'doctor', 'debug_zip', 'set_plan', 'set_effort', 'memory', 'remember', 'skills', 'goal', 'loop', 'worktree_create', 'worktree_list', 'worktree_remove', 'worktree_merge', 'tasks', 'agents_show', 'agents_set', 'mcp_list', 'plugins_list', 'send'].includes(cmd.cmd)) {
+    if (['set_mode', 'status', 'timeline', 'context', 'queue', 'usage', 'stats', 'insights', 'preset_save', 'preset_list', 'preset_get', 'permissions_list', 'permissions_add', 'permissions_remove', 'mcp_add', 'import', 'cd', 'pwd', 'cwds', 'add_dir', 'config_show', 'init', 'doctor', 'debug_zip', 'set_plan', 'set_effort', 'memory', 'remember', 'skills', 'goal', 'loop', 'worktree_create', 'worktree_list', 'worktree_remove', 'worktree_merge', 'tasks', 'agents_show', 'agents_set', 'mcp_list', 'plugins_list', 'send'].includes(cmd.cmd)) {
       guarded(handle(cmd));
       void checkSubtasks(); // immediate lane only: never between a prompt line and its turn start
       return;

@@ -501,7 +501,7 @@ while a turn is running unless noted. `/help` prints a short list inside the TUI
 | `/insights` | Write the same data as an offline HTML report to `~/.tango/exports/` |
 | `/queue` | Manage queued prompts: `rm <n>`, `all` (merge all into the running turn), `clear`. `auto append` makes Enter during a turn join the running turn like Alt+Enter; `auto off` goes back to queueing; bare `auto` shows which is on. Lasts until you quit |
 | `/interrupt` | Stop the current turn (same as Ctrl+C) |
-| `/mcp` | MCP servers and the tools they provide |
+| `/mcp [add <名字>]` | MCP servers and the tools they provide, each with its address or the reason it is down. `/mcp add context7` adds a well-known remote server (Context7, DeepWiki, GitHub, Sentry) to `~/.tango/config.json`; GitHub and Sentry also need a token in `GITHUB_PAT` / `SENTRY_ACCESS_TOKEN`. `/restart` connects it |
 | `/plugins` | Installed local plugins |
 | `/permissions [add\|rm <rule>]` | List, add or remove allow rules |
 | `/import claude-code\|grok\|codex [path]` | Copy another agent's allow list into tango's rules |
