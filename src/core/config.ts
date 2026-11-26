@@ -18,6 +18,8 @@ export interface Config {
   model?: string;
   /** Feishu/Lark custom-bot webhook; used by the notify tool and scheduled tasks */
   feishuWebhook?: string;
+  /** false turns off secret redaction in tool output (default on); see redact.ts */
+  redactSecrets?: boolean;
   /** TUI palette: fixed dark/light or auto (OSC 11 background query, then COLORFGBG) */
   theme?: 'dark' | 'light' | 'auto';
   /** Mouse capture; false keeps native terminal selection. Missing means true. */

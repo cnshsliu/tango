@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createServer } from 'node:http';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { existsSync, readdirSync, realpathSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AddressInfo } from 'node:net';
@@ -1401,6 +1401,10 @@ test('init generates AGENTS.md once; doctor runs its checks', async () => {
     assert.ok(doc.ok);
     const names = doc.data.checks.map((c: any) => c.name);
     for (const want of ['git', 'TANGO_HOME writable', 'model key', 'sessions dir']) assert.ok(names.includes(want), want);
+    // secret redaction in tool output: on, and how many values it watches (the values themselves never)
+    const redaction = doc.data.checks.find((c: any) => c.name === 'secret redaction');
+    assert.equal(redaction.ok, true);
+    assert.match(redaction.detail, /^\d+ values? watched$/);
     for (const lang of ['typescript', 'python', 'rust', 'go', 'c']) assert.ok(names.includes(`lsp ${lang}`), lang);
     // a missing server says how to get it
     for (const c of doc.data.checks.filter((c: any) => c.name.startsWith('lsp ') && !c.ok)) assert.match(c.detail, /^not installed · /);
@@ -3066,6 +3070,60 @@ test('serve: starting up removes the lock files nobody holds any more', async ()
     assert.ok(existsSync(cwdLive) && existsSync(sessLive), 'locks with a live holder stay');
   } finally {
     s.child.kill();
+    mock.server.close();
+    await rm(home, { recursive: true, force: true });
+    await rm(work, { recursive: true, force: true });
+  }
+});
+
+test('serve: a secret printed by a tool is redacted before it is shown, stored or sent to the model', async () => {
+  const mock = await startMock();
+  const home = await mkdtemp(join(tmpdir(), 'tango-serve-home-'));
+  const work = await mkdtemp(join(tmpdir(), 'tango-serve-work-'));
+  await writeFile(join(home, 'models.json'), JSON.stringify([
+    { id: 'mock/mock', provider: 'mock', model: 'm', api: 'openai-completions', baseUrl: `http://127.0.0.1:${(mock.server.address() as AddressInfo).port}/v1`, apiKey: 'MOCK_SERVE_KEY', contextWindow: 8000 }
+  ]));
+  // a secret the user keeps in [tango]/env
+  const secret = 'sk-e2e-' + 'q'.repeat(40);
+  await writeFile(join(home, 'env'), `# for the test\nTANGO_E2E_SECRET_VALUE=${secret}\n`);
+  let n = 0;
+  mock.setScript(() => {
+    n++;
+    return n % 2 === 1
+      ? SSE({ choices: [{ delta: { tool_calls: [{ index: 0, id: 'p1', function: { name: 'bash', arguments: JSON.stringify({ command: 'printenv TANGO_E2E_SECRET_VALUE' }) } }] }, finish_reason: 'tool_calls' }] }) + 'data: [DONE]\n\n'
+      : SSE({ choices: [{ delta: { content: 'seen' } }] }) + SSE({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1 } }) + 'data: [DONE]\n\n';
+  });
+  // one prompt whose tool prints the secret: returns what the UI was shown for that tool call
+  const run = async () => {
+    const s = await startServe(home, work, 0);
+    try {
+      await s.next(); // hello
+      s.send({ id: 1, cmd: 'prompt', text: 'print it' });
+      let shown = '';
+      for (;;) {
+        const f = await s.next();
+        if (f.type === 'tool_result' && f.call?.name === 'bash') shown = String(f.output);
+        if (f.type === 'result' && f.id === 1) return shown;
+      }
+    } finally {
+      s.child.kill();
+    }
+  };
+  const PLACEHOLDER = '[REDACTED TANGO_E2E_SECRET_VALUE]';
+  try {
+    const shown = await run();
+    assert.ok(shown.includes(PLACEHOLDER), `the UI frame is redacted: ${shown}`);
+    assert.ok(!shown.includes(secret));
+    const sent = JSON.stringify(mock.requests[1]); // the model request made after the tool ran
+    assert.ok(sent.includes(PLACEHOLDER), 'the model is told which credential was there');
+    assert.ok(!sent.includes(secret), 'the model never receives the value');
+    const stored = readdirSync(join(home, 'sessions')).filter((f) => f.endsWith('.jsonl')).map((f) => readFileSync(join(home, 'sessions', f), 'utf8')).join('');
+    assert.ok(stored.includes(PLACEHOLDER) && !stored.includes(secret), 'the session file holds the placeholder, not the value');
+    // the switch: with redactSecrets off, the same output goes through untouched
+    await writeFile(join(home, 'config.json'), JSON.stringify({ redactSecrets: false }));
+    const raw = await run();
+    assert.ok(raw.includes(secret), `off means off: ${raw}`);
+  } finally {
     mock.server.close();
     await rm(home, { recursive: true, force: true });
     await rm(work, { recursive: true, force: true });

@@ -352,6 +352,16 @@ It reads `.claude/settings.json` in the project, `~/.grok/settings.json`, or
 
 `/add_dir <dir>` makes a directory outside the project writable without asking.
 
+### Secrets in tool output
+
+If a command prints one of your API keys or the Feishu webhook (say, `cat ~/.tango/models.json`),
+tango replaces it with `[REDACTED <name>]` before the output reaches the screen, the session file
+or the model. It knows the values from `~/.tango/env`, the config and `models.json`, and from
+environment variables with names like `*_API_KEY` or `*_TOKEN`. To use a credential, the model has
+the shell read it instead of seeing it. `/doctor` shows whether it is on and how many values it
+watches; `"redactSecrets": false` turns it off. It matches only whole values of 16 characters or
+more, and does not rewrite session files that already exist.
+
 ### Hooks
 
 Hooks run your own scripts at fixed points and can say no, for checks that a permission rule

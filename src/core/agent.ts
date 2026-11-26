@@ -1,5 +1,6 @@
 import { existsSync } from 'node:fs';
 import { buildContext, findAgentsFiles } from './context.js';
+import { redactContent } from './redact.js';
 import { EventBus } from './events.js';
 import { adapterFor, costUsd } from './models/registry.js';
 import { SUMMARY_OPEN, type SessionStore } from './session.js';
@@ -448,7 +449,12 @@ export class Agent {
       if (this.controller?.signal.aborted) return fail('aborted');
       result = { content: [{ type: 'text', text: `tool failed: ${e?.message ?? e}` }], isError: true };
     }
+    // a secret the user keeps, printed by the tool: replaced before anything sees the result —
+    // the UI frame and hooks (after_tool), the session file, the model's next request
+    result.content = await redactContent(result.content);
     await this.events.emit('after_tool', { call, result, ms: Date.now() - t0 });
+    // a listener may have appended to the result (diagnostics): that text is checked too
+    result.content = await redactContent(result.content);
     return { type: 'tool_result', toolCallId: call.id, content: result.content, isError: result.isError };
   }
 

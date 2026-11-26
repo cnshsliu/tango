@@ -933,6 +933,14 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
         add('model key', hasKey, hasKey ? `${agent.model.id} ready` : `${agent.model.id}: no api key configured`);
         const nodeV = process.version;
         add('node', true, nodeV);
+        // tool-output secret redaction: whether it is on, and how many values it watches (never the values)
+        const { knownSecrets } = await import('./core/redact.js');
+        const watched = await knownSecrets().catch(() => []);
+        add(
+          'secret redaction',
+          config.redactSecrets !== false,
+          config.redactSecrets === false ? 'off (redactSecrets: false)' : `${watched.length} value${watched.length === 1 ? '' : 's'} watched`
+        );
         // language servers for the lsp tool: what runs, and how to get what doesn't
         const { SERVERS, resolveCommand, installCommand } = await import('./core/lsp.js');
         for (const def of SERVERS) {

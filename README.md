@@ -351,6 +351,21 @@ tools, checkpoints and permission rules follow live). Bare `/cd` opens the direc
 or `/cd ~/path` switches directly. A prompt does not start when that directory is gone:
 tango opens the same picker instead of calling the model. `/add_dir <dir>` registers an extra writable root.
 
+## Secrets in tool output
+
+A tool that prints one of your credentials would otherwise put it into the conversation: the
+screen, the session file, the model's next request. So before a tool result is shown, stored or
+sent, tango replaces every value it can name with `[REDACTED <name>]`. The model still learns which
+credential was there, and has the shell read it when it needs one. The values come from
+`~/.tango/env`, `feishuWebhook` and the `env` / `headers` of `mcpServers` in config, a model's
+literal `apiKey` in `models.json`, and environment variables whose name says they hold one
+(`*_API_KEY`, `*_TOKEN`, `*_SECRET`, `*_PASSWORD`, `GITHUB_PAT`, …). `/doctor` shows whether it is
+on and how many values it watches. `"redactSecrets": false` in config turns it off.
+
+What it does not do: touch what you type or what the model writes; match less than the whole value
+or anything under 16 characters (so ordinary text is never hit); see through base64 or other
+encodings; or change session files that already exist.
+
 ## Observability
 
 - `/context` — what the next request carries: system prompt / skills / tool schemas / history as
@@ -973,6 +988,7 @@ used as the literal key. Nothing is inferred. `tango --models` shows which varia
 | `checkpoint` | `off` disables per-turn workspace snapshots (default on) | edit |
 | `autocompact` | compact when context passes this share of the window (default `0.75`); `off` disables | `/autocompact` |
 | `maxTurns` | model round-trips per prompt before tango stops the loop (1-500, default 64); `--max-tool-rounds` overrides it for one run | edit |
+| `redactSecrets` | `false` turns off secret redaction in tool output (default on; see "Secrets in tool output") | edit |
 | `retries` | retries for a model request that fails before any output: network errors (reset, refused, DNS, timeout) and HTTP 408/409/425/429/5xx/529 (0-10, default 10; `0` turns retrying off). Waits 1s, 2s, 4s, 8s, then 15s each (or the server's `Retry-After`); each retry is announced ("第 1/10 次重试"); Esc cancels the wait. 401/403/400 are never retried, nor a stream that already started. A model in `models.json` can set its own `retries` | edit |
 | `warming` | keep prompt caches warm: `true` or `{ "interval": 240, "duration": 1800 }` (see "Session warming") | edit |
 | `statusline` | status bar template with `{model} {mode} {cost} {ctx} {pct} {session} {tokens}` | `/statusline` |
