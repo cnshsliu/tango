@@ -34,6 +34,7 @@ import { allSubAgents } from './core/tools/task.js';
 import { cancelHandoff, drainHandoffs, listHandoffs, purgeExpiredHandoffs, queueHandoff } from './core/handoff.js';
 import { drainMail, sendMail } from './core/mail.js';
 import { holdSessionLock, sessionHolder } from './core/session-lock.js';
+import { stillHolds } from './core/liveness.js';
 import { costUsd, displayPlatform, groupModels } from './core/models/registry.js';
 import { retryText } from './core/models/util.js';
 import type { AskFn, PermissionMode } from './core/permissions.js';
@@ -109,16 +110,15 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
     const fsp = await import('node:fs/promises');
     try {
       const prev = JSON.parse(await fsp.readFile(lockFile, 'utf8'));
-      if (prev.pid > 1) {
-        try {
-          process.kill(prev.pid, 0);
-          // a notice (chat line), not an error frame: concurrent UIs are a convention
-          // violation, not a protocol failure
-          out({
-            type: 'notice',
-            text: `⚠ 另一个 tango 会话正在此目录运行（pid ${prev.pid}${prev.sessionId ? ', session ' + shortId(String(prev.sessionId)) : ''}）— 主工作区是单写者约定，回滚/快照可能互相冲突；建议在不同 worktree 里并行（/worktree、/bg）`
-          });
-        } catch {}
+      // only a tango that is still the same process counts: a stale lock whose pid the kernel
+      // has handed to something else is not a second session here
+      if (prev.pid > 1 && prev.pid !== process.pid && stillHolds(prev.pid, prev.at)) {
+        // a notice (chat line), not an error frame: concurrent UIs are a convention
+        // violation, not a protocol failure
+        out({
+          type: 'notice',
+          text: `⚠ 另一个 tango 会话正在此目录运行（pid ${prev.pid}${prev.sessionId ? ', session ' + shortId(String(prev.sessionId)) : ''}）— 主工作区是单写者约定，回滚/快照可能互相冲突；建议在不同 worktree 里并行（/worktree、/bg）`
+        });
       }
     } catch {}
     try {

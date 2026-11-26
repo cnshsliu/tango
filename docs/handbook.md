@@ -246,7 +246,8 @@ they run without a TUI: `readonly` by default, `auto` only if you asked for it.
 A managed worktree is a separate checkout of your repo at `~/.tango/worktrees/<name>` on
 branch `tango/<name>`. Use one whenever two things might write files at the same time. Tango
 assumes a single writer in the main workspace and warns if a second tango session opens in
-the same directory. Writing into a managed worktree never asks for permission, even from a
+the same directory. A lock left behind by a session that crashed doesn't count: tango checks
+that the pid in it is still the same process. Writing into a managed worktree never asks for permission, even from a
 session whose cwd is the main checkout. A checkout anywhere else outside the cwd still asks,
 unless you `/add_dir` it.
 

@@ -2,11 +2,14 @@ import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import { readFileSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { tangoDir } from './config.js';
+import { isSameProcess, processStarts } from './liveness.js';
 
 /**
  * Per-session liveness: one file per open session under [tango]/locks/sessions/[id].json,
- * holding the pid of the serve process that has it open. Lets /handoff tell whether the
- * target is live in another window. (The cwd-keyed locks in serve.ts answer a different
+ * holding the pid of the serve process that has it open, and when it took it. Lets /handoff
+ * tell whether the target is live in another window. A lock counts only while that pid is still
+ * the same process: a pid the kernel recycled onto something else (an editor, a simulator) is
+ * not a tango holding the session. (The cwd-keyed locks in serve.ts answer a different
  * question: is another tango writing to this directory.)
  */
 export interface SessionLock {
@@ -17,15 +20,6 @@ export interface SessionLock {
 
 const lockDir = () => join(tangoDir(), 'locks', 'sessions');
 const lockFile = (id: string) => join(lockDir(), `${id}.json`);
-
-const alive = (pid: number) => {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (e: any) {
-    return e?.code === 'EPERM'; // exists, owned by someone else
-  }
-};
 
 /** Mark `sessionId` as open by this process; the file is removed on exit (if still ours). */
 export async function holdSessionLock(sessionId: string, cwd: string): Promise<void> {
@@ -45,7 +39,7 @@ export async function sessionHolder(sessionId: string): Promise<SessionLock | nu
   try {
     const lock = JSON.parse(await readFile(lockFile(sessionId), 'utf8')) as SessionLock;
     if (!(lock.pid > 1) || lock.pid === process.pid) return null;
-    return alive(lock.pid) ? lock : null;
+    return isSameProcess(lock.pid, lock.at, processStarts([lock.pid]).get(lock.pid)) ? lock : null;
   } catch {
     return null;
   }
@@ -65,12 +59,14 @@ export async function liveSessionLocks(): Promise<LiveSessionLock[]> {
   } catch {
     return [];
   }
-  const live: LiveSessionLock[] = [];
+  const found: LiveSessionLock[] = [];
   for (const f of files) {
     try {
       const lock = JSON.parse(await readFile(join(lockDir(), f), 'utf8')) as SessionLock;
-      if (lock.pid > 1 && alive(lock.pid)) live.push({ sessionId: f.slice(0, -'.json'.length), lock });
+      if (lock.pid > 1) found.push({ sessionId: f.slice(0, -'.json'.length), lock });
     } catch {}
   }
-  return live;
+  // one `ps` for every lock, however many there are
+  const starts = processStarts(found.map(({ lock }) => lock.pid));
+  return found.filter(({ lock }) => isSameProcess(lock.pid, lock.at, starts.get(lock.pid)));
 }

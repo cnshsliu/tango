@@ -2982,3 +2982,52 @@ test('serve hooks: /bg and /subtask fire TaskCreated/SubagentStart (exit 2 refus
   }
 });
 
+
+test('serve: the same-directory warning needs a lock whose pid is still that tango; a recycled pid stays silent', async () => {
+  const mock = await startMock();
+  const home = await mkdtemp(join(tmpdir(), 'tango-serve-home-'));
+  const work = await mkdtemp(join(tmpdir(), 'tango-serve-work-'));
+  await writeFile(join(home, 'models.json'), JSON.stringify([
+    { id: 'mock/mock', provider: 'mock', model: 'm', api: 'openai-completions', baseUrl: `http://127.0.0.1:${(mock.server.address() as AddressInfo).port}/v1`, apiKey: 'MOCK_SERVE_KEY', contextWindow: 8000 }
+  ]));
+  mock.setScript(() => SSE({ choices: [{ delta: { content: 'ok' }, finish_reason: 'stop' }] }) + 'data: [DONE]\n\n');
+  const { createHash } = await import('node:crypto');
+  const keyOf = (dir: string) => createHash('sha1').update(dir).digest('hex').slice(0, 16);
+  const putLock = async (at: string) => {
+    await mkdir(join(home, 'locks'), { recursive: true });
+    // serve may key the lock by the real path (tmp is a symlink to private/tmp on macOS): cover both
+    for (const dir of new Set([work, realpathSync(work)])) {
+      await writeFile(join(home, 'locks', `${keyOf(dir)}.json`), JSON.stringify({ pid: process.pid, sessionId: 'old', cwd: dir, at }));
+    }
+  };
+  const isWarning = (f: any) => f.type === 'notice' && /另一个 tango 会话/.test(String(f.text));
+  const untilHello = async (s: any) => {
+    const seen: any[] = [];
+    for (;;) {
+      const f = await s.next();
+      if (f.type === 'hello') return seen;
+      seen.push(f);
+    }
+  };
+  let s = await startServe(home, work, 0);
+  try {
+    // the lock names this very test process, but was written an hour before it existed
+    await putLock(new Date(Date.now() - 3600_000).toISOString());
+    let before = await untilHello(s);
+    assert.ok(!before.some(isWarning), `no warning for a recycled pid, got ${JSON.stringify(before.map((f: any) => f.type))}`);
+    s.child.kill();
+
+    // the same lock written now: that process really is running
+    await putLock(new Date().toISOString());
+    s = await startServe(home, work, 0);
+    before = await untilHello(s);
+    const warned = before.find(isWarning);
+    assert.ok(warned, 'a live holder is announced');
+    assert.ok(String(warned.text).includes(`pid ${process.pid}`), String(warned.text));
+  } finally {
+    s.child.kill();
+    mock.server.close();
+    await rm(home, { recursive: true, force: true });
+    await rm(work, { recursive: true, force: true });
+  }
+});

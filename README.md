@@ -472,7 +472,12 @@ state is snapshotted too. Snapshots live in the session log; the JSONL log is th
   queued brief with its queue id and deletes expired ones (so briefs for sessions never reopened
   don't pile up); `/handoff cancel <queue id>` withdraws one. If the target is
   open in another window, `/handoff` says so (and `/takeover` warns that a live source keeps
-  moving after the snapshot). Each open session holds `~/.tango/locks/sessions/<id>.json`.
+  moving after the snapshot). Each open session holds `~/.tango/locks/sessions/<id>.json`, with the serve's pid and the time
+  it opened the session. A lock counts only while that pid is still that process: the kernel recycles
+  pids, so a stale lock whose number now belongs to an unrelated program is treated as closed
+  (`liveness.ts` compares the process's start time with the lock's). The same rule applies to the
+  directory lock behind the "another tango session is running in this directory" notice, so a lock
+  left by a crashed session never produces it.
 - `/takeover [session] [note]` is the reverse: it briefs an existing session and merges that brief
   into the current one, leaving the source untouched. Both take an id or prefix; bare commands open
   a session picker. Briefs show in the transcript where they were merged.
