@@ -477,7 +477,9 @@ state is snapshotted too. Snapshots live in the session log; the JSONL log is th
   pids, so a stale lock whose number now belongs to an unrelated program is treated as closed
   (`liveness.ts` compares the process's start time with the lock's). The same rule applies to the
   directory lock behind the "another tango session is running in this directory" notice, so a lock
-  left by a crashed session never produces it.
+  left by a crashed session never produces it. A process that was killed cannot take its lock with
+  it, so every serve start also removes the lock files nobody holds any more (both kinds), after
+  judging each again right before it is unlinked.
 - `/takeover [session] [note]` is the reverse: it briefs an existing session and merges that brief
   into the current one, leaving the source untouched. Both take an id or prefix; bare commands open
   a session picker. Briefs show in the transcript where they were merged.

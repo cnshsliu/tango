@@ -1,8 +1,8 @@
-import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import { readFileSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { tangoDir } from './config.js';
-import { isSameProcess, processStarts } from './liveness.js';
+import { isSameProcess, processStarts, stillHolds } from './liveness.js';
 
 /**
  * Per-session liveness: one file per open session under [tango]/locks/sessions/[id].json,
@@ -18,7 +18,9 @@ export interface SessionLock {
   at: string;
 }
 
-const lockDir = () => join(tangoDir(), 'locks', 'sessions');
+/** [tango]/locks holds the cwd-keyed locks (written by serve.ts) and, in sessions/, these. */
+const lockRoot = () => join(tangoDir(), 'locks');
+const lockDir = () => join(lockRoot(), 'sessions');
 const lockFile = (id: string) => join(lockDir(), `${id}.json`);
 
 /** Mark `sessionId` as open by this process; the file is removed on exit (if still ours). */
@@ -69,4 +71,45 @@ export async function liveSessionLocks(): Promise<LiveSessionLock[]> {
   // one `ps` for every lock, however many there are
   const starts = processStarts(found.map(({ lock }) => lock.pid));
   return found.filter(({ lock }) => isSameProcess(lock.pid, lock.at, starts.get(lock.pid)));
+}
+
+/**
+ * Remove the lock files nobody holds any more: their process died, or its pid was recycled onto
+ * something else. A killed process cannot take its lock with it, so a serve sweeps both kinds
+ * when it starts. Each file is judged again right before it is unlinked, so a lock a process
+ * takes during the sweep stays; a file that cannot be read is left alone. Returns how many went.
+ */
+export async function cleanStaleLocks(): Promise<number> {
+  let removed = 0;
+  for (const dir of [lockRoot(), lockDir()]) {
+    let files: string[];
+    try {
+      files = (await readdir(dir)).filter((f) => f.endsWith('.json'));
+    } catch {
+      continue;
+    }
+    const locks: { file: string; pid: number; at?: string }[] = [];
+    for (const f of files) {
+      try {
+        const lock = JSON.parse(await readFile(join(dir, f), 'utf8'));
+        if (typeof lock?.pid === 'number' && lock.pid > 1) locks.push({ file: join(dir, f), pid: lock.pid, at: lock.at });
+      } catch {} // unreadable: not ours to judge
+    }
+    const starts = processStarts(locks.map((l) => l.pid)); // one `ps` for the whole directory
+    for (const l of locks) {
+      if (isSameProcess(l.pid, l.at, starts.get(l.pid))) continue;
+      let again: any;
+      try {
+        again = JSON.parse(await readFile(l.file, 'utf8'));
+      } catch {
+        continue;
+      }
+      if (!(again?.pid > 1) || stillHolds(again.pid, again.at)) continue;
+      try {
+        await unlink(l.file);
+        removed++;
+      } catch {} // already gone: another sweep got there first
+    }
+  }
+  return removed;
 }

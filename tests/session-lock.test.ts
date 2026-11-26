@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { readdirSync } from 'node:fs';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -63,6 +64,40 @@ test('session locks: a recycled pid is not a holder; a dead one never was', { sk
     assert.equal(await sessionHolder('reused'), null);
     assert.equal(await sessionHolder('dead'), null);
     assert.deepEqual((await liveSessionLocks()).map((l) => l.sessionId), ['live']);
+  } finally {
+    if (prev === undefined) delete process.env.TANGO_HOME;
+    else process.env.TANGO_HOME = prev;
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test('cleanStaleLocks removes what nobody holds, in both lock directories', { skip: !hasPs }, async () => {
+  const home = await mkdtemp(join(tmpdir(), 'tango-sweep-'));
+  const prev = process.env.TANGO_HOME;
+  process.env.TANGO_HOME = home;
+  try {
+    const { cleanStaleLocks } = await import('../src/core/session-lock.js');
+    const root = join(home, 'locks');
+    const sess = join(root, 'sessions');
+    await mkdir(sess, { recursive: true });
+    const parent = process.ppid;
+    const parentStarted = processStarts([parent]).get(parent)!;
+    const gone = spawnSync(process.execPath, ['-e', '']).pid!;
+    const put = (file: string, body: unknown) => writeFile(file, typeof body === 'string' ? body : JSON.stringify(body));
+    const now = iso(Date.now());
+    // the top level: cwd locks
+    await put(join(root, 'aaaa.json'), { pid: parent, at: now }); // live
+    await put(join(root, 'bbbb.json'), { pid: gone, at: now }); // dead
+    await put(join(root, 'cccc.json'), { pid: parent, at: iso(parentStarted - 60_000) }); // recycled pid
+    await put(join(root, 'dddd.json'), '{not json'); // unreadable: left alone
+    await put(join(root, 'notes.txt'), 'not a lock file'); // not even looked at
+    // sessions/
+    await put(join(sess, 's-live.json'), { pid: parent, at: now });
+    await put(join(sess, 's-dead.json'), { pid: gone, at: now });
+    assert.equal(await cleanStaleLocks(), 3);
+    assert.deepEqual(readdirSync(root).sort(), ['aaaa.json', 'dddd.json', 'notes.txt', 'sessions']);
+    assert.deepEqual(readdirSync(sess).sort(), ['s-live.json']);
+    assert.equal(await cleanStaleLocks(), 0, 'nothing left to remove');
   } finally {
     if (prev === undefined) delete process.env.TANGO_HOME;
     else process.env.TANGO_HOME = prev;

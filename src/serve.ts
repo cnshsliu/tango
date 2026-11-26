@@ -33,7 +33,7 @@ import { SessionStore, relativeTime, shortId } from './core/session.js';
 import { allSubAgents } from './core/tools/task.js';
 import { cancelHandoff, drainHandoffs, listHandoffs, purgeExpiredHandoffs, queueHandoff } from './core/handoff.js';
 import { drainMail, sendMail } from './core/mail.js';
-import { holdSessionLock, sessionHolder } from './core/session-lock.js';
+import { cleanStaleLocks, holdSessionLock, sessionHolder } from './core/session-lock.js';
 import { stillHolds } from './core/liveness.js';
 import { costUsd, displayPlatform, groupModels } from './core/models/registry.js';
 import { retryText } from './core/models/util.js';
@@ -135,6 +135,8 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
   }
   // per-session liveness, so /handoff can tell the target is open in another window
   await holdSessionLock(store.id, cwd).catch(() => {});
+  // locks of processes that died (or were killed) pile up: each start sweeps them, in the background
+  void cleanStaleLocks().catch(() => {});
   // Permission rules and extra roots are not the snapshot taken at startup: an "always allow"
   // saved in another window, or a /cd into another project, applies from the next decision on.
   // Cheap check per decision — the mtimes of the files rules can come from, and the directory.

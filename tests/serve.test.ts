@@ -3031,3 +3031,43 @@ test('serve: the same-directory warning needs a lock whose pid is still that tan
     await rm(work, { recursive: true, force: true });
   }
 });
+
+test('serve: starting up removes the lock files nobody holds any more', async () => {
+  const mock = await startMock();
+  const home = await mkdtemp(join(tmpdir(), 'tango-serve-home-'));
+  const work = await mkdtemp(join(tmpdir(), 'tango-serve-work-'));
+  await writeFile(join(home, 'models.json'), JSON.stringify([
+    { id: 'mock/mock', provider: 'mock', model: 'm', api: 'openai-completions', baseUrl: `http://127.0.0.1:${(mock.server.address() as AddressInfo).port}/v1`, apiKey: 'MOCK_SERVE_KEY', contextWindow: 8000 }
+  ]));
+  mock.setScript(() => SSE({ choices: [{ delta: { content: 'ok' }, finish_reason: 'stop' }] }) + 'data: [DONE]\n\n');
+  const { createHash } = await import('node:crypto');
+  const keyOf = (dir: string) => createHash('sha1').update(dir).digest('hex').slice(0, 16);
+  const root = join(home, 'locks');
+  const sess = join(root, 'sessions');
+  await mkdir(sess, { recursive: true });
+  const gone = spawnSync(process.execPath, ['-e', '']).pid!;
+  const now = new Date().toISOString();
+  const cwdDead = join(root, `${keyOf('/no/such/dir-a')}.json`);
+  const cwdLive = join(root, `${keyOf('/no/such/dir-b')}.json`);
+  const sessDead = join(sess, 'deadbeef-0000-4000-8000-000000000000.json');
+  const sessLive = join(sess, 'feedface-0000-4000-8000-000000000000.json');
+  // this test process is alive and older than its locks: a real holder
+  await writeFile(cwdDead, JSON.stringify({ pid: gone, sessionId: 'x', cwd: '/no/such/dir-a', at: now }));
+  await writeFile(cwdLive, JSON.stringify({ pid: process.pid, sessionId: 'y', cwd: '/no/such/dir-b', at: now }));
+  await writeFile(sessDead, JSON.stringify({ pid: gone, cwd: '/w', at: now }));
+  await writeFile(sessLive, JSON.stringify({ pid: process.pid, cwd: '/w', at: now }));
+  const s = await startServe(home, work, 0);
+  try {
+    await s.until((f) => f.type === 'hello', 'hello');
+    // the sweep runs in the background: give it a moment
+    for (let i = 0; i < 100 && (existsSync(cwdDead) || existsSync(sessDead)); i++) await new Promise((r) => setTimeout(r, 50));
+    assert.equal(existsSync(cwdDead), false, 'a cwd lock with a dead pid is removed');
+    assert.equal(existsSync(sessDead), false, 'a session lock with a dead pid is removed');
+    assert.ok(existsSync(cwdLive) && existsSync(sessLive), 'locks with a live holder stay');
+  } finally {
+    s.child.kill();
+    mock.server.close();
+    await rm(home, { recursive: true, force: true });
+    await rm(work, { recursive: true, force: true });
+  }
+});
