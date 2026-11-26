@@ -190,8 +190,11 @@ tool: definitions, references, hover, file outlines, project-wide symbol search,
 callees, answered by the project's language server rather than by text search. TypeScript and
 JavaScript work in any project with `typescript-language-server` in `node_modules` or on `PATH`;
 Python needs `pyright-langserver`, Rust `rust-analyzer`, Go `gopls`, C/C++ `clangd`. tango
-doesn't install them. Without one, the model gets an error naming what it looked for and falls
-back to grep. The first question in a project takes a second or two while the server loads it.
+doesn't install them on its own. When one is missing, the model tells you and offers the install
+command for your machine (`rustup component add rust-analyzer`, `npm install -g pyright` …); say
+yes and it runs it through a permission dialog that shows the exact command, then carries on with
+the server. Say no and it falls back to grep. `/doctor` shows which servers you have and how to
+get the rest. The first question in a project takes a second or two while the server loads it.
 
 ### Long-running commands (dev servers, watchers)
 

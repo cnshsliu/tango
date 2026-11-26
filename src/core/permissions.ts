@@ -1,4 +1,5 @@
 import { isAbsolute, relative, resolve } from 'node:path';
+import { installCommand, serverFor } from './lsp.js';
 import type { EventBus } from './events.js';
 import { writesWorkspace, type ToolCallBlock } from './types.js';
 
@@ -216,6 +217,13 @@ function bashSegments(command: string): string[] {
 }
 
 export function decide(mode: PermissionMode, call: ToolCallBlock, cwd: string, rules?: AllowRule[], extraDirs?: string[]): Decision {
+  // lsp is a read, except op "install", which runs a package manager: always a question (no rule
+  // skips it), refused where nobody may change the machine
+  if (call.name === 'lsp' && (call.input as Record<string, unknown>)?.op === 'install') {
+    if (mode === 'readonly') return { action: 'deny', reason: 'read-only mode' };
+    if (mode === 'auto') return { action: 'allow' };
+    return { action: 'ask', reason: `installs a language server: ${lspInstallPreview(call)}` };
+  }
   if (mode === 'readonly') return readonlyDecision(call);
   if (mode === 'auto' || READ_TOOLS.has(call.name)) return { action: 'allow' };
   // persistent allow rules never override readonly (checked above), but beat ask.
@@ -235,6 +243,13 @@ export function decide(mode: PermissionMode, call: ToolCallBlock, cwd: string, r
     return { action: 'allow' };
   }
   return decideBase(mode, call, cwd, extraDirs);
+}
+
+/** The command an lsp install call would run, for the permission dialog. */
+function lspInstallPreview(call: ToolCallBlock): string {
+  const path = String((call.input as Record<string, unknown>)?.path ?? '');
+  const def = serverFor(path);
+  return (def && installCommand(def)) ?? `(no installer for ${path || 'this file type'})`;
 }
 
 function readonlyDecision(call: ToolCallBlock): Decision {

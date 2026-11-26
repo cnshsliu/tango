@@ -51,3 +51,25 @@ test('lsp: clear errors for bad input and unsupported files', async () => {
   assert.match(textOf(await lspTool.execute({ op: 'hover', path: 'tsconfig.json', line: 1 }, ctx)), /no language server for \.json/);
   assert.ok((await lspTool.execute({ op: 'bogus' as any, path: 'use.ts' }, ctx)).isError);
 });
+
+test('lsp install: always asks (rules cannot skip it), readonly refuses, plan blocks it as a write', async () => {
+  const { writesWorkspace } = await import('../src/core/types.js');
+  const { parseRule } = await import('../src/core/permissions.js');
+  const install = { type: 'tool_call' as const, id: '1', name: 'lsp', input: { op: 'install', path: 'src/main.rs' } };
+  const rule = parseRule('tool:lsp');
+  assert.ok(rule.ok);
+  const d = decide('ask', install, '/w', [rule.rule]);
+  assert.equal(d.action, 'ask');
+  assert.match((d as any).reason, /^installs a language server: /);
+  assert.equal(decide('readonly', install, '/w').action, 'deny');
+  assert.equal(decide('auto', install, '/w').action, 'allow');
+  assert.equal(writesWorkspace(lspTool, install.input), true);
+  assert.equal(writesWorkspace(lspTool, { op: 'hover', path: 'a.ts', line: 1 }), false);
+});
+
+test('a missing server names the install command for this machine', async () => {
+  const { SERVERS, installCommand } = await import('../src/core/lsp.js');
+  const fake = { ...SERVERS[0], commands: [['tango-no-such-server', []]] as [string, string[]][], install: [{ needs: 'node', cmd: 'echo install-it' }] };
+  assert.equal(installCommand(fake), 'echo install-it');
+  assert.equal(installCommand({ ...fake, install: [{ needs: 'tango-no-such-pm', cmd: 'x' }] }), undefined);
+});

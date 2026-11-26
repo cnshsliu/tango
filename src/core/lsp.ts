@@ -4,9 +4,10 @@
  * and kept until the tango process exits. Only what the tool needs: initialize, didOpen, and
  * request/response; server→client requests get an empty result so servers never stall on us.
  */
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { dirname, extname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -18,6 +19,8 @@ export interface ServerDef {
   markers: string[];
   /** candidate commands, first one found wins; relative paths are tried under the root */
   commands: [string, string[]][];
+  /** ways to install the server; the first whose `needs` program is on PATH is offered */
+  install: { needs: string; cmd: string }[];
 }
 
 export const SERVERS: ServerDef[] = [
@@ -28,7 +31,8 @@ export const SERVERS: ServerDef[] = [
     commands: [
       ['node_modules/.bin/typescript-language-server', ['--stdio']],
       ['typescript-language-server', ['--stdio']]
-    ]
+    ],
+    install: [{ needs: 'npm', cmd: 'npm install -g typescript-language-server typescript' }]
   },
   {
     language: 'python',
@@ -38,15 +42,42 @@ export const SERVERS: ServerDef[] = [
       ['.venv/bin/pyright-langserver', ['--stdio']],
       ['node_modules/.bin/pyright-langserver', ['--stdio']],
       ['pyright-langserver', ['--stdio']]
+    ],
+    install: [
+      { needs: 'npm', cmd: 'npm install -g pyright' },
+      { needs: 'pipx', cmd: 'pipx install pyright' },
+      { needs: 'brew', cmd: 'brew install pyright' }
     ]
   },
-  { language: 'rust', exts: ['.rs'], markers: ['Cargo.toml'], commands: [['rust-analyzer', []]] },
-  { language: 'go', exts: ['.go'], markers: ['go.mod'], commands: [['gopls', []]] },
+  {
+    language: 'rust',
+    exts: ['.rs'],
+    markers: ['Cargo.toml'],
+    commands: [['rust-analyzer', []]],
+    install: [
+      { needs: 'rustup', cmd: 'rustup component add rust-analyzer' },
+      { needs: 'brew', cmd: 'brew install rust-analyzer' }
+    ]
+  },
+  {
+    language: 'go',
+    exts: ['.go'],
+    markers: ['go.mod'],
+    commands: [['gopls', []]],
+    install: [
+      { needs: 'go', cmd: 'go install golang.org/x/tools/gopls@latest' },
+      { needs: 'brew', cmd: 'brew install gopls' }
+    ]
+  },
   {
     language: 'c',
     exts: ['.c', '.h', '.cc', '.cpp', '.hpp', '.m'],
     markers: ['compile_commands.json', 'CMakeLists.txt', 'Makefile'],
-    commands: [['clangd', []]]
+    commands: [['clangd', []]],
+    install: [
+      { needs: 'brew', cmd: 'brew install llvm' },
+      { needs: 'apt-get', cmd: 'sudo apt-get install -y clangd' }
+    ]
   }
 ];
 
@@ -63,6 +94,41 @@ export function findRoot(file: string, markers: string[], stop?: string): string
   }
 }
 
+/**
+ * PATH plus the toolchains' standard bin directories: a TUI started from a GUI app or a non-login
+ * shell often lacks ~/.cargo/bin or ~/go/bin, where rustup and `go install` put servers.
+ */
+export function searchDirs(): string[] {
+  const home = homedir();
+  const extra = [join(home, '.cargo', 'bin'), join(process.env.GOPATH ?? join(home, 'go'), 'bin'), join(home, '.local', 'bin'), '/opt/homebrew/bin', '/usr/local/bin'];
+  const dirs = [...(process.env.PATH ?? '').split(':'), ...extra].filter(Boolean);
+  return dirs.filter((d, i) => dirs.indexOf(d) === i);
+}
+
+export const onPath = (name: string): string | undefined => {
+  for (const p of searchDirs()) if (existsSync(join(p, name))) return join(p, name);
+  return undefined;
+};
+
+/** The install command to offer on this machine, if any of the recipes' tools is present. */
+export const installCommand = (def: ServerDef): string | undefined => def.install.find((r) => onPath(r.needs))?.cmd;
+
+/**
+ * Does the binary actually run? rustup puts a `rust-analyzer` proxy on PATH even when the
+ * component is missing; it exits non-zero with "Unknown binary". Probed once per path.
+ */
+const runs = new Map<string, boolean>();
+export function usable(path: string): boolean {
+  let ok = runs.get(path);
+  if (ok === undefined) {
+    const r = spawnSync(path, ['--version'], { stdio: 'ignore', timeout: 10_000 });
+    ok = r.status === 0;
+    runs.set(path, ok);
+  }
+  return ok;
+}
+export const forgetProbes = () => runs.clear();
+
 /** The first command that exists: a relative path under the root, or a name on PATH. */
 export function resolveCommand(def: ServerDef, root: string): [string, string[]] | undefined {
   for (const [cmd, args] of def.commands) {
@@ -76,7 +142,8 @@ export function resolveCommand(def: ServerDef, root: string): [string, string[]]
         dir = parent;
       }
     } else {
-      for (const p of (process.env.PATH ?? '').split(':')) if (p && existsSync(join(p, cmd))) return [join(p, cmd), args];
+      const found = onPath(cmd);
+      if (found && usable(found)) return [found, args];
     }
   }
   return undefined;
@@ -244,7 +311,11 @@ export function clientFor(file: string, cwd: string): LspClient | { error: strin
   const cmd = resolveCommand(def, root) ?? resolveCommand(def, cwd);
   if (!cmd) {
     const names = def.commands.map(([c]) => c.split('/').pop()).filter((v, i, a) => a.indexOf(v) === i);
-    return { error: `no ${def.language} language server found (looked for ${names.join(', ')} under ${root} and on PATH). Install one, or use grep.` };
+    const how = installCommand(def);
+    const next = how
+      ? `It can be installed with \`${how}\`: ask the user, then call lsp with op "install" and this path (they approve the command), or use grep meanwhile.`
+      : `No installer for it was found here (${def.install.map((r) => r.needs).join(', ')}); tell the user what to install, and use grep meanwhile.`;
+    return { error: `no ${def.language} language server found (looked for ${names.join(', ')} under ${root} and on PATH). ${next}` };
   }
   const client = new LspClient(def, root, cmd);
   clients.set(key, client);

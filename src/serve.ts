@@ -930,6 +930,13 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
         add('model key', hasKey, hasKey ? `${agent.model.id} ready` : `${agent.model.id}: no api key configured`);
         const nodeV = process.version;
         add('node', true, nodeV);
+        // language servers for the lsp tool: what runs, and how to get what doesn't
+        const { SERVERS, resolveCommand, installCommand } = await import('./core/lsp.js');
+        for (const def of SERVERS) {
+          const found = resolveCommand(def, cwd);
+          const how = installCommand(def);
+          add(`lsp ${def.language}`, !!found, found ? found[0] : how ? `not installed · ${how}` : `not installed · needs ${def.install.map((r) => r.needs).join(' or ')}`);
+        }
         reply(cmd, true, { checks });
         return;
       }

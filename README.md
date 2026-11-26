@@ -846,8 +846,18 @@ Servers, found under the project root and its parents first, then on `PATH`:
 `typescript-language-server` (TS/JS; a dev dependency of this repo), `pyright-langserver`
 (`.venv/bin`, `node_modules/.bin`), `rust-analyzer`, `gopls`, `clangd`. The project root is the
 nearest directory with a marker (`tsconfig.json`/`package.json`, `pyproject.toml`, `Cargo.toml`,
-`go.mod`, `compile_commands.json` …). Nothing is installed automatically; a missing server gets an
-error that names what was looked for. One server runs per language and root, started on first use
+`go.mod`, `compile_commands.json` …). A binary must also run (`--version` exits 0): rustup's
+`rust-analyzer` proxy exists even without the component. Besides `PATH`, `~/.cargo/bin`,
+`$GOPATH/bin` (`~/go/bin`), `~/.local/bin`, `/opt/homebrew/bin` and `/usr/local/bin` are searched.
+
+Nothing is installed behind your back. A missing server's error names the install command for this
+machine, the first recipe whose tool is present: `npm install -g typescript-language-server
+typescript`; pyright via npm, pipx or brew; `rustup component add rust-analyzer` or brew;
+`go install golang.org/x/tools/gopls@latest` or brew; clangd via brew (`llvm`) or apt. The model
+asks you, then calls `lsp` with `op: "install"`, which always opens a permission dialog showing
+that command (allow rules don't skip it; `auto` mode runs it, `readonly` and plan mode refuse).
+The server is usable in the same turn. `/doctor` lists every language's server or its install
+command. One server runs per language and root, started on first use
 and stopped when tango exits. A server that just started is still loading the project: for its
 first 20 s an empty answer (or a TypeScript definition that only reaches the import line) is
 retried every 1.5 s. `lsp` counts as a read, so `explore` sub-agents and `readonly` mode have it.

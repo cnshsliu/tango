@@ -1401,6 +1401,9 @@ test('init generates AGENTS.md once; doctor runs its checks', async () => {
     assert.ok(doc.ok);
     const names = doc.data.checks.map((c: any) => c.name);
     for (const want of ['git', 'TANGO_HOME writable', 'model key', 'sessions dir']) assert.ok(names.includes(want), want);
+    for (const lang of ['typescript', 'python', 'rust', 'go', 'c']) assert.ok(names.includes(`lsp ${lang}`), lang);
+    // a missing server says how to get it
+    for (const c of doc.data.checks.filter((c: any) => c.name.startsWith('lsp ') && !c.ok)) assert.match(c.detail, /^not installed · /);
     assert.ok(doc.data.checks.every((c: any) => typeof c.ok === 'boolean'));
   } finally {
     s.child.kill();

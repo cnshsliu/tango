@@ -1,11 +1,12 @@
 import { readFile } from 'node:fs/promises';
-import { isAbsolute, relative, resolve } from 'node:path';
+import { dirname, isAbsolute, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Tool } from '../types.js';
-import { clientFor, type LspClient } from '../lsp.js';
+import { spawn } from 'node:child_process';
+import { clientFor, forgetProbes, installCommand, searchDirs, serverFor, type LspClient } from '../lsp.js';
 import { error, text, truncate } from './registry.js';
 
-const OPS = ['definition', 'references', 'hover', 'symbols', 'workspace_symbols', 'implementation', 'incoming_calls', 'outgoing_calls'] as const;
+const OPS = ['install', 'definition', 'references', 'hover', 'symbols', 'workspace_symbols', 'implementation', 'incoming_calls', 'outgoing_calls'] as const;
 type Op = (typeof OPS)[number];
 
 interface LspInput {
@@ -96,12 +97,15 @@ export function formatHover(result: any): string {
 
 export const lspTool: Tool<LspInput> = {
   name: 'lsp',
+  // only install changes the machine (plan mode blocks it; the gate always asks)
+  writeEffect: (input) => input?.op === 'install',
   description:
     'Ask a language server about code: definition, references, hover (type and docs), symbols (outline of a file), ' +
     'workspace_symbols (find a symbol by name across the project), implementation, incoming_calls / outgoing_calls. ' +
     'Give path and line (1-based) plus the symbol name on that line (or column). More precise than grep for ' +
     '"where is X defined / who calls X". TypeScript/JavaScript, Python, Rust, Go, C/C++ when their server is installed; ' +
-    'the first call per project starts the server and can take a few seconds.',
+    'the first call per project starts the server and can take a few seconds. When the server is missing, the error ' +
+    'names an install command: op "install" with the same path runs it after the user approves.',
   input: {
     type: 'object',
     properties: {
@@ -118,6 +122,7 @@ export const lspTool: Tool<LspInput> = {
     const { op } = input;
     if (!OPS.includes(op)) return error(`op must be one of: ${OPS.join(', ')}`);
     const file = resolve(ctx.cwd, input.path);
+    if (op === 'install') return install(file, ctx.signal);
     const client = clientFor(file, ctx.cwd);
     if ('error' in client) return error(client.error);
     try {
@@ -155,6 +160,41 @@ export function notReady(op: string, out: string): boolean {
   if (/^no /.test(out)) return true;
   if (op !== 'definition') return false;
   return out.split('\n').every((l) => IMPORT_LINE.test(l.slice(l.indexOf('  ') + 2)));
+}
+
+/** Run the install recipe for this file's language server (the permission gate showed it first). */
+async function install(file: string, signal: AbortSignal) {
+  const def = serverFor(file);
+  if (!def) return error(`no language server for this file type`);
+  const cmd = installCommand(def);
+  if (!cmd) return error(`no installer found for the ${def.language} server (tried ${def.install.map((r) => r.needs).join(', ')}); the user has to install it`);
+  const { out, code } = await new Promise<{ out: string; code: number | null }>((done) => {
+    // the installer itself may live in a toolchain dir that PATH lacks (rustup in ~/.cargo/bin)
+    const env = { ...process.env, PATH: searchDirs().join(':') };
+    const child = spawn('/bin/bash', ['-lc', cmd], { stdio: ['ignore', 'pipe', 'pipe'], detached: true, env });
+    let out = '';
+    child.stdout.on('data', (b: Buffer) => (out = (out + b.toString()).slice(-6000)));
+    child.stderr.on('data', (b: Buffer) => (out = (out + b.toString()).slice(-6000)));
+    const kill = () => {
+      try {
+        process.kill(-child.pid!, 'SIGKILL');
+      } catch {}
+    };
+    signal.addEventListener('abort', kill, { once: true });
+    const timer = setTimeout(kill, 10 * 60_000);
+    child.on('error', (e) => done({ out: e.message, code: -1 }));
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', kill);
+      done({ out, code });
+    });
+  });
+  forgetProbes(); // the server may run now
+  const tail = out.trim().split('\n').slice(-15).join('\n');
+  if (code !== 0) return error(`\`${cmd}\` failed (exit ${code}):\n${tail}`);
+  const now = clientFor(file, dirname(file));
+  if ('error' in now) return error(`\`${cmd}\` finished, but the server still isn't found (searched: ${searchDirs().join(':')}).\n${tail}`);
+  return text(`installed with \`${cmd}\`; the ${def.language} language server is ready.`);
 }
 
 /**
