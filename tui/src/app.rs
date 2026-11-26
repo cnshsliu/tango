@@ -794,8 +794,8 @@ const SLASH: &[(&str, &str)] = &[
     ),
     ("/btw <q>", "临时提问当前上下文，不写入会话"),
     (
-        "/todo",
-        "待定列表：模型等你选的 ❓ 与顺带建议 · 点击逐条处理",
+        "/todo [内容]",
+        "记一条待办（/todo 买菜），并打开待办列表 · 不带内容只开关列表",
     ),
     ("/clear", "清空屏幕（上下文保留）"),
     ("/compact", "压缩较早的上下文"),
@@ -1095,13 +1095,21 @@ const TIPS: &[&str] = &[
     "ctrl+v 粘贴剪贴板图片，自动变成 [图片] chip",
     "alt+enter 把补充文字并入当前进行中的回合",
     "忙碌时回车自动排队 · /queue 管理队列",
-    "/todo 处理模型的选项与建议（❓ 和 ?suggest 收在这里）",
+    "/todo <内容> 记待办 · 不带内容打开列表（❓ 和 ?suggest 也收在这里）",
     "选项面板按 tab 改写自答 · esc 只收起面板",
     "ctrl+o 展开最近工具输出 · /focus 安静模式",
     "ctrl+r 历史提示 · ctrl+p 命令面板 · ctrl+e 编辑草稿",
     "alt+↑/alt+↓ 在历史提示之间逐条跳转",
     "/rewind 时间轴回滚代码+对话 · /export 导出会话",
 ];
+
+/// Where a new open note goes: after the existing open notes, before done notes and the rest.
+fn note_slot(todos: &[TodoItem]) -> usize {
+    todos
+        .iter()
+        .position(|t| !matches!(&t.kind, TodoKind::Note { done: false, .. }))
+        .unwrap_or(todos.len())
+}
 
 /// Something the model left for the user to act on: a blocking choice (?choice) the
 /// user hasn't answered, or a side suggestion (?suggest). Per-item: it leaves the
@@ -1121,6 +1129,14 @@ enum TodoKind {
     Question {
         text: String,
     },
+    /// the user's own note from `/todo <text>`; stays until done and dropped
+    Note { text: String, done: bool },
+}
+
+impl TodoItem {
+    fn note(text: impl Into<String>) -> Self {
+        Self { kind: TodoKind::Note { text: text.into(), done: false } }
+    }
 }
 
 /// One ?choice option: the scannable label plus an optional muted annotation
@@ -1143,6 +1159,7 @@ enum TodoAction {
     Run(usize),    // act on a suggestion: send "执行这条建议" as the next prompt
     Reply(usize),  // preload a heuristic question into the input box for answering
     Drop(usize),   // dismiss without acting
+    Done(usize),   // a note: tick / untick
 }
 
 /// The model asked the user to pick; the panel renders above the input box.
@@ -1681,6 +1698,10 @@ pub struct App {
     choice_rows: Vec<(Rect, usize)>,
     /// unanswered choices + side suggestions, handled per-item via /todo
     todos: Vec<TodoItem>,
+    /// saved notes were read for this session (see load_notes)
+    notes_loaded: bool,
+    /// overrides the tango home for todos.json (tests; set before load_notes)
+    notes_home: Option<std::path::PathBuf>,
     /// /todo dialog open
     todo_dialog: bool,
     /// clickable button rects of the /todo dialog, rebuilt every draw
@@ -1858,6 +1879,8 @@ impl App {
             choices_collapsed: false,
             choice_rows: Vec::new(),
             todos: Vec::new(),
+            notes_loaded: false,
+            notes_home: None,
             todo_dialog: false,
             todo_buttons: Vec::new(),
             turn_started: None,
@@ -2584,15 +2607,97 @@ impl App {
         }
     }
 
+    /// The user's notes live in `<tango home>/todos.json`, keyed by working directory, so they
+    /// survive `/restart` and `/new`. Other todo kinds belong to the conversation.
+    fn notes_file(&self) -> Option<std::path::PathBuf> {
+        Some(self.tango_home()?.join("todos.json"))
+    }
+
+    fn tango_home(&self) -> Option<std::path::PathBuf> {
+        if let Some(d) = &self.notes_home {
+            return Some(d.clone());
+        }
+        match std::env::var_os("TANGO_HOME") {
+            Some(d) => Some(std::path::PathBuf::from(d)),
+            None => Some(std::path::PathBuf::from(std::env::var_os("HOME")?).join(".tango")),
+        }
+    }
+
+    fn notes_key(&self) -> String {
+        self.serve_cwd
+            .as_deref()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|| ".".to_string())
+    }
+
+    fn save_notes(&self) {
+        let Some(file) = self.notes_file() else { return };
+        let notes: Vec<(String, bool)> = self
+            .todos
+            .iter()
+            .filter_map(|t| match &t.kind {
+                TodoKind::Note { text, done } => Some((text.clone(), *done)),
+                _ => None,
+            })
+            .collect();
+        let mut all: serde_json::Map<String, Value> = fs::read_to_string(&file)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default();
+        if notes.is_empty() {
+            all.remove(&self.notes_key());
+        } else {
+            all.insert(
+                self.notes_key(),
+                Value::Array(notes.into_iter().map(|(t, d)| json!({ "text": t, "done": d })).collect()),
+            );
+        }
+        let _ = fs::write(&file, serde_json::to_string_pretty(&Value::Object(all)).unwrap_or_default());
+    }
+
+    /// Load this directory's saved notes (once, when the serve cwd is first known).
+    fn load_notes(&mut self) {
+        let Some(file) = self.notes_file() else { return };
+        if self.notes_loaded {
+            return;
+        }
+        self.notes_loaded = true;
+        let all: serde_json::Map<String, Value> = fs::read_to_string(&file)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default();
+        let Some(list) = all.get(&self.notes_key()).and_then(|v| v.as_array()) else { return };
+        let mut at = note_slot(&self.todos);
+        for n in list {
+            if let (Some(text), Some(done)) = (n["text"].as_str(), n["done"].as_bool()) {
+                self.todos.insert(
+                    at,
+                    TodoItem { kind: TodoKind::Note { text: text.to_string(), done } },
+                );
+                at += 1;
+            }
+        }
+    }
+
     /// A /todo row button (click or key): expand / run / reply, or drop.
     fn todo_action(&mut self, serve: &mut Serve, action: TodoAction) {
         match action {
             TodoAction::Expand(i) => self.expand_choice(i),
             TodoAction::Run(i) => self.run_suggestion(serve, i),
             TodoAction::Reply(i) => self.reply_question(i),
+            TodoAction::Done(i) => {
+                if let Some(TodoKind::Note { done, .. }) = self.todos.get_mut(i).map(|t| &mut t.kind) {
+                    *done = !*done;
+                    self.save_notes();
+                }
+            }
             TodoAction::Drop(i) => {
                 if i < self.todos.len() {
+                    let was_note = matches!(self.todos[i].kind, TodoKind::Note { .. });
                     self.todos.remove(i);
+                    if was_note {
+                        self.save_notes();
+                    }
                 }
             }
         }
@@ -2600,7 +2705,7 @@ impl App {
     }
 
     /// /todo dialog keys: ↑↓/j k pick a row, 1-9 jump to one, enter acts on it (the
-    /// row's first button: 展开 / 执行 / 答复), d/delete drops it, esc/q close.
+    /// row's first button: ✓ 完成 / 展开 / 执行 / 答复), d/delete drops it, esc/q close.
     fn todo_key(&mut self, serve: &mut Serve, k: crossterm::event::KeyEvent) {
         let n = self.todos.len();
         let sel = self.todo_sel.min(n.saturating_sub(1));
@@ -2622,6 +2727,7 @@ impl App {
                     TodoKind::Choice { .. } => TodoAction::Expand(sel),
                     TodoKind::Suggest { .. } => TodoAction::Run(sel),
                     TodoKind::Question { .. } => TodoAction::Reply(sel),
+                    TodoKind::Note { .. } => TodoAction::Done(sel),
                 };
                 self.todo_action(serve, act);
             }
@@ -4192,10 +4298,25 @@ impl App {
                 self.pending.push((id, Pending::Context));
             }
             "/todo" => {
-                self.todo_dialog = !self.todo_dialog;
-                self.todo_sel = 0;
-                if !self.todo_dialog {
-                    self.todo_buttons.clear();
+                // `/todo <text>` adds a note and shows the whole list; bare toggles it
+                let note = rest.trim();
+                if !note.is_empty() {
+                    if let Some(i) = self.todos.iter().position(|t| matches!(&t.kind, TodoKind::Note { text, done: false } if text == note)) {
+                        self.push(format!("已在待办里：{note}"), Tone::Muted);
+                        self.todo_sel = i;
+                    } else {
+                        self.todos.insert(note_slot(&self.todos), TodoItem::note(note));
+                        self.todo_sel = note_slot(&self.todos) - 1;
+                        self.save_notes();
+                        self.push(format!("已记下：{note}"), Tone::Success);
+                    }
+                    self.todo_dialog = true;
+                } else {
+                    self.todo_dialog = !self.todo_dialog;
+                    self.todo_sel = 0;
+                    if !self.todo_dialog {
+                        self.todo_buttons.clear();
+                    }
                 }
             }
             "/queue" => {
@@ -7220,6 +7341,7 @@ impl App {
                 self.model = v["model"].as_str().unwrap_or("?").into();
                 self.mode = v["mode"].as_str().unwrap_or("?").into();
                 self.serve_cwd = v["cwd"].as_str().map(Into::into);
+                self.load_notes();
                 self.session = short_session(v["sessionId"].as_str().unwrap_or("?")).to_string();
                 self.session_full = v["sessionId"].as_str().unwrap_or("").to_string();
                 self.serve_branch = v["branch"].as_str().unwrap_or("").to_string();
@@ -8486,6 +8608,10 @@ impl App {
                             let cwd = d["cwd"].as_str().unwrap_or("?").to_string();
                             self.serve_cwd = Some(std::path::PathBuf::from(&cwd));
                             self.serve_branch = d["branch"].as_str().unwrap_or("").to_string();
+                            // notes are per directory: switch to the new directory's
+                            self.todos.retain(|t| !matches!(t.kind, TodoKind::Note { .. }));
+                            self.notes_loaded = false;
+                            self.load_notes();
                             self.push(format!("cwd → {cwd}"), Tone::Success);
                         }
                         (Pending::Cwds, true) => {
@@ -9803,7 +9929,7 @@ impl App {
         // the /todo dialog: every unanswered choice and side suggestion, one row each
         if self.todo_dialog {
             let n = self.todos.len();
-            let h = (n.min(10) as u16) + 3 + HINT_ROWS; // rows + borders + padding
+            let h = (n.min(12) as u16) + 3 + HINT_ROWS; // rows + borders + padding
             let w = 76u16.min(area.width);
             let pop = Rect {
                 x: (area.width.saturating_sub(w)) / 2,
@@ -9814,8 +9940,8 @@ impl App {
             self.modal_rect = Some(pop);
             let inner = dialog_frame(&mut self.hint_buttons, f,
                 pop,
-                "待定 · To be considered",
-                "↑↓ 选择 · enter 展开/执行/答复 · d 忽略 · esc 关闭",
+                "待办 · Todo",
+                "↑↓ 选择 · enter 完成/展开/执行/答复 · d 删除/忽略 · esc 关闭",
                 self.theme,
             );
             self.todo_buttons.clear();
@@ -9824,7 +9950,7 @@ impl App {
             let iw = inner.width as usize;
             let mut y = inner.y;
             for (i, item) in self.todos.iter().enumerate() {
-                if i >= 10 || y >= inner.y + inner.height {
+                if i >= 12 || y >= inner.y + inner.height {
                     break;
                 }
                 let ascii = self.ascii;
@@ -9853,6 +9979,26 @@ impl App {
                         TodoAction::Reply(i),
                         TodoAction::Drop(i),
                     ),
+                    TodoKind::Note { text, done } => (
+                        if ascii {
+                            if *done { "x" } else { "o" }
+                        } else if *done {
+                            "☑"
+                        } else {
+                            "☐"
+                        },
+                        text.clone(),
+                        if *done { "[取消]" } else { "[完成]" },
+                        "[删除]",
+                        TodoAction::Done(i),
+                        TodoAction::Drop(i),
+                    ),
+                };
+                // a finished note reads as struck through and dim
+                let head_style = if matches!(&item.kind, TodoKind::Note { done: true, .. }) {
+                    Style::default().add_modifier(Modifier::CROSSED_OUT | Modifier::DIM)
+                } else {
+                    Style::default()
                 };
                 let head: String = head.chars().take(iw.saturating_sub(22)).collect();
                 let text_area = Rect {
@@ -9867,7 +10013,7 @@ impl App {
                     (" ", Style::default())
                 };
                 f.render_widget(
-                    Paragraph::new(format!("{marker}{badge} {head}")).style(row_style),
+                    Paragraph::new(format!("{marker}{badge} {head}")).style(row_style.patch(head_style)),
                     text_area,
                 );
                 let b1 = Rect {
@@ -9890,7 +10036,7 @@ impl App {
             }
             if n == 0 {
                 f.render_widget(
-                    Paragraph::new("（空 · 模型的 ?choice/?suggest 会收进这里）"),
+                    Paragraph::new("（空 · /todo <内容> 记一条；模型的 ?choice/?suggest 也收进这里）"),
                     inner,
                 );
             }
@@ -17309,6 +17455,91 @@ mod tests {
             app.key(esc(), &mut serve);
             assert!(interrupted(&serve), "{name}: the second Esc interrupts");
         }
+    }
+
+    #[test]
+    fn todo_with_text_adds_a_note_and_lists_everything() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.stream = "?choice\n1. 提交\n2. 再看看".into();
+        app.commit_stream();
+        // `/todo <text>`: a note goes in ahead of the model's items and the list opens on it
+        app.run_slash("/todo 给 tango 加星标", &mut serve);
+        assert!(app.todo_dialog);
+        assert_eq!(app.todo_sel, 0);
+        assert!(matches!(&app.todos[0].kind, TodoKind::Note { text, done: false } if text == "给 tango 加星标"), "notes come first");
+        assert_eq!(app.todos.len(), 2, "the choice is still there: the list shows all of it");
+        assert!(serve.sent.is_empty(), "adding a note sends nothing to the model");
+        // the same text twice is not added again
+        app.run_slash("/todo 给 tango 加星标", &mut serve);
+        assert_eq!(app.todos.len(), 2);
+        // a second note goes after open notes; enter ticks the selected one
+        app.run_slash("/todo 回复邮件", &mut serve);
+        assert_eq!(app.todo_sel, 1, "opened on the new note");
+        let note = |a: &App, i: usize| match &a.todos[i].kind {
+            TodoKind::Note { text, done } => (text.clone(), *done),
+            _ => unreachable!(),
+        };
+        assert_eq!(note(&app, 0), ("给 tango 加星标".into(), false));
+        assert_eq!(note(&app, 1), ("回复邮件".into(), false));
+        app.key(KeyCode::Enter.into(), &mut serve);
+        assert_eq!(note(&app, 1), ("回复邮件".into(), true));
+        assert!(serve.sent.is_empty(), "ticking is local");
+        app.key(KeyCode::Enter.into(), &mut serve);
+        assert_eq!(note(&app, 1), ("回复邮件".into(), false), "enter unticks too");
+        // d deletes the selected note and leaves the rest
+        app.key(KeyCode::Char('d').into(), &mut serve);
+        assert_eq!(app.todos.len(), 2);
+        assert_eq!(note(&app, 0), ("给 tango 加星标".into(), false));
+        // bare /todo closes; bare again reopens with everything still there
+        app.run_slash("/todo", &mut serve);
+        assert!(!app.todo_dialog);
+        app.run_slash("/todo", &mut serve);
+        assert!(app.todo_dialog && app.todos.len() == 2);
+        // a new prompt does not retire notes (only heuristic questions retire)
+        app.submit_text(&mut serve, "别的事".into(), vec![]);
+        assert!(app.todos.iter().any(|t| matches!(t.kind, TodoKind::Note { .. })));
+    }
+
+    #[test]
+    fn todo_notes_survive_a_new_app_and_follow_the_directory() {
+        let dir = std::env::temp_dir().join(format!("tango-todo-notes-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("a")).unwrap();
+        std::fs::create_dir_all(dir.join("b")).unwrap();
+        let note_texts = |a: &App| {
+            a.todos
+                .iter()
+                .filter_map(|t| match &t.kind {
+                    TodoKind::Note { text, done } => Some((text.clone(), *done)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        // first app: notes for directory a, and one for b
+        let mut app = App::new();
+        app.notes_home = Some(dir.clone());
+        app.serve_cwd = Some(dir.join("a"));
+        let mut serve = Serve::mock();
+        app.run_slash("/todo 甲一", &mut serve);
+        app.run_slash("/todo 甲二", &mut serve);
+        app.key(KeyCode::Enter.into(), &mut serve); // 甲二 done
+        app.serve_cwd = Some(dir.join("b"));
+        app.run_slash("/todo 乙一", &mut serve);
+        // a fresh app in a sees a's notes as they were left (open first, done after)
+        let mut again = App::new();
+        again.notes_home = Some(dir.clone());
+        again.serve_cwd = Some(dir.join("a"));
+        again.load_notes();
+        assert_eq!(note_texts(&again), vec![("甲一".to_string(), false), ("甲二".to_string(), true)]);
+        // deleting the last note removes the directory's entry instead of leaving []
+        again.run_slash("/todo", &mut Serve::mock()); // open the list
+        again.key(KeyCode::Char('d').into(), &mut Serve::mock());
+        again.key(KeyCode::Char('d').into(), &mut Serve::mock());
+        let saved: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("todos.json")).unwrap()).unwrap();
+        assert!(saved.get(dir.join("a").to_str().unwrap()).is_none());
+        assert!(saved.get(dir.join("b").to_str().unwrap()).is_some(), "b's notes untouched");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
