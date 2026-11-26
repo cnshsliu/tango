@@ -473,6 +473,8 @@ while a turn is running unless noted. `/help` prints a short list inside the TUI
 | --- | --- |
 | `/review [paths]` | Code review of the working-tree diff |
 | `/security-review` | Security review of the working-tree diff |
+| `/commit-push` | Ask the model to commit this piece of work and push the current branch. The commit message follows the repository's existing commits (language and style). `git push` still goes through the permission dialog in ask mode |
+| `/commit-pr` | The same commit, then a pull request opened with `gh pr create`; the URL comes back in the reply. On the default branch it creates a feature branch first |
 | `/diff [--staged] [paths]` | Read-only view of the working-tree (or staged) patch |
 | `/btw <question>` | Ask about the current context without tools. The answer isn't saved |
 | `/todo [内容]` | `/todo 买菜` adds a note and opens the list on it. The list holds your notes and the model's pending choices (❓) and suggestions, and you act on them one by one: click a row's buttons, or ↑↓/`j` `k`/1-9 to pick a row, Enter to act on it (完成 ticks a note or unticks it, 展开 a choice, 执行 a suggestion, 答复 a question), `d` to drop it, Esc/`q` to close. Notes come first, open ones before ticked ones, and are saved per directory in `~/.tango/todos.json` |

@@ -926,6 +926,14 @@ const SLASH: &[(&str, &str)] = &[
     ),
     ("/security-review", "对工作区 diff 做安全评审"),
     (
+        "/commit-push",
+        "提交本次改动并推送当前分支（提交信息跟随仓库语言）",
+    ),
+    (
+        "/commit-pr",
+        "提交本次改动并开 PR（在默认分支上会先建功能分支）",
+    ),
+    (
         "/queue [rm <n>|clear|auto append|auto off]",
         "本地排队管理 · Alt+Enter 补充到正在处理的回合 · auto append 让忙碌时回车也并入",
     ),
@@ -986,6 +994,63 @@ const SLASH: &[(&str, &str)] = &[
 
 /// inline @path tokens are expanded into file contents at send time (Claude Code style)
 const AT_FILE_CAP: usize = 6000;
+
+/// `/commit-push`: a preset prompt, not git plumbing. The model does the work with its usual
+/// tools, so the permission mode still gates `git push`. Rules grok's version leaves out: stage
+/// by explicit path (other sessions may share the checkout), run the repo's check first, never
+/// force-push, stay on the current branch, and write the message in the repository's language.
+pub const COMMIT_PUSH_PROMPT: &str = "\
+(/commit-push) Commit the current changes and push this branch.
+
+1. Look first: git status, git diff (staged and unstaged), and git log --oneline -20.
+2. Commit only what belongs to this piece of work. Stage by explicit path (git add <paths>), \
+never `git add -A` or `git add .`: leave unrelated modified files and unrelated untracked files \
+alone. Never commit secrets or credentials (.env, tokens, keys), nor build output the repository \
+does not already track.
+3. Run the repository's check first when it has a quick one (AGENTS.md, package.json or the \
+Makefile say which). If it fails because of these changes, stop and report: do not commit or push.
+4. Stay on the current branch. Write one commit that says what changed and why. Its message \
+follows this repository's existing commits in language and style (an English history gets an \
+English message, a 中文 history gets 中文; the same kind of prefix and length) and never mixes \
+languages.
+5. Push the current branch only (git push -u <remote> <branch> when it has no upstream). \
+Never force-push, never push tags or other branches.
+6. Nothing to commit: say so. Push anyway only if the branch is ahead of its remote.
+
+Report briefly, in the language the user writes in: the branch, the commit (hash and message) \
+and the remote it went to, or why you stopped.";
+
+/// `/commit-pr`: the same commit, then a pull request. Unlike /commit-push it may create a
+/// branch, because a pull request cannot come from the default branch.
+pub const COMMIT_PR_PROMPT: &str = "\
+(/commit-pr) Commit the current changes and open a pull request for this branch.
+
+1. Look first: git status, git diff (staged and unstaged), git log --oneline -20, and the \
+repository's existing branches and pull requests for their naming style.
+2. Commit only what belongs to this piece of work. Stage by explicit path (git add <paths>), \
+never `git add -A` or `git add .`: leave unrelated modified files and unrelated untracked files \
+alone. Never commit secrets or credentials (.env, tokens, keys), nor build output the repository \
+does not already track.
+3. Run the repository's check first when it has a quick one (AGENTS.md, package.json or the \
+Makefile say which). If it fails because of these changes, stop and report: do not commit, push \
+or open anything.
+4. A pull request needs its own branch. On the repository's default branch (main, master, …), \
+create one with a descriptive name in the style of the existing branches and switch to it \
+before committing; on any other branch, stay there. The commit message follows this \
+repository's existing commits in language and style (an English history gets an English message, \
+a 中文 history gets 中文) and never mixes languages.
+5. Push the branch (git push -u <remote> <branch> when it has no upstream). Never force-push, \
+never push tags or other branches.
+6. Open the pull request with `gh pr create`: a title in the repository's style and a body with \
+what changed, why, and how it was tested, following the repository's PR template when it has \
+one (.github/PULL_REQUEST_TEMPLATE*), written in the same language as the commits. Link an \
+issue when the work clearly belongs to one. `gh` missing or not logged in: install nothing; \
+report the link the remote printed for creating the pull request and stop.
+7. Nothing to commit and no commits ahead of the default branch: say so and stop.
+
+Report briefly, in the language the user writes in: the branch, the commit and the pull request \
+URL, or why you stopped. Never merge the pull request yourself.";
+
 
 /// Local UTC offset in seconds, from libc's mktime/localtime (no hardcoded timezone).
 fn local_utc_offset_seconds() -> i64 {
@@ -4693,6 +4758,14 @@ impl App {
                     let id = serve.command("remember", vec![("text", Value::String(rest.into()))]);
                     self.pending.push((id, Pending::Remember));
                 }
+            }
+            // preset prompts (grok's /commit-push, /commit-pr): the model runs git with its
+            // usual tools, so the permission mode still gates `git push`
+            "/commit-push" => {
+                self.submit_text(serve, COMMIT_PUSH_PROMPT.to_string(), vec![]);
+            }
+            "/commit-pr" => {
+                self.submit_text(serve, COMMIT_PR_PROMPT.to_string(), vec![]);
             }
             "/review" | "/security-review" => {
                 let cmd = if head == "/review" {
@@ -12602,6 +12675,39 @@ mod tests {
         app.run_slash("/auto", &mut serve);
         assert!(app.full_access.is_none());
         assert!(app.lines.iter().any(|l| l.text.contains("已经是完全放行")));
+    }
+
+    #[test]
+    fn commit_push_and_commit_pr_send_their_preset_prompt() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.run_slash("/commit-push", &mut serve);
+        assert!(app.busy, "a turn starts, like a typed prompt");
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        assert_eq!(sent["cmd"], "prompt");
+        let text = sent["text"].as_str().unwrap();
+        assert!(text.starts_with("(/commit-push) Commit the current changes and push this branch."));
+        // the rules that make it safe to run on a shared checkout
+        for rule in ["git log --oneline", "git add <paths>", "never `git add -A`", "Never force-push", "Stay on the current branch", "中文 history"] {
+            assert!(text.contains(rule), "missing: {rule}");
+        }
+        assert!(!text.contains("gh pr create"), "no pull request from /commit-push");
+        // shown as the user's line (collapsed: it is long), like any preset prompt
+        assert!(app.lines.iter().any(|l| l.tone == Tone::User && l.text.contains("粘贴")));
+        assert!(app.current_prompt.as_deref().is_some_and(|p| p.starts_with("(/commit-push) Commit the current changes")));
+
+        app.busy = false;
+        app.run_slash("/commit-pr", &mut serve);
+        let sent: Value = serde_json::from_str(&serve.sent[1]).unwrap();
+        let text = sent["text"].as_str().unwrap();
+        assert!(text.starts_with("(/commit-pr) Commit the current changes and open a pull request"));
+        for rule in ["gh pr create", "default branch", "PULL_REQUEST_TEMPLATE", "Never force-push", "install nothing", "Never merge"] {
+            assert!(text.contains(rule), "missing: {rule}");
+        }
+        // extra words are not an error: the command ignores them
+        app.busy = false;
+        app.run_slash("/commit-push now", &mut serve);
+        assert_eq!(serve.sent.len(), 3);
     }
 
     #[test]

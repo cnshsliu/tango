@@ -129,7 +129,7 @@ one-shot runs permission asks are refused, as in text mode, unless `--yes` is gi
 `tango --format json --max-tool-rounds 10 -y "run the tests" | jq -c 'select(.type=="done")'`.
 
 TUI commands: `/model`, `/agents`, `/resume`, `/back`, `/forward`, `/new`, `/restart`, `/rename`, `/send`, `/mode`, `/auto`, `/plan`, `/goal`,
-`/loop`, `/effort`, `/review`, `/security-review`, `/bg`, `/tasks`, `/stop`, `/subagent`,
+`/loop`, `/effort`, `/review`, `/security-review`, `/commit-push`, `/commit-pr`, `/bg`, `/tasks`, `/stop`, `/subagent`,
 `/worktree`, `/mcp`, `/plugins`, `/vim`, `/nvim`, `/editor`, `/multiline`, `/btw`, `/diff`,
 `/focus`, `/density`, `/mouse`, `/animations`, `/ascii`, `/clipboard`, `/theme`, `/compact`, `/autocompact`, `/skill`, `/skills`,
 `/memory`, `/remember`, `/cost`, `/usage`, `/stats`, `/insights`, `/context`, `/queue`,
@@ -218,6 +218,17 @@ isolation), MCP server→client capabilities (sampling/roots), plugin marketplac
   thinking budget), session-scoped.
 - `/review [paths]` / `/security-review` — the working diff inlined into a instructed
   correctness/security audit prompt.
+- `/commit-push` / `/commit-pr` — preset prompts: the model looks at the diff and the log, commits
+  this piece of work and pushes the branch (`/commit-pr`: then opens a pull request with `gh pr
+  create` and returns its URL). They are prompts, not git plumbing: the model runs git with its
+  usual tools, so the permission mode still gates `git push` (ask mode shows it first). The prompt
+  tells it to stage by explicit path and leave unrelated files alone (other sessions may share
+  the checkout), never to commit secrets, to run the repository's quick check first and stop if
+  the changes break it, never to force-push, and to write the commit message (and the PR) in the
+  language and style of the repository's existing commits — English history, English message;
+  中文 history, 中文. `/commit-push` stays on the current branch; `/commit-pr` creates a
+  descriptively named branch first when the current one is the default branch, since a pull
+  request cannot come from there. Nothing to commit: it says so and stops.
 - `/remember <text>` appends one line to `~/.tango/AGENTS.md` (the global memory every
   session's context assembles); `/memory` views/edits it.
 - `hooks` in config.json — see [Hooks](#hooks).

@@ -49,7 +49,7 @@
 - [x] **11. 模型可调用的定时任务工具**（`schedule_list` / `schedule_create` / `schedule_remove`；TUI 的 `/schedule` 浏览暂不做）
   - grok：`schedule_create`、`schedule_list`、`schedule_remove` 等工具，可以用自然语言创建定时任务。TUI 里 `/schedule` 可以浏览。见 `src/tools/schedule.ts`、`src/ui/schedule-modal.tsx`。
   - tango：只有 `tango task add` 命令行，模型和 TUI 都管不到。
-- [ ] **12. `/commit-push` 和 `/commit-pr`**
+- [x] **12. `/commit-push` 和 `/commit-pr`**（预置提示词；按路径暂存、先跑检查、不 force push、提交信息跟随仓库语言；`/commit-push` 不换分支）
   - grok：一条命令让模型整理改动、提交并推送，或者提交后开 PR。见 `src/ui/app.tsx:2270`。
   - tango：没有。实现上是预置提示词加 slash 命令。
 - [ ] **13. 结构化计划和多选问题**
