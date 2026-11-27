@@ -710,6 +710,8 @@ enum PopKind {
     File,
     /// an argument of /mode /model /send /resume /effort: Tab cycles zsh-style
     Arg,
+    /// /history: the conversation's prompts, oldest first; Enter jumps to the chosen one
+    History,
 }
 
 struct Popup {
@@ -721,6 +723,8 @@ struct Popup {
     inserts: Vec<String>,
     /// Arg only: a Tab already inserted items[sel]; the next Tab moves on (menu-complete)
     cycling: bool,
+    /// History only: the chat line each item is (what Enter jumps to)
+    lines: Vec<usize>,
 }
 
 #[derive(Clone, Copy)]
@@ -802,6 +806,10 @@ const SLASH: &[(&str, &str)] = &[
     (
         "/problems",
         "语言服务器对 tango 改过的文件报告的问题（✗ 错误数也在状态栏）",
+    ),
+    (
+        "/history",
+        "本次对话里你输入过的提示词，新的在下 · ↑↓ 选择，回车跳到那一处",
     ),
     ("/clear", "清空屏幕（上下文保留）"),
     ("/compact", "压缩较早的上下文"),
@@ -1888,6 +1896,9 @@ pub struct App {
     problems_rows: Vec<(Rect, usize)>,
     /// the status bar's problems badge, rebuilt every draw (a click opens /problems)
     problems_area: Rect,
+    /// the history emoji at the left end of the status bar, rebuilt every draw (a click
+    /// opens /history)
+    history_area: Rect,
     /// when the running turn started — drives the elapsed readout and tip rotation
     turn_started: Option<std::time::Instant>,
     /// chars received this turn (text + thinking deltas) — the ↓ readout
@@ -2073,6 +2084,7 @@ impl App {
             problems_sel: 0,
             problems_rows: Vec::new(),
             problems_area: Rect::default(),
+            history_area: Rect::default(),
             turn_started: None,
             turn_chars: 0,
             last_output: None,
@@ -2792,6 +2804,59 @@ impl App {
             self.todos.remove(idx);
             self.submit_text(serve, format!("请执行这条建议：{text}"), vec![]);
         }
+    }
+
+    /// The status bar's first span: the history emoji (`H` in ASCII mode), a click target
+    /// for /history.
+    fn history_label(&self) -> String {
+        format!(" {} ", if self.ascii { "H" } else { "🕘" })
+    }
+
+    /// `/history`: every prompt of this conversation on its own line, oldest first — the
+    /// newest at the bottom and selected — in the completion popup's place above the input.
+    fn open_history(&mut self) {
+        let mut items = Vec::new();
+        let mut lines = Vec::new();
+        for (i, l) in self.chat_lines().iter().enumerate() {
+            if l.tone != Tone::User || l.notice || l.wordmark {
+                continue;
+            }
+            // a long prompt is shown collapsed; its full text is what the list names
+            let text = l.output.clone().unwrap_or_else(|| l.text.clone());
+            let text = text.strip_prefix("❯ ").unwrap_or(&text);
+            items.push(text.split_whitespace().collect::<Vec<_>>().join(" "));
+            lines.push(i);
+        }
+        if items.is_empty() {
+            self.push("还没有输入记录", Tone::Muted);
+            return;
+        }
+        let n = items.len();
+        self.popup = Some(Popup {
+            items,
+            descs: vec![String::new(); n],
+            sel: n - 1,
+            kind: PopKind::History,
+            inserts: Vec::new(),
+            cycling: false,
+            lines,
+        });
+    }
+
+    /// Scroll so that chat line `line` starts at the top of the view, as far back as the view
+    /// allows; a line that is in the last screenful already stays where it is. Once the chat
+    /// is scrolled back the ↓ pill takes a row of it, and that row is accounted for.
+    fn jump_to_line(&mut self, line: usize) {
+        let total = self.chat_rows.len();
+        let Some(first) = self.chat_rows.iter().position(|r| r.line >= line) else {
+            return;
+        };
+        let pill_now = usize::from(self.scroll_back > 0);
+        let after = (self.chat_area.height as usize + pill_now).saturating_sub(1);
+        if after == 0 {
+            return;
+        }
+        self.scroll_back = total.saturating_sub(after + first);
     }
 
     /// Every problem on one line: `file:line:col  ✗ message`, files by name, errors first.
@@ -4042,6 +4107,7 @@ impl App {
                     kind: PopKind::Slash,
                     inserts: Vec::new(),
                     cycling: false,
+                    lines: Vec::new(),
                 });
             }
             return;
@@ -4084,6 +4150,7 @@ impl App {
                     kind: PopKind::File,
                     inserts: Vec::new(),
                     cycling: false,
+                    lines: Vec::new(),
                 });
             }
             return;
@@ -4168,6 +4235,7 @@ impl App {
             kind: PopKind::Arg,
             inserts: hits.iter().map(|h| h.2.clone()).collect(),
             cycling: false,
+            lines: Vec::new(),
         })
     }
 
@@ -4290,6 +4358,13 @@ impl App {
                     pp.cycling = false;
                 }
                 self.cycle_arg(1);
+            }
+            PopKind::History => {
+                // each item knows its chat line: scroll that line to the top of the view
+                let line = p.lines.get(p.sel).copied();
+                if let Some(line) = line {
+                    self.jump_to_line(line);
+                }
             }
         }
         self.popup = None;
@@ -4653,6 +4728,7 @@ impl App {
                 let id = serve.command("context", vec![]);
                 self.pending.push((id, Pending::Context));
             }
+            "/history" => self.open_history(),
             "/problems" => {
                 // the list of what language servers report for the files tango edited
                 self.problems_dialog = !self.problems_dialog;
@@ -6322,6 +6398,11 @@ impl App {
                         // release so a drag from anywhere can select text)
                         MouseEventKind::Down(MouseButton::Left) => {
                             let pos = Position::new(m.column, m.row);
+                            // clicking the history emoji at the left of the status bar opens /history
+                            if self.history_area.width > 0 && self.history_area.contains(pos) {
+                                self.run_slash("/history", serve);
+                                return false;
+                            }
                             // clicking the status-bar problems badge opens /problems
                             if self.problems_area.width > 0 && self.problems_area.contains(pos) {
                                 self.run_slash("/problems", serve);
@@ -7313,7 +7394,12 @@ impl App {
                 KeyCode::Enter if p.kind == PopKind::Arg => {
                     self.popup = None;
                 }
-                KeyCode::Tab | KeyCode::Right => {
+                KeyCode::Tab | KeyCode::Right if p.kind != PopKind::History => {
+                    self.accept_popup();
+                    return;
+                }
+                // the history list: Enter (or Tab) jumps to the chosen prompt; Esc just closes
+                KeyCode::Enter | KeyCode::Tab if p.kind == PopKind::History => {
                     self.accept_popup();
                     return;
                 }
@@ -9944,20 +10030,26 @@ impl App {
             }
         }
         self.problems_area = Rect::default();
+        self.history_area = Rect::default();
         {
             let mut x = 0u16;
             for sp in &spans {
                 let w = display_width(sp.content.as_ref()) as u16;
+                let rect = Rect {
+                    x: status_a.x + x,
+                    y: status_a.y,
+                    width: w,
+                    height: 1,
+                };
+                // the history emoji is the first span, whatever the bar's template
+                if x == 0 {
+                    self.history_area = rect;
+                }
                 if matches!(
                     sp.content.trim_start().chars().next(),
                     Some('✗' | '⚠' | '!' | 'w')
                 ) {
-                    self.problems_area = Rect {
-                        x: status_a.x + x,
-                        y: status_a.y,
-                        width: w,
-                        height: 1,
-                    };
+                    self.problems_area = rect;
                 }
                 x = x.saturating_add(w);
             }
@@ -10734,12 +10826,13 @@ impl App {
                 PopKind::Slash => "命令补全",
                 PopKind::File => "文件引用",
                 PopKind::Arg => "参数补全",
+                PopKind::History => "输入历史 · 新的在下",
             };
             self.popup_area = pop;
-            let hint = if p.kind == PopKind::Arg {
-                "tab 下一个 · shift+tab 上一个 · enter 执行 · esc 关闭"
-            } else {
-                "tab/enter 选择 · esc 关闭"
+            let hint = match p.kind {
+                PopKind::Arg => "tab 下一个 · shift+tab 上一个 · enter 执行 · esc 关闭",
+                PopKind::History => "↑↓ 选择 · enter 跳到该处 · esc 关闭",
+                PopKind::Slash | PopKind::File => "tab/enter 选择 · esc 关闭",
             };
             let inner = dialog_frame(&mut self.hint_buttons, f, pop, title, hint, self.theme);
             // keep the selection in view: 6 rows show, a long list (models) scrolls
@@ -11335,17 +11428,26 @@ impl App {
                 )
                 .replace("{pct}", &format!("{percent}%"))
                 .replace("{work}", &work);
-            return vec![Span::styled(
-                format!(
-                    " {} ",
-                    clip_to_width(raw.trim(), (width as usize).saturating_sub(2)).trim_end()
+            return vec![
+                Span::styled(self.history_label(), self.theme.style(Tone::Badge)),
+                Span::styled(
+                    format!(
+                        " {} ",
+                        clip_to_width(raw.trim(), (width as usize).saturating_sub(2)).trim_end()
+                    ),
+                    self.theme.style(Tone::Badge),
                 ),
-                self.theme.style(Tone::Badge),
-            )];
+            ];
         }
         // (segment, drop order: lower goes first)
         // model and mode live in the input block's info row now
         let mut segs: Vec<(Span<'static>, u8)> = vec![
+            // the history emoji leads the bar; it is only a shortcut, so on a narrow
+            // screen it goes before the cost, the ❓ badge and the problems count
+            (
+                Span::styled(self.history_label(), self.theme.style(Tone::Badge)),
+                5,
+            ),
             (
                 Span::styled(
                     format!(" ${:.4} ", self.cost),
@@ -11911,6 +12013,17 @@ impl App {
     #[cfg(test)]
     fn status_segments_text(&mut self) -> String {
         self.status_segments_text_at(200)
+    }
+
+    /// the chat line the top row of the view shows (after a draw)
+    #[cfg(test)]
+    fn top_row_line(&self) -> usize {
+        let chat_h = self.chat_area.height as usize;
+        let offset = self
+            .chat_rows
+            .len()
+            .saturating_sub(chat_h + self.scroll_back);
+        self.chat_rows[offset].line
     }
 
     /// the same at a given width (the narrow-screen tests)
@@ -16589,15 +16702,177 @@ mod tests {
         let mut term = Terminal::new(TestBackend::new(60, 20)).unwrap();
         term.draw(|f| app.draw(f)).unwrap();
         // wide chars occupy two cells (the second is blank): compare the symbols without spaces
-        let row0: String = (0..60).map(|x| term.backend().buffer()[(x, 0)].symbol().to_string()).collect();
-        assert!(row0.starts_with("      "), "right-aligned, not at the left: {row0:?}");
-        assert!(row0.replace(' ', "").ends_with("✓已复制66个字符到剪贴板"), "top-right: {row0:?}");
+        let row0: String = (0..60)
+            .map(|x| term.backend().buffer()[(x, 0)].symbol().to_string())
+            .collect();
+        assert!(
+            row0.starts_with("      "),
+            "right-aligned, not at the left: {row0:?}"
+        );
+        assert!(
+            row0.replace(' ', "").ends_with("✓已复制66个字符到剪贴板"),
+            "top-right: {row0:?}"
+        );
         // expired: gone on the next draw
-        app.toast = Some(("old".into(), std::time::Instant::now() - std::time::Duration::from_millis(TOAST_MS as u64 + 10)));
+        app.toast = Some((
+            "old".into(),
+            std::time::Instant::now() - std::time::Duration::from_millis(TOAST_MS as u64 + 10),
+        ));
         term.draw(|f| app.draw(f)).unwrap();
-        let row0: String = (0..60).map(|x| term.backend().buffer()[(x, 0)].symbol().to_string()).collect();
+        let row0: String = (0..60)
+            .map(|x| term.backend().buffer()[(x, 0)].symbol().to_string())
+            .collect();
         assert!(!row0.contains("old"));
         assert!(app.toast.is_none());
+    }
+
+    #[test]
+    fn history_lists_prompts_oldest_first_and_enter_jumps_to_the_chosen_one() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        // five prompts with long answers between them, so the chat scrolls well past a screen
+        for i in 0..5 {
+            app.push_user(&format!("第{i}问"));
+            app.push((i as u8 as char).to_string().repeat(800), Tone::Text);
+        }
+        let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        term.draw(|f| app.draw(f)).unwrap();
+        assert!(app.scroll_back == 0, "starts at the bottom");
+        assert!(
+            app.chat_rows.len() > app.chat_area.height as usize * 2,
+            "the chat really scrolls"
+        );
+
+        app.run_slash("/history", &mut serve);
+        let p = app.popup.as_ref().expect("the list opens");
+        assert!(p.kind == PopKind::History);
+        assert_eq!(
+            p.items,
+            ["第0问", "第1问", "第2问", "第3问", "第4问"],
+            "oldest first"
+        );
+        assert_eq!(p.sel, 4, "the newest is selected");
+        term.draw(|f| app.draw(f)).unwrap();
+        let screen = term.backend().to_string();
+        assert!(screen.contains("输入历史"), "{screen}");
+        assert!(screen.contains("第4问"), "the newest prompt is in the list");
+        // 5 prompts, 6 rows: the list is not scrolled, so the oldest is in view as well
+        assert!(screen.contains("第0问"), "{screen}");
+        // the list sits where the slash completion does: right above the input rule
+        assert!(app.popup_area.width == 80 && app.popup_area.height > 0);
+
+        let key = |app: &mut App, serve: &mut Serve, c: KeyCode| app.key(c.into(), serve);
+        // ↑ ×4: to the oldest, and no further
+        for _ in 0..5 {
+            key(&mut app, &mut serve, KeyCode::Up);
+        }
+        assert_eq!(
+            app.popup.as_ref().unwrap().sel,
+            0,
+            "↑ moves to older prompts, not past the first"
+        );
+        key(&mut app, &mut serve, KeyCode::Down);
+        assert_eq!(app.popup.as_ref().unwrap().sel, 1);
+        key(&mut app, &mut serve, KeyCode::Enter);
+        assert!(app.popup.is_none(), "Enter closes the list");
+        assert!(app.scroll_back > 0, "the chat scrolled back to that prompt");
+        // the chosen prompt's first row is the top row of the chat (the ↓ pill took a row)
+        term.draw(|f| app.draw(f)).unwrap();
+        let top_line = app.top_row_line();
+        let prompt_lines: Vec<usize> = app
+            .tone_rows()
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| **t == Tone::User)
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(top_line, prompt_lines[1], "第1问 is at the top of the view");
+        assert!(serve.sent.is_empty(), "jumping sends nothing");
+        // jumping again from a scrolled chat lands just as exactly
+        app.run_slash("/history", &mut serve);
+        key(&mut app, &mut serve, KeyCode::Up);
+        key(&mut app, &mut serve, KeyCode::Enter);
+        term.draw(|f| app.draw(f)).unwrap();
+        assert_eq!(
+            app.top_row_line(),
+            prompt_lines[3],
+            "第3问 is at the top of the view"
+        );
+
+        // Esc only closes
+        app.run_slash("/history", &mut serve);
+        key(&mut app, &mut serve, KeyCode::Esc);
+        assert!(app.popup.is_none());
+        assert!(serve.sent.is_empty());
+    }
+
+    #[test]
+    fn history_with_no_prompts_says_so_and_the_status_emoji_opens_the_list() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.run_slash("/history", &mut serve);
+        assert!(app.popup.is_none());
+        assert!(app.lines.iter().any(|l| l.text.contains("还没有输入记录")));
+
+        app.push_user("唯一的一问");
+        let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        term.draw(|f| app.draw(f)).unwrap();
+        let status = app.status_segments_text();
+        assert!(
+            status.starts_with(" 🕘 "),
+            "the emoji leads the status bar: {status}"
+        );
+        let area = app.history_area;
+        assert_eq!(area.width, 4, "the emoji and its padding, two columns wide");
+        app.handle(
+            Event::Mouse(crossterm::event::MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: area.x + 1,
+                row: area.y,
+                modifiers: KeyModifiers::NONE,
+            }),
+            &mut serve,
+        );
+        let p = app
+            .popup
+            .as_ref()
+            .expect("a click on the emoji opens the list");
+        assert!(p.kind == PopKind::History);
+        assert_eq!(p.items, ["唯一的一问"]);
+        // a click on a row jumps to it
+        term.draw(|f| app.draw(f)).unwrap();
+        let row_y = app.popup_area.y + 1;
+        app.handle(
+            Event::Mouse(crossterm::event::MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 4,
+                row: row_y,
+                modifiers: KeyModifiers::NONE,
+            }),
+            &mut serve,
+        );
+        assert!(app.popup.is_none(), "the click on the row accepted it");
+        // ASCII mode spells the emoji as a letter
+        app.ascii = true;
+        assert!(app.status_segments_text().starts_with(" H "));
+    }
+
+    #[test]
+    fn a_narrow_status_bar_drops_the_history_emoji_before_the_cost() {
+        let mut app = App::new();
+        app.context_window = 1_000_000;
+        app.context_tokens = 500_000;
+        app.session = "abcdef123456".into();
+        let wide = app.status_segments_text_at(60);
+        assert!(wide.starts_with(" 🕘  $0.0000 "), "{wide}");
+        let tight = app.status_segments_text_at(12);
+        assert!(tight.contains("$0.0000"), "{tight}: the cost stays");
+        assert!(
+            !tight.contains('🕘'),
+            "{tight}: the emoji is only a shortcut"
+        );
     }
 
     fn diag_frame(file: &str, line: u64, severity: &str, message: &str) -> Value {
@@ -16792,7 +17067,13 @@ mod tests {
                             surface += 1;
                         }
                     } else if bg != p.scrim {
-                        undimmed += 1;
+                        // the right half of a wide glyph (the 🕘 in the status bar) keeps
+                        // the style of its left cell: the terminal paints both, and the
+                        // frame diff never sends the blank cell after a wide symbol
+                        let half_of_wide = x > 0 && display_width(b[(x - 1, y)].symbol()) == 2;
+                        if !half_of_wide {
+                            undimmed += 1;
+                        }
                     }
                 }
             }
@@ -18423,6 +18704,11 @@ mod tests {
             }),
             ("queue", |a| a.queue_dialog = true),
             ("problems", |a| a.problems_dialog = true),
+            ("history popup", |a| {
+                a.push_user("第一问");
+                a.open_history();
+                assert!(a.popup.is_some());
+            }),
             ("prompt menu", |a| a.prompt_menu = Some(0)),
         ];
         for (name, open) in cases {

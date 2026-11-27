@@ -48,6 +48,7 @@ git diff | tango "review this patch"
 | Interrupt the running turn | Esc or Ctrl+C. If a dialog is open (picker, completion list, `/todo`, `/queue`, `/problems`, a `?choice` panel), the first Esc only closes it and the turn keeps running; press Esc again to interrupt. Ctrl+C interrupts right away |
 | Use a dialog with the mouse | Click a key in its bottom hint (`y 允许`, `n 拒绝`, `esc 关闭`, `enter 确认` …): it does what pressing that key does. Every dialog works this way: permission, pickers, viewers, `/queue`, `/todo`, `/problems`, `?choice` |
 | Search earlier prompts | Ctrl+R |
+| Jump to an earlier prompt in the chat | `/history`, or click the 🕘 at the left end of the status bar (`H` in ASCII mode). This conversation's prompts are listed where slash completion appears, oldest at the top and the newest selected; ↑↓ picks one, Enter (or a click on the row) scrolls the chat to that prompt, Esc closes without moving. Ctrl+R instead puts an old prompt back into the input |
 | Park a half-written draft | Alt+S (press again to restore) |
 | Edit a draft in Neovim | Ctrl+E, or `/nvim` |
 | See a full tool output | Ctrl+O, or double-click the tool line: a built-in dialog, `y` copies, Esc closes |
@@ -455,6 +456,7 @@ while a turn is running unless noted. `/help` prints a short list inside the TUI
 | `/takeover [session] [note]` | Pull a brief of another session's work into this one |
 | `/export [md\|html]` | Write the full transcript to `~/.tango/exports/` |
 | `/transcript` | View the raw transcript, including abandoned futures |
+| `/history` | List the prompts you typed in this conversation, one per line, oldest at the top and the newest selected, in the popup where slash completion appears. ↑↓ (wheel, click) picks one, Enter scrolls the chat to that prompt and closes the list, Esc closes without moving. The 🕘 at the left end of the status bar opens it too (`H` in ASCII mode) |
 | `/copy [N]` | Copy the last (or Nth-last) assistant reply to the clipboard. A copy is confirmed by a toast in the chat's top-right corner that goes away after 2 seconds; it never adds a chat line |
 | `/recap` | One-line summary of the conversation. Not saved to the session |
 | `/restart` | Restart the TUI and serve (picks up a new build) and reopen this session. Not during a turn |

@@ -141,7 +141,7 @@ TUI commands: `/model`, `/agents`, `/resume`, `/back`, `/forward`, `/new`, `/res
 `/loop`, `/effort`, `/review`, `/security-review`, `/commit-push`, `/commit-pr`, `/bg`, `/tasks`, `/stop`, `/subagent`,
 `/worktree`, `/mcp`, `/plugins`, `/vim`, `/nvim`, `/editor`, `/multiline`, `/btw`, `/diff`,
 `/focus`, `/density`, `/mouse`, `/animations`, `/ascii`, `/clipboard`, `/theme`, `/compact`, `/autocompact`, `/skill`, `/skills`,
-`/memory`, `/remember`, `/cost`, `/usage`, `/stats`, `/insights`, `/context`, `/queue`, `/problems`,
+`/memory`, `/remember`, `/cost`, `/usage`, `/stats`, `/insights`, `/context`, `/queue`, `/problems`, `/history`,
 `/timestamps`, `/statusline`, `/preset`, `/permissions`, `/import`, `/cd`, `/pwd`, `/add_dir`,
 `/config`, `/trust`, `/keymap`, `/init`, `/doctor`, `/debug-zip`, `/status`, `/clear`, `/rewind`, `/undo`,
 `/redo`, `/fork`, `/handoff`, `/takeover`, `/branch`, `/tree`, `/find`, `/export`, `/transcript`, `/copy`, `/recap`,
@@ -679,7 +679,9 @@ terminals of 24+ rows, a footer shows `~/dir:branch` on the left (refreshed by `
 (`shift+tab mode`, `ctrl+p commands`) on the right when they fit. Both hints are clickable: `shift+tab mode`
 opens the mode picker on the current mode (like clicking the mode label; pressing Shift+Tab itself switches to the next mode), `ctrl+p commands` opens the command palette. The bottom status bar (cost ·
 session · ctx, fitted to the terminal width — on a narrow screen ctx and sess go first, then the
-pinned ▶, while cost and the ❓ badge stay) no longer repeats the model and mode. With `lspDiagnostics` on, the bar also carries a problems
+pinned ▶, while cost and the ❓ badge stay) no longer repeats the model and mode. The bar starts with 🕘 (`H` in ASCII mode), the input history: a
+click runs `/history`. It is only a shortcut, so a narrow screen drops it before the cost. With
+`lspDiagnostics` on, the bar also carries a problems
 badge, ` ✗2 ⚠1 /problems ` (errors, warnings; ASCII mode ` !2 w1 `), while a language server reports
 errors or warnings for a file tango edited; it is clickable and opens `/problems`, and on a narrow
 screen only ` ✗2 ` stays. `ctx` is the input size of the last model request (fresh + cache read + cache write tokens; for
@@ -763,7 +765,10 @@ forward history; kept in the TUI process only), so `/resume`-ing a subagent's se
 `dist/` takes effect; it resumes the current session with the same permission mode. It refuses
 while a turn is running.
 Shift+Tab steps through the modes (ask → plan → confirm → readonly). Ctrl+P opens a filterable command palette; model/session pickers use the same filtering and mouse
-routing. Ctrl+R searches original prompt history, and Alt+S stashes/restores the complete draft
+routing. `/history` — or the 🕘 at the left end of the status bar (`H` in ASCII mode) — lists this
+conversation's prompts, one per line, in the popup where slash completion appears: oldest at the
+top, the newest selected. ↑↓ (wheel, click) picks one, Enter scrolls the chat to that prompt and
+closes the list, Esc closes without moving. Ctrl+R searches original prompt history, and Alt+S stashes/restores the complete draft
 (including collapsed paste metadata) without submitting it. File references accept inclusive line
 ranges: `@path#20-45`, `@path#L20-L45`, or `@path#20`. A `@` token without `/` also lists repo files whose name (or path)
 contains its letters in order, from `git ls-files -co --exclude-standard` (cached 30 s), after the current directory's own matches. Scrolling up pauses auto-follow and keeps the
