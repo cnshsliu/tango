@@ -206,6 +206,14 @@ id like `p1` straight away, so the turn goes on. Later it reads the output with 
 stops it with `process_stop` and lists everything with `process_list`. Up to 8 can run at once,
 and all of them are killed when tango exits, so nothing keeps running after you quit.
 
+### Behind a proxy
+
+Set `http_proxy`, `https_proxy` and `no_proxy` as you would for curl, and tango's model requests go
+through the proxy. (Node ignores these variables on its own; on the current Node versions tango has
+to start itself once more to turn them on, which costs about a tenth of a second and changes
+nothing else.) Models listed in `no_proxy`, such as a local Ollama, are reached directly. `/doctor`
+shows how the proxy is being handled in the line `proxy`.
+
 ### When the model endpoint fails
 
 A request that fails before the model sends anything (connection reset, DNS failure, timeout, rate

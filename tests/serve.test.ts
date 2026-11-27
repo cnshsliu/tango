@@ -1406,6 +1406,8 @@ test('init generates AGENTS.md once; doctor runs its checks', async () => {
     assert.equal(redaction.ok, true);
     assert.match(redaction.detail, /^\d+ values? watched$/);
     for (const lang of ['typescript', 'python', 'rust', 'go', 'c']) assert.ok(names.includes(`lsp ${lang}`), lang);
+    assert.ok(names.includes('proxy'), 'how http(s)_proxy is handled');
+    assert.doesNotMatch(doc.data.checks.find((c: any) => c.name === 'proxy').detail, /secret|password/, 'no credentials in a proxy URL');
     // a missing server says how to get it
     for (const c of doc.data.checks.filter((c: any) => c.name.startsWith('lsp ') && !c.ok)) assert.match(c.detail, /^not installed · /);
     assert.ok(doc.data.checks.every((c: any) => typeof c.ok === 'boolean'));

@@ -20,7 +20,16 @@ Through the tknet.ai gateway, tool calling works end to end with `tknet/qwen3.8-
 default), `tknet/deepseek-v4.1-flash` and `tknet/deepseek-v4-pro` (checked 2026-11-14: one-shot,
 REPL with permission prompts, `-c`, `-r`). Costs are tknet list prices, which is what tknet bills (it has no per-account discounts; custom
 prices come from pricing groups, which tango doesn't see). If
-`http(s)_proxy` is set, tango routes its requests through it.
+`http(s)_proxy` is set, tango routes its requests through it. Node's fetch ignores those variables
+by itself, and how tango turns them on depends on the Node version (`env-proxy.ts`): Node 25+ has
+`http.setGlobalProxyFromEnv()`, which tango calls; Node 22.21+ and 24+ read the `NODE_USE_ENV_PROXY=1`
+switch only once at startup, so there tango starts itself once more with the switch on — the first
+process then only passes stdio and signals on and exits with the same status, so a serve started by
+the TUI or launchd behaves as before; an older Node ignores the variables, and tango says so once on
+stderr. `no_proxy` is honoured (a local model goes direct); `all_proxy` is not read by node. Set
+`NODE_USE_ENV_PROXY=1` yourself to skip the extra start. The relaunched copy gets
+`TANGO_ENV_PROXY_LAUNCHER` (the launcher's pid) so it exits when the launcher is killed outright.
+`/doctor`'s `proxy` row shows which of these is in effect, without the credentials of a proxy URL.
 
 ## Model presets
 

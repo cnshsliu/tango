@@ -1,5 +1,4 @@
 import { createInterface } from 'node:readline';
-import * as http from 'node:http';
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -31,10 +30,10 @@ import type { Task } from './core/scheduler.js';
 import { makeAgent, openAgent, VERSION, type PermState } from './host.js';
 import { runJson } from './headless.js';
 import { serveStdio } from './serve.js';
+import { applyEnvProxy, watchLauncher } from './core/env-proxy.js';
 
-// Node's fetch ignores http(s)_proxy unless told to; many users in China need it.
-const proxyEnv = ['HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy'].some((k) => process.env[k]);
-if (proxyEnv && !process.env.NODE_USE_ENV_PROXY) (http as any).setGlobalProxyFromEnv?.();
+// http(s)_proxy: Node's fetch ignores it unless told to, and how depends on the Node version
+// (env-proxy.ts). On Node 22.21–24 the switch is read once at startup, so this start may relaunch.
 
 const HELP = `tango ${VERSION} — a light agent harness
 
@@ -579,6 +578,15 @@ async function launchTui(args: Args): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  // a relaunched copy leaves when its launcher is killed outright
+  watchLauncher();
+  // resolves to undefined at once when there is nothing to do; to the copy's exit code otherwise
+  const relaunched = await applyEnvProxy();
+  if (relaunched !== undefined) {
+    // this process was only the launcher of the copy with NODE_USE_ENV_PROXY on
+    process.exitCode = relaunched;
+    return;
+  }
   const args = parseArgs(process.argv.slice(2));
   const rescued = rescueLaunchDir();
   if (rescued) {

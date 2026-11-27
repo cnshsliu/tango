@@ -38,6 +38,7 @@ import { stillHolds } from './core/liveness.js';
 import { costUsd, displayPlatform, groupModels } from './core/models/registry.js';
 import { retryText } from './core/models/util.js';
 import { effortsFor } from './core/models/reasoning.js';
+import { proxyStatus } from './core/env-proxy.js';
 import type { AskFn, PermissionMode } from './core/permissions.js';
 import type { ToolResult } from './core/types.js';
 import { describeSources, localFile, projectFile, projectRoots, readLayerJson, resolveConfig, setTrust, updateLocalConfig, type Resolved } from './core/project-config.js';
@@ -934,6 +935,8 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
         add('sessions dir', homeWritable, sessionsDir());
         const hasKey = !keyProblem(agent.model);
         add('model key', hasKey, hasKey ? `${agent.model.id} ready` : `${agent.model.id}: no api key configured`);
+        // how http(s)_proxy is being handled in this process (never the credentials in a proxy URL)
+        add('proxy', true, proxyStatus());
         const nodeV = process.version;
         add('node', true, nodeV);
         // tool-output secret redaction: whether it is on, and how many values it watches (never the values)

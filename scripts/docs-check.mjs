@@ -18,7 +18,12 @@ const uniq = (xs) => [...new Set(xs)].sort();
 
 /** names that are deliberately undocumented, with the reason */
 export const EXEMPT = {
-  env: { TANGO_TEST_LOOP_FLOOR: 'test-only knob', NODE_USE_ENV_PROXY: "Node's own proxy switch, set by tango, not read" }
+  env: {
+    TANGO_TEST_LOOP_FLOOR: 'test-only knob',
+    // Node's own, read by env-proxy.ts only to avoid a redundant --disable-warning on the relaunch
+    NODE_NO_WARNINGS: "Node's own; checked, not configured by tango",
+    NODE_OPTIONS: "Node's own; checked, not configured by tango"
+  }
 };
 
 /** Text of `## title` up to the next `## ` heading (whole file when title is null). */
