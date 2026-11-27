@@ -52,10 +52,6 @@ impl DialogPalette {
     }
 }
 
-pub fn render_dialog(f: &mut Frame, area: Rect, title: &str, hint: &str, theme: Theme) -> Rect {
-    render_dialog_buttons(f, area, title, hint, theme).0
-}
-
 /// Rows a dialog's hint takes inside the frame: a blank separator row, then the hint.
 /// Size a dialog `HINT_ROWS` taller than its content plus borders.
 pub const HINT_ROWS: u16 = 2;
@@ -63,7 +59,7 @@ pub const HINT_ROWS: u16 = 2;
 /// A clickable key in a dialog's bottom hint: where it is drawn and the key it presses.
 pub type HintButton = (Rect, KeyEvent);
 
-/// `render_dialog`, also returning the hint's keys as buttons. The hint is
+/// Draws a dialog box, also returning the hint's keys as buttons. The hint is
 /// `key label · key label …`; a key token may list alternatives (`tab/enter`, `n/N`,
 /// `↑↓`), each its own button. Tokens that aren't a key (`输入`, `滚轮`, `点击`)
 /// stay plain text. A single-key segment's label is part of its button.

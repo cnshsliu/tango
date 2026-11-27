@@ -258,7 +258,7 @@ fn thinking_view(text: &str, expanded: bool, teach: bool) -> String {
     }
 }
 
-/// `render_dialog`, also keeping its hint keys as click targets (topmost dialog last).
+/// Draws a dialog box, also keeping its hint keys as click targets (topmost dialog last).
 fn dialog_frame(
     buttons: &mut Vec<HintButton>,
     f: &mut Frame,
@@ -460,7 +460,6 @@ enum Pending {
     Rename,
     Recap,
     Context,
-    Queue,
     Usage,
     Insights,
     AutocompactShow,
@@ -750,6 +749,8 @@ struct QueuedPrompt {
 }
 
 impl QueuedPrompt {
+    /// Tests build queues with it; the input path always goes through the constructor below.
+    #[cfg(test)]
     fn text_only(text: &str) -> Self {
         Self {
             text: text.to_string(),
@@ -1731,9 +1732,6 @@ pub struct App {
     serve_cwd: Option<std::path::PathBuf>,
     /// `git ls-files` of serve_cwd for fuzzy @file search: (dir, built at, paths); rebuilt after 30 s
     file_index: Option<(std::path::PathBuf, std::time::Instant, Vec<String>)>,
-    /// in-chat mouse selection (terminal rows); release copies the covered lines
-    sel_anchor: Option<u16>,
-    sel_end: Option<u16>,
     /// rendered chat rows (self-managed wrap), captured each draw for mouse mapping
     chat_rows: Vec<ChatRow>,
     chat_scroll_offset: usize,
@@ -1936,8 +1934,6 @@ impl App {
             multiline_enter: false,
             serve_cwd: None,
             file_index: None,
-            sel_anchor: None,
-            sel_end: None,
             chat_rows: Vec::new(),
             chat_scroll_offset: 0,
             chat_inner_w: 0,
@@ -3383,8 +3379,8 @@ impl App {
         ));
     }
 
-    /// open_line_viewer that reports success, so a plain-text click can fall through
-    /// to path-click / selection instead of silently doing nothing
+    /// Opens a chat line's full output in the viewer. Reports success, so a plain-text
+    /// click can fall through to path-click / selection instead of silently doing nothing.
     fn open_line_viewer_quiet(&mut self, index: usize) -> bool {
         let found = self.lines.get(index).and_then(|line| {
             Self::line_viewer_text(line)
@@ -3398,16 +3394,6 @@ impl App {
                 true
             }
             None => false,
-        }
-    }
-
-    fn open_line_viewer(&mut self, index: usize) {
-        let found = self.lines.get(index).and_then(|line| {
-            Self::line_viewer_text(line)
-                .map(|output| (Self::viewer_title(line), output, line.prompt_state))
-        });
-        if let Some((title, text, state)) = found {
-            self.viewer = Some(Viewer::with_source(title, text, index, state));
         }
     }
 
@@ -8457,40 +8443,6 @@ impl App {
                             );
                             self.viewer = Some(Viewer::read_only("上下文构成", text));
                         }
-                        (Pending::Queue, true) => {
-                            let running = d["running"].as_str().unwrap_or("");
-                            let queued: Vec<String> = d["queued"]
-                                .as_array()
-                                .map(|a| {
-                                    a.iter()
-                                        .filter_map(|q| {
-                                            let text = q["text"].as_str()?;
-                                            let waited = q["waitedMs"].as_u64().unwrap_or(0);
-                                            Some(format!("  · {text}（等待 {}s）", waited / 1000))
-                                        })
-                                        .collect()
-                                })
-                                .unwrap_or_default();
-                            let text = if running.is_empty() && queued.is_empty() {
-                                "空闲 — 没有正在运行或排队的提示".to_string()
-                            } else {
-                                format!(
-                                    "运行中：{}\n\n排队（{}）：\n{}",
-                                    if running.is_empty() {
-                                        "（无）"
-                                    } else {
-                                        running
-                                    },
-                                    queued.len(),
-                                    if queued.is_empty() {
-                                        "  （空）".to_string()
-                                    } else {
-                                        queued.join("\n")
-                                    }
-                                )
-                            };
-                            self.viewer = Some(Viewer::read_only("提示队列", text));
-                        }
                         (Pending::Usage, true) => {
                             let tt = &d["totalTokens"];
                             let mut text = format!(
@@ -9557,15 +9509,6 @@ impl App {
     /// per chat-line tones for row-walking helpers
     fn tone_rows(&self) -> Vec<Tone> {
         self.chat_lines().iter().map(|l| l.tone).collect()
-    }
-
-    fn visual_lines(lines: &[ChatLine], width: usize) -> usize {
-        let w = width.max(1);
-        lines
-            .iter()
-            .flat_map(|l| l.text.split('\n'))
-            .map(|line| display_width(line).div_ceil(w).max(1))
-            .sum()
     }
 
     pub fn draw(&mut self, f: &mut Frame) {
@@ -11515,6 +11458,8 @@ impl App {
     }
 
     /// plain text of the status bar (tests and /statusline preview)
+    /// Tests read the status bar through it; draw() renders the segments directly.
+    #[cfg(test)]
     fn status_segments_text(&mut self) -> String {
         self.status_spans(200)
             .iter()
