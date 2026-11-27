@@ -1,4 +1,4 @@
-import type { ModelSpec } from '../types.js';
+import type { CompletionRequest, ModelSpec, RetryInfo, StreamEvent } from '../types.js';
 import { readFileSync } from 'node:fs';
 
 /** What tango calls itself over HTTP. Gateways capacity-split by user agent
@@ -89,7 +89,8 @@ function retryAfterMs(res: Response): number | undefined {
  * (DNS, refused, TLS, proxy) instead of Node's bare "fetch failed". A request that
  * fails before any output (network error, 429, 5xx) is retried up to `retries` times
  * with exponential backoff; `onRetry` is told before each wait. Auth and other 4xx
- * errors are not retried. Once the response is returned, streaming is not retried.
+ * errors are not retried. Once the response is returned, streaming is not retried here —
+ * `streamWithRetry` covers a failure inside the stream.
  */
 export async function postJson(
   spec: ModelSpec,
@@ -190,7 +191,8 @@ export async function* sseLines(body: ReadableStream<Uint8Array>, idleMs = STREA
     while (true) {
       let timer: NodeJS.Timeout | undefined;
       const idle = new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error(`stream stalled: no data for ${Math.round(idleMs / 1000)}s`)), idleMs);
+        const reason = `stream stalled: no data for ${Math.round(idleMs / 1000)}s`;
+        timer = setTimeout(() => reject(new StreamError(reason, 'yes', reason)), idleMs);
       });
       let chunk: ReadableStreamReadResult<Uint8Array>;
       try {
@@ -227,4 +229,94 @@ export function parseEvent(spec: ModelSpec, data: string): any {
 export function retryText(info: import('../types.js').RetryInfo): string {
   const secs = Math.max(1, Math.round(info.delayMs / 1000));
   return `⟳ 请求失败（${info.reason}），${secs} 秒后第 ${info.attempt}/${info.max} 次重试…`;
+}
+
+/** Whether another request can succeed: `yes` (full retry count), `maybe` (a few), `no` (never). */
+export type RetryClass = 'yes' | 'maybe' | 'no';
+
+/** Retries given to an error tango cannot classify (a gateway's own error name): enough to ride out a hiccup. */
+export const UNCLASSIFIED_RETRIES = 3;
+
+/**
+ * A failure inside a stream that had already opened (HTTP 200): an `error` event the API or a
+ * gateway sends, or a stream that goes silent. `retry` says whether a new request can succeed;
+ * `reason` is the short form shown before a retry, e.g. "upstream_error: Upstream request failed".
+ */
+export class StreamError extends Error {
+  constructor(
+    message: string,
+    readonly retry: RetryClass,
+    readonly reason: string
+  ) {
+    super(message);
+    this.name = 'StreamError';
+  }
+}
+
+/** What a retry cannot fix: the request itself, the key, the model or the balance is wrong. */
+const PERMANENT_ERROR =
+  /invalid.?request|invalid.?prompt|authenticat|unauthori[sz]ed|permission|forbidden|not.?found|unknown model|no such model|does not exist|billing|insufficient|balance|quota|credit|unsupported|context.?length|too (long|large)|max.?tokens|content.?(filter|policy)|safety|moderation|risk|deprecat/i;
+/** What another request can fix: overload, rate limit, timeout, an upstream failure. */
+const TRANSIENT_ERROR =
+  /overload|rate.?limit|too many requests|timeout|timed out|temporar|unavailab|upstream|internal|server.?error|gateway|try again|transient|went wrong/i;
+
+/**
+ * Classify the `error` object of an `error` event inside a stream. A numeric status or code
+ * decides first; then the words of its type, code and message. An error tango cannot place is
+ * `maybe`: gateways invent their own names, so it gets a few retries, not all of them.
+ */
+export function apiErrorRetry(err: unknown): RetryClass {
+  const e = err && typeof err === 'object' ? (err as Record<string, unknown>) : {};
+  const code = e.status ?? e.http_status ?? (typeof e.code === 'number' || /^\d{3}$/.test(String(e.code)) ? e.code : NaN);
+  if (Number.isFinite(Number(code))) return RETRY_STATUS.has(Number(code)) ? 'yes' : 'no';
+  const text = [e.type, e.code, e.message, typeof err === 'string' ? err : ''].filter(Boolean).join(' ');
+  if (PERMANENT_ERROR.test(text)) return 'no';
+  if (TRANSIENT_ERROR.test(text)) return 'yes';
+  return 'maybe';
+}
+
+/** The error thrown for an `error` event inside a stream; its message is the JSON the API sent. */
+export function streamApiError(spec: ModelSpec, err: unknown): StreamError {
+  const e = err && typeof err === 'object' ? (err as Record<string, unknown>) : {};
+  const type = [e.type, e.code].find((v): v is string => typeof v === 'string') ?? 'error';
+  const message = typeof e.message === 'string' ? e.message : typeof err === 'string' ? err : JSON.stringify(err);
+  return new StreamError(`${spec.id}: ${JSON.stringify(err)}`, apiErrorRetry(err), `${type}: ${message}`.slice(0, 120));
+}
+
+/**
+ * Run `start` — one request's event stream — and yield its events. A failure before the first
+ * event (an `error` event the gateway sends inside its HTTP 200, or a stream that goes silent) is
+ * retried the way postJson retries a failed request: up to `retries` times, same backoff, each
+ * announced through `onRetry`. Once an event has been yielded the failure is passed on, since
+ * replaying would show that text twice. So is an error a retry cannot fix, and anything that is
+ * not a stream failure (the abort, a malformed event, a response with no events at all).
+ */
+export async function* streamWithRetry(
+  spec: ModelSpec,
+  req: Pick<CompletionRequest, 'retries' | 'signal' | 'onRetry'>,
+  start: () => AsyncIterable<StreamEvent>,
+  opts: { baseMs?: number } = {}
+): AsyncIterable<StreamEvent> {
+  const max = retryCount(spec, req.retries);
+  const base = opts.baseMs ?? RETRY_BASE_MS;
+  for (let attempt = 0; ; attempt++) {
+    let started = false;
+    try {
+      for await (const ev of start()) {
+        started = true;
+        yield ev;
+      }
+      return;
+    } catch (e) {
+      if (started || req.signal?.aborted || !(e instanceof StreamError) || e.retry === 'no') throw e;
+      const limit = e.retry === 'maybe' ? Math.min(max, UNCLASSIFIED_RETRIES) : max;
+      if (attempt >= limit) {
+        if (attempt) e.message += ` (gave up after ${attempt} ${attempt === 1 ? 'retry' : 'retries'})`;
+        throw e;
+      }
+      const wait = Math.min(base * 2 ** attempt, RETRY_MAX_MS);
+      req.onRetry?.({ attempt: attempt + 1, max: limit, reason: e.reason, delayMs: wait } satisfies RetryInfo);
+      await sleep(wait, req.signal);
+    }
+  }
 }

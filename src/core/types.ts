@@ -135,7 +135,7 @@ export interface RetryInfo {
   /** 1-based retry number */
   attempt: number;
   max: number;
-  /** why the previous try failed, e.g. "connection reset [ECONNRESET]" or "HTTP 503" */
+  /** why the previous try failed, e.g. "connection reset [ECONNRESET]", "HTTP 503" or "upstream_error: Upstream request failed" */
   reason: string;
   delayMs: number;
 }

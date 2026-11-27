@@ -129,7 +129,7 @@ tango task run [--loop]  run due tasks once, or keep running as a daemon
 | `text` | `step`, `text` (the assistant's text for that step) |
 | `tool_use` | `step`, `id`, `name`, `input`, `output` (cut to 2000 chars), `isError`, `ms` |
 | `step_finish` | `step`, `stopReason`, `usage` (`input`, `output`, `cacheRead`, `cacheWrite`), `costUsd` |
-| `retry` | `step`, `attempt`, `max`, `reason` (e.g. `HTTP 503`, `connection reset [ECONNRESET]`), `delayMs`: the request failed before any output and is retried (see `retries` under "Config") |
+| `retry` | `step`, `attempt`, `max`, `reason` (e.g. `HTTP 503`, `connection reset [ECONNRESET]`, `upstream_error: Upstream request failed`), `delayMs`: the request failed before any output and is retried (see `retries` under "Config") |
 | `error` | `step`, `message` (e.g. the `--max-tool-rounds` cap was hit, or the model call failed) |
 | `done` | `session`, `stopReason` (`stop`, `aborted`, `error`), `steps`, `toolCalls`, `usage` totals, `costUsd`, `ms` |
 
@@ -616,8 +616,9 @@ work too. This is the seam the TUI —
 and later web/IDE shells — plug into; the core never knows which face is attached.
 
 Other frames: `notice` (a chat-line message such as a skipped config file or goal status),
-`retry` (`attempt`, `max`, `reason`, `delayMs`, `text`: a model request failed before any output
-and is retried after `delayMs`; the TUI prints `text` as a muted line),
+`retry` (`attempt`, `max`, `reason`, `delayMs`, `text`: a model request failed before any output —
+including an `error` event or a stall inside an HTTP 200 stream — and is retried after `delayMs`;
+the TUI prints `text` as a muted line),
 `error` (a failed command without a request id; `fatal: true` when serve cannot start),
 `cwd_missing` (`cwd`, `dirs`: the session directory is gone; `dirs` are directories the user
 has used that still exist; the TUI opens a picker, and `/cd` or a typed `/路径` switches), and
@@ -1014,7 +1015,7 @@ used as the literal key. Nothing is inferred. `tango --models` shows which varia
 | `autocompact` | compact when context passes this share of the window (default `0.75`); `off` disables | `/autocompact` |
 | `maxTurns` | model round-trips per prompt before tango stops the loop (1-500, default 64); `--max-tool-rounds` overrides it for one run | edit |
 | `redactSecrets` | `false` turns off secret redaction in tool output (default on; see "Secrets in tool output") | edit |
-| `retries` | retries for a model request that fails before any output: network errors (reset, refused, DNS, timeout) and HTTP 408/409/425/429/5xx/529 (0-10, default 10; `0` turns retrying off). Waits 1s, 2s, 4s, 8s, then 15s each (or the server's `Retry-After`); each retry is announced ("第 1/10 次重试"); Esc cancels the wait. 401/403/400 are never retried, nor a stream that already started. A model in `models.json` can set its own `retries` | edit |
+| `retries` | retries for a model request that fails before any output: network errors (reset, refused, DNS, timeout), HTTP 408/409/425/429/5xx/529, and a failure inside an HTTP 200 stream before its first event — an `error` event (overload, rate limit, a gateway's `upstream_error`) or a stream that stays silent (0-10, default 10; `0` turns retrying off). Waits 1s, 2s, 4s, 8s, then 15s each (or the server's `Retry-After`); each retry is announced ("第 1/10 次重试") with the reason; Esc cancels the wait. 401/403/400 are never retried, nor a stream that already started; an `error` event tango cannot classify gets at most 3 retries. A model in `models.json` can set its own `retries` | edit |
 | `warming` | keep prompt caches warm: `true` or `{ "interval": 240, "duration": 1800 }` (see "Session warming") | edit |
 | `statusline` | status bar template with `{model} {mode} {cost} {ctx} {pct} {session} {tokens}` | `/statusline` |
 | `permissions` | `{ "allow": [rules] }` (see "Permissions rules"; trust-gated in project files) | `/permissions add` |

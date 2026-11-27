@@ -7,7 +7,7 @@ import type {
   StreamEvent,
   Usage
 } from '../types.js';
-import { argsObject, parseArgs, parseEvent, postJson, resolveApiKey, sseLines } from './util.js';
+import { argsObject, parseArgs, parseEvent, postJson, resolveApiKey, sseLines, streamApiError, streamWithRetry } from './util.js';
 import { anthropicEffort } from './reasoning.js';
 
 function toAnthropicMessages(messages: Message[]) {
@@ -62,120 +62,123 @@ export function readInputUsage(usage: Usage, u: any): void {
   usage.input = total;
 }
 
-export const anthropicAdapter: ModelAdapter = {
-  async *stream(spec: ModelSpec, req: CompletionRequest): AsyncIterable<StreamEvent> {
-    const body: Record<string, unknown> = {
-      model: spec.model,
-      max_tokens: req.maxTokens ?? spec.maxTokens ?? 8192,
-      // cache the stable system prompt (anthropic prompt caching) — token plans
-    // bill cache reads far cheaper than fresh input
-    system: [{ type: 'text', text: req.system, cache_control: { type: 'ephemeral' } }],
-      messages: toAnthropicMessages(req.messages),
-      stream: true
-    };
-    // the level is spelled per model family: adaptive thinking + output_config.effort (Claude 4.6+,
-    // GLM), or a token budget on the older Claudes (reasoning.ts)
-    if (req.effort) Object.assign(body, anthropicEffort(spec.model, req.effort, (body.max_tokens as number) ?? 8192));
-    if (req.tools.length) {
-      body.tools = req.tools.map((t) => ({
-        name: t.name,
-        description: t.description,
-        input_schema: t.input
-      }));
-    }
-
-    const res = await postJson(
-      spec,
-      `${spec.baseUrl.replace(/\/$/, '')}/messages`,
-      { 'x-api-key': resolveApiKey(spec), 'anthropic-version': '2023-06-01' },
-      body,
-      req.signal,
-      { retries: req.retries, onRetry: req.onRetry }
-    );
-
-    const blocks: ContentBlock[] = [];
-    const partialJson = new Map<number, string>();
-    const usage: Usage = { input: 0, output: 0 };
-    let stopReason: Message['stopReason'] = 'stop';
-    let sawEvent = false;
-
-    for await (const data of sseLines(res.body!)) {
-      sawEvent = true;
-      const ev = parseEvent(spec, data);
-      switch (ev.type) {
-        case 'message_start':
-          readInputUsage(usage, ev.message?.usage);
-          break;
-        case 'content_block_start': {
-          const cb = ev.content_block;
-          if (cb.type === 'text') blocks[ev.index] = { type: 'text', text: '' };
-          else if (cb.type === 'thinking') blocks[ev.index] = { type: 'thinking', text: '' };
-          else if (cb.type === 'tool_use') {
-            blocks[ev.index] = { type: 'tool_call', id: cb.id, name: cb.name, input: {} };
-            partialJson.set(ev.index, '');
-            yield { type: 'tool_call_start', id: cb.id, name: cb.name };
-          }
-          break;
-        }
-        case 'content_block_delta': {
-          const d = ev.delta;
-          const b = blocks[ev.index];
-          if (d.type === 'text_delta' && b?.type === 'text') {
-            b.text += d.text;
-            yield { type: 'text', delta: d.text };
-          } else if (d.type === 'thinking_delta' && b?.type === 'thinking') {
-            b.text += d.thinking;
-            yield { type: 'thinking', delta: d.thinking };
-          } else if (d.type === 'signature_delta' && b?.type === 'thinking') {
-            b.signature = d.signature;
-          } else if (d.type === 'input_json_delta' && b?.type === 'tool_call') {
-            partialJson.set(ev.index, (partialJson.get(ev.index) ?? '') + d.partial_json);
-            yield { type: 'tool_call_delta', id: b.id, delta: d.partial_json };
-          }
-          break;
-        }
-        case 'content_block_stop': {
-          const b = blocks[ev.index];
-          if (b?.type === 'tool_call') {
-            const raw = partialJson.get(ev.index) ?? '';
-            b.input = parseArgs(raw);
-          }
-          break;
-        }
-        case 'message_delta':
-          usage.output = ev.usage?.output_tokens ?? usage.output;
-          // the final counts: Anthropic may repeat them here, and some gateways (apikey.fan)
-          // send zeros in message_start and the real input only here
-          readInputUsage(usage, ev.usage);
-          stopReason =
-            ev.delta?.stop_reason === 'tool_use'
-              ? 'tool_use'
-              : ev.delta?.stop_reason === 'max_tokens'
-                ? 'length'
-                : 'stop';
-          break;
-        case 'error':
-          throw new Error(`${spec.id}: ${JSON.stringify(ev.error)}`);
-      }
-    }
-    if (!sawEvent) {
-      // HTTP 200 with a non-SSE body (a gateway 404 wrapper, an HTML error page)
-      // must surface, not end the stream as an empty answer — check the baseUrl
-      // (anthropic-compatible gateways usually end in /v1) and the model name
-      throw new Error(
-        `${spec.id}: endpoint returned no SSE events (HTTP ${res.status}) — likely a wrong baseUrl or model name for this gateway`
-      );
-    }
-
-    yield {
-      type: 'done',
-      message: {
-        role: 'assistant',
-        content: blocks.filter(Boolean),
-        usage,
-        model: spec.id,
-        stopReason
-      }
-    };
+/** One request; a failure before any output is retried by streamWithRetry. */
+async function* streamOnce(spec: ModelSpec, req: CompletionRequest): AsyncIterable<StreamEvent> {
+  const body: Record<string, unknown> = {
+    model: spec.model,
+    max_tokens: req.maxTokens ?? spec.maxTokens ?? 8192,
+    // cache the stable system prompt (anthropic prompt caching) — token plans
+  // bill cache reads far cheaper than fresh input
+  system: [{ type: 'text', text: req.system, cache_control: { type: 'ephemeral' } }],
+    messages: toAnthropicMessages(req.messages),
+    stream: true
+  };
+  // the level is spelled per model family: adaptive thinking + output_config.effort (Claude 4.6+,
+  // GLM), or a token budget on the older Claudes (reasoning.ts)
+  if (req.effort) Object.assign(body, anthropicEffort(spec.model, req.effort, (body.max_tokens as number) ?? 8192));
+  if (req.tools.length) {
+    body.tools = req.tools.map((t) => ({
+      name: t.name,
+      description: t.description,
+      input_schema: t.input
+    }));
   }
+
+  const res = await postJson(
+    spec,
+    `${spec.baseUrl.replace(/\/$/, '')}/messages`,
+    { 'x-api-key': resolveApiKey(spec), 'anthropic-version': '2023-06-01' },
+    body,
+    req.signal,
+    { retries: req.retries, onRetry: req.onRetry }
+  );
+
+  const blocks: ContentBlock[] = [];
+  const partialJson = new Map<number, string>();
+  const usage: Usage = { input: 0, output: 0 };
+  let stopReason: Message['stopReason'] = 'stop';
+  let sawEvent = false;
+
+  for await (const data of sseLines(res.body!)) {
+    sawEvent = true;
+    const ev = parseEvent(spec, data);
+    switch (ev.type) {
+      case 'message_start':
+        readInputUsage(usage, ev.message?.usage);
+        break;
+      case 'content_block_start': {
+        const cb = ev.content_block;
+        if (cb.type === 'text') blocks[ev.index] = { type: 'text', text: '' };
+        else if (cb.type === 'thinking') blocks[ev.index] = { type: 'thinking', text: '' };
+        else if (cb.type === 'tool_use') {
+          blocks[ev.index] = { type: 'tool_call', id: cb.id, name: cb.name, input: {} };
+          partialJson.set(ev.index, '');
+          yield { type: 'tool_call_start', id: cb.id, name: cb.name };
+        }
+        break;
+      }
+      case 'content_block_delta': {
+        const d = ev.delta;
+        const b = blocks[ev.index];
+        if (d.type === 'text_delta' && b?.type === 'text') {
+          b.text += d.text;
+          yield { type: 'text', delta: d.text };
+        } else if (d.type === 'thinking_delta' && b?.type === 'thinking') {
+          b.text += d.thinking;
+          yield { type: 'thinking', delta: d.thinking };
+        } else if (d.type === 'signature_delta' && b?.type === 'thinking') {
+          b.signature = d.signature;
+        } else if (d.type === 'input_json_delta' && b?.type === 'tool_call') {
+          partialJson.set(ev.index, (partialJson.get(ev.index) ?? '') + d.partial_json);
+          yield { type: 'tool_call_delta', id: b.id, delta: d.partial_json };
+        }
+        break;
+      }
+      case 'content_block_stop': {
+        const b = blocks[ev.index];
+        if (b?.type === 'tool_call') {
+          const raw = partialJson.get(ev.index) ?? '';
+          b.input = parseArgs(raw);
+        }
+        break;
+      }
+      case 'message_delta':
+        usage.output = ev.usage?.output_tokens ?? usage.output;
+        // the final counts: Anthropic may repeat them here, and some gateways (apikey.fan)
+        // send zeros in message_start and the real input only here
+        readInputUsage(usage, ev.usage);
+        stopReason =
+          ev.delta?.stop_reason === 'tool_use'
+            ? 'tool_use'
+            : ev.delta?.stop_reason === 'max_tokens'
+              ? 'length'
+              : 'stop';
+        break;
+      case 'error':
+        throw streamApiError(spec, ev.error);
+    }
+  }
+  if (!sawEvent) {
+    // HTTP 200 with a non-SSE body (a gateway 404 wrapper, an HTML error page)
+    // must surface, not end the stream as an empty answer — check the baseUrl
+    // (anthropic-compatible gateways usually end in /v1) and the model name
+    throw new Error(
+      `${spec.id}: endpoint returned no SSE events (HTTP ${res.status}) — likely a wrong baseUrl or model name for this gateway`
+    );
+  }
+
+  yield {
+    type: 'done',
+    message: {
+      role: 'assistant',
+      content: blocks.filter(Boolean),
+      usage,
+      model: spec.id,
+      stopReason
+    }
+  };
+}
+
+export const anthropicAdapter: ModelAdapter = {
+  stream: (spec, req) => streamWithRetry(spec, req, () => streamOnce(spec, req))
 };

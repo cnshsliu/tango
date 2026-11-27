@@ -7,7 +7,7 @@ import type {
   StreamEvent,
   Usage
 } from '../types.js';
-import { argsObject, parseArgs, parseEvent, postJson, resolveApiKey, sseLines } from './util.js';
+import { argsObject, parseArgs, parseEvent, postJson, resolveApiKey, sseLines, streamApiError, streamWithRetry } from './util.js';
 import { openaiEffort } from './reasoning.js';
 
 /**
@@ -91,99 +91,102 @@ export function toOpenAIMessages(system: string, messages: Message[], systemRole
   return out;
 }
 
-export const openaiAdapter: ModelAdapter = {
-  async *stream(spec: ModelSpec, req: CompletionRequest): AsyncIterable<StreamEvent> {
-    const body: Record<string, unknown> = {
-      model: spec.model,
-      messages: toOpenAIMessages(
-        req.system,
-        req.messages,
-        /api\.openai\.com/.test(spec.baseUrl) ? 'developer' : 'system'
-      ),
-      stream: true,
-      stream_options: { include_usage: true }
-    };
-    // OpenAI's reasoning models reject max_tokens; other compatible APIs don't all accept the new name.
-    const maxKey = /api\.openai\.com/.test(spec.baseUrl) ? 'max_completion_tokens' : 'max_tokens';
-    body[maxKey] = req.maxTokens ?? spec.maxTokens ?? 8192;
-    // only reasoning-capable endpoints take the param; others may 400 on it. How it is spelled
-    // differs (OpenRouter nests it; DeepSeek and GLM want the switch set too): reasoning.ts
-    if (req.effort && spec.reasoning !== false) Object.assign(body, openaiEffort(spec.model, spec.baseUrl, req.effort));
-    if (typeof spec.thinkingBudget === 'number') body.thinking_budget = spec.thinkingBudget;
-    if (req.tools.length) {
-      body.tools = req.tools.map((t) => ({
-        type: 'function',
-        function: { name: t.name, description: t.description, parameters: t.input }
-      }));
-    }
-
-    const res = await postJson(
-      spec,
-      `${spec.baseUrl.replace(/\/$/, '')}/chat/completions`,
-      { authorization: `Bearer ${resolveApiKey(spec)}` },
-      body,
-      req.signal,
-      { retries: req.retries, onRetry: req.onRetry }
-    );
-
-    let text = '';
-    let thinking = '';
-    const calls = new Map<number, { id: string; name: string; args: string; extra?: unknown }>();
-    const usage: Usage = { input: 0, output: 0 };
-    let finish: string | undefined;
-
-    for await (const data of sseLines(res.body!)) {
-      if (data === '[DONE]') break;
-      const ev = parseEvent(spec, data);
-      if (ev.error) throw new Error(`${spec.id}: ${JSON.stringify(ev.error)}`);
-      if (ev.usage) Object.assign(usage, parseUsage(ev.usage));
-      const choice = ev.choices?.[0];
-      if (!choice) continue;
-      const d = choice.delta ?? {};
-      const rfield = spec.reasoningField ?? 'reasoning_content';
-      const rdelta = (d as Record<string, unknown>)[rfield];
-      if (typeof rdelta === 'string' && rdelta) {
-        thinking += rdelta;
-        yield { type: 'thinking', delta: rdelta };
-      }
-      if (d.content) {
-        text += d.content;
-        yield { type: 'text', delta: d.content };
-      }
-      for (const tc of d.tool_calls ?? []) {
-        const idx = tc.index ?? 0;
-        let c = calls.get(idx);
-        if (!c) {
-          c = { id: tc.id ?? `call_${idx}`, name: tc.function?.name ?? '', args: '' };
-          calls.set(idx, c);
-          yield { type: 'tool_call_start', id: c.id, name: c.name };
-        }
-        if (tc.id) c.id = tc.id;
-        if (tc.function?.name) c.name = tc.function.name;
-        if (tc.extra_content) c.extra = tc.extra_content;
-        if (tc.function?.arguments) {
-          c.args += tc.function.arguments;
-          yield { type: 'tool_call_delta', id: c.id, delta: tc.function.arguments };
-        }
-      }
-      if (choice.finish_reason) finish = choice.finish_reason;
-    }
-
-    const content: ContentBlock[] = [];
-    if (thinking) content.push({ type: 'thinking', text: thinking });
-    if (text) content.push({ type: 'text', text });
-    for (const c of calls.values()) {
-      content.push({
-        type: 'tool_call',
-        id: c.id,
-        name: c.name,
-        input: parseArgs(c.args),
-        ...(c.extra ? { extra: c.extra } : {})
-      });
-    }
-    const stopReason: Message['stopReason'] =
-      calls.size > 0 ? 'tool_use' : finish === 'length' ? 'length' : 'stop';
-
-    yield { type: 'done', message: { role: 'assistant', content, usage, model: spec.id, stopReason } };
+/** One request; a failure before any output is retried by streamWithRetry. */
+async function* streamOnce(spec: ModelSpec, req: CompletionRequest): AsyncIterable<StreamEvent> {
+  const body: Record<string, unknown> = {
+    model: spec.model,
+    messages: toOpenAIMessages(
+      req.system,
+      req.messages,
+      /api\.openai\.com/.test(spec.baseUrl) ? 'developer' : 'system'
+    ),
+    stream: true,
+    stream_options: { include_usage: true }
+  };
+  // OpenAI's reasoning models reject max_tokens; other compatible APIs don't all accept the new name.
+  const maxKey = /api\.openai\.com/.test(spec.baseUrl) ? 'max_completion_tokens' : 'max_tokens';
+  body[maxKey] = req.maxTokens ?? spec.maxTokens ?? 8192;
+  // only reasoning-capable endpoints take the param; others may 400 on it. How it is spelled
+  // differs (OpenRouter nests it; DeepSeek and GLM want the switch set too): reasoning.ts
+  if (req.effort && spec.reasoning !== false) Object.assign(body, openaiEffort(spec.model, spec.baseUrl, req.effort));
+  if (typeof spec.thinkingBudget === 'number') body.thinking_budget = spec.thinkingBudget;
+  if (req.tools.length) {
+    body.tools = req.tools.map((t) => ({
+      type: 'function',
+      function: { name: t.name, description: t.description, parameters: t.input }
+    }));
   }
+
+  const res = await postJson(
+    spec,
+    `${spec.baseUrl.replace(/\/$/, '')}/chat/completions`,
+    { authorization: `Bearer ${resolveApiKey(spec)}` },
+    body,
+    req.signal,
+    { retries: req.retries, onRetry: req.onRetry }
+  );
+
+  let text = '';
+  let thinking = '';
+  const calls = new Map<number, { id: string; name: string; args: string; extra?: unknown }>();
+  const usage: Usage = { input: 0, output: 0 };
+  let finish: string | undefined;
+
+  for await (const data of sseLines(res.body!)) {
+    if (data === '[DONE]') break;
+    const ev = parseEvent(spec, data);
+    if (ev.error) throw streamApiError(spec, ev.error);
+    if (ev.usage) Object.assign(usage, parseUsage(ev.usage));
+    const choice = ev.choices?.[0];
+    if (!choice) continue;
+    const d = choice.delta ?? {};
+    const rfield = spec.reasoningField ?? 'reasoning_content';
+    const rdelta = (d as Record<string, unknown>)[rfield];
+    if (typeof rdelta === 'string' && rdelta) {
+      thinking += rdelta;
+      yield { type: 'thinking', delta: rdelta };
+    }
+    if (d.content) {
+      text += d.content;
+      yield { type: 'text', delta: d.content };
+    }
+    for (const tc of d.tool_calls ?? []) {
+      const idx = tc.index ?? 0;
+      let c = calls.get(idx);
+      if (!c) {
+        c = { id: tc.id ?? `call_${idx}`, name: tc.function?.name ?? '', args: '' };
+        calls.set(idx, c);
+        yield { type: 'tool_call_start', id: c.id, name: c.name };
+      }
+      if (tc.id) c.id = tc.id;
+      if (tc.function?.name) c.name = tc.function.name;
+      if (tc.extra_content) c.extra = tc.extra_content;
+      if (tc.function?.arguments) {
+        c.args += tc.function.arguments;
+        yield { type: 'tool_call_delta', id: c.id, delta: tc.function.arguments };
+      }
+    }
+    if (choice.finish_reason) finish = choice.finish_reason;
+  }
+
+  const content: ContentBlock[] = [];
+  if (thinking) content.push({ type: 'thinking', text: thinking });
+  if (text) content.push({ type: 'text', text });
+  for (const c of calls.values()) {
+    content.push({
+      type: 'tool_call',
+      id: c.id,
+      name: c.name,
+      input: parseArgs(c.args),
+      ...(c.extra ? { extra: c.extra } : {})
+    });
+  }
+  const stopReason: Message['stopReason'] =
+    calls.size > 0 ? 'tool_use' : finish === 'length' ? 'length' : 'stop';
+
+  yield { type: 'done', message: { role: 'assistant', content, usage, model: spec.id, stopReason } };
+}
+
+export const openaiAdapter: ModelAdapter = {
+  stream: (spec, req) => streamWithRetry(spec, req, () => streamOnce(spec, req))
 };

@@ -225,6 +225,13 @@ default 10; `0` turns it off), or per model with `retries` in `models.json`. A w
 fails at once, since retrying cannot fix it. A reply that breaks off midway is not retried,
 because tango would have to throw away the text it already showed.
 
+The same covers a gateway that answers HTTP 200 and then fails before its first event: an
+`error` event (apikey.fan sends `upstream_error`, Anthropic `overloaded_error`, OpenRouter a
+`code: 429`) or a stream that stays silent for 3 minutes. The retry line names the reason, e.g.
+`⟳ 请求失败（upstream_error: Upstream request failed），1 秒后第 1/10 次重试…`. An `error`
+event tango cannot classify gets at most 3 retries; one that says the request, key, model or
+balance is wrong (an `invalid_request_error`, a 4xx code, "insufficient balance") is not retried.
+
 Some gateways change what you send. Measured on 2026-11-25: `slb.apikey.fan` (the
 `apikeyfan/claude-opus-5-5` model) turns every `<` and `>` in the request into `[` and `]`
 before the model sees it, whether sent raw or JSON-escaped; the direct `zhipu-plan/glm-5.4`
