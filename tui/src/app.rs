@@ -347,13 +347,13 @@ impl ChatLang {
         cjk.then_some(ChatLang::Zh)
     }
 
-    /// "the model is waiting for your choice"
+    /// "Tango is waiting for your choice"
     fn waiting(self) -> &'static str {
         match self {
-            ChatLang::Zh => "模型在等你选择",
-            ChatLang::Ja => "モデルが選択を待っています",
-            ChatLang::Ko => "모델이 선택을 기다리고 있습니다",
-            ChatLang::En => "the model is waiting for your choice",
+            ChatLang::Zh => "Tango 在等你选择",
+            ChatLang::Ja => "Tango が選択を待っています",
+            ChatLang::Ko => "Tango가 선택을 기다리고 있습니다",
+            ChatLang::En => "Tango is waiting for your choice",
         }
     }
 
@@ -3505,7 +3505,7 @@ impl App {
         ChatLang::default()
     }
 
-    /// "模型在等你选择" — the panel title and the stand-in question when the model
+    /// "Tango 在等你选择" — the panel title and the stand-in question when the model
     /// wrote nothing before `?choice`.
     fn waiting_label(lang: ChatLang) -> String {
         lang.waiting().to_string()
@@ -3523,7 +3523,7 @@ impl App {
 
     /// What Tab puts in the input box so the user can write their own answer
     /// instead of picking an option: the ask as a lead-in that ends in ": ", in the
-    /// conversation's language — `关于要改吗，模型在等你选择: `, `About: ship it now? The
+    /// conversation's language — `关于要改吗，Tango 在等你选择: `, `About: ship it now? The
     /// model is waiting for your choice: `. A closing ? / ？ of the question is
     /// dropped; a question that is only the stand-in label gets no "关于".
     fn amend_lead(question: &str, lang: ChatLang) -> String {
@@ -7470,7 +7470,7 @@ impl App {
 
     fn send_prompt(&mut self, serve: &mut Serve) {
         let (text, images) = self.take_submission();
-        // Tab's lead-in ("关于…模型在等你选择: ") frames the answer in the box; the
+        // Tab's lead-in ("关于…Tango 在等你选择: ") frames the answer in the box; the
         // model gets the answer alone — and nothing goes out while it is still empty
         let (bare, led) = match Self::split_tab_lead(text.trim_start()) {
             (bare, true) => (bare.trim().to_string(), true),
@@ -17093,7 +17093,7 @@ mod tests {
         );
         let typed: String = app.input.iter().collect();
         assert_eq!(
-            typed, "关于要改吗，模型在等你选择: ",
+            typed, "关于要改吗，Tango 在等你选择: ",
             "tab preloads the ask as a lead-in ending in \": \" for the user's own answer"
         );
         assert_eq!(
@@ -17127,7 +17127,7 @@ mod tests {
             &mut serve,
         );
         let typed: String = app.input.iter().collect();
-        assert_eq!(typed, "About: Ship it now the model is waiting for your choice: ");
+        assert_eq!(typed, "About: Ship it now Tango is waiting for your choice: ");
 
         // no question before ?choice: a stand-in label in the conversation's language
         let mut app = App::new();
@@ -17136,25 +17136,25 @@ mod tests {
         app.commit_stream();
         assert_eq!(
             app.choices.as_ref().unwrap().question,
-            "the model is waiting for your choice"
+            "Tango is waiting for your choice"
         );
-        assert_eq!(app.choice_title(), "❓ the model is waiting for your choice");
+        assert_eq!(app.choice_title(), "❓ Tango is waiting for your choice");
         app.ascii = true;
-        assert_eq!(app.choice_title(), "? the model is waiting for your choice");
+        assert_eq!(app.choice_title(), "? Tango is waiting for your choice");
         let typed = App::amend_lead(&app.choices.as_ref().unwrap().question, app.chat_language());
-        assert_eq!(typed, "the model is waiting for your choice: ");
+        assert_eq!(typed, "Tango is waiting for your choice: ");
 
         // Chinese again once the user writes Chinese
         let mut app = App::new();
         app.push_user("开始吧");
         app.stream = "?choice\n1. 好\n2. 不了".into();
         app.commit_stream();
-        assert_eq!(app.choice_title(), "❓ 模型在等你选择");
-        assert_eq!(App::amend_lead("模型在等你选择", app.chat_language()), "模型在等你选择: ");
+        assert_eq!(app.choice_title(), "❓ Tango 在等你选择");
+        assert_eq!(App::amend_lead("Tango 在等你选择", app.chat_language()), "Tango 在等你选择: ");
 
         // no user prompt at all: the default wording
         let app = App::new();
-        assert_eq!(App::amend_lead("", app.chat_language()), "模型在等你选择: ");
+        assert_eq!(App::amend_lead("", app.chat_language()), "Tango 在等你选择: ");
     }
 
     #[test]
@@ -17178,16 +17178,16 @@ mod tests {
             app.key(KeyCode::Char(c).into(), &mut serve);
         }
         let typed: String = app.input.iter().collect();
-        assert_eq!(typed, "关于现在就发吗，模型在等你选择: 可以，发吧");
+        assert_eq!(typed, "关于现在就发吗，Tango 在等你选择: 可以，发吧");
         app.key(KeyCode::Enter.into(), &mut serve);
         let sent: String = serve.sent.concat();
         assert!(sent.contains("可以，发吧"), "the answer goes out: {sent}");
-        assert!(!sent.contains("模型在等你选择"), "the lead-in stays in the box: {sent}");
+        assert!(!sent.contains("Tango 在等你选择"), "the lead-in stays in the box: {sent}");
         assert!(!sent.contains("关于现在就发吗"), "the lead-in stays in the box: {sent}");
         // an answer that repeats the phrase is cut at the first one, not the last
         assert_eq!(
-            App::split_tab_lead("关于发吗，模型在等你选择: 写一句 模型在等你选择: 当例子"),
-            ("写一句 模型在等你选择: 当例子", true)
+            App::split_tab_lead("关于发吗，Tango 在等你选择: 写一句 Tango 在等你选择: 当例子"),
+            ("写一句 Tango 在等你选择: 当例子", true)
         );
     }
 
@@ -17204,11 +17204,11 @@ mod tests {
         // the TUI's own lead-in does not pin the language: it is stripped first
         let mut app = App::new();
         app.push_user("Refactor the parser");
-        app.push_user("About: Ship it now the model is waiting for your choice: looks good");
+        app.push_user("About: Ship it now Tango is waiting for your choice: looks good");
         assert_eq!(app.chat_language(), ChatLang::En);
         let mut app = App::new();
         app.push_user("重构解析器");
-        app.push_user("关于现在就发吗，模型在等你选择: 可以");
+        app.push_user("关于现在就发吗，Tango 在等你选择: 可以");
         assert_eq!(app.chat_language(), ChatLang::Zh);
     }
 

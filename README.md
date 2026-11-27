@@ -657,7 +657,7 @@ runs, `blocked:kind=permission` while the y/n/a dialog is open, `blocked:kind=qu
 recognize a tango pane and to type `orca orchestration check` mail notes only when tango is at its
 prompt; terminals that don't know the sequence ignore it. A `?choice` block from the model opens a
 pick panel (↑↓/click, Enter, or an option number + Enter); Tab answers in your own words — it fills
-the input with the ask as a lead-in ending in `": "` (关于…，模型在等你选择: …) in the conversation's
+the input with the ask as a lead-in ending in `": "` (关于…，Tango 在等你选择: …) in the conversation's
 language, and only what you write after it is sent. Also: mouse wheel scrolling, streaming answers, thinking lines, tool status lines with
 durations, a centered permission modal (y/n/a), and an input block. Every dialog's key hint is its last row inside the frame,
 one blank row below the content and above the bottom border, and it is clickable: each key in it (`y 允许`, `esc 关闭`, `enter 确认`, `↑`/`↓`, `ctrl+e` …) is a button that does
