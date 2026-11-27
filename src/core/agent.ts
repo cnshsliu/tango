@@ -77,8 +77,8 @@ export class Agent {
   readonly tools: ToolRegistry;
   /** live working directory (/cd); tools and context read it per call */
   cwd: string;
-  /** reasoning effort for adapters that support it (/effort) */
-  effort?: 'low' | 'medium' | 'high';
+  /** a reasoning effort level the model accepts (see reasoning.ts); unset: the endpoint's default */
+  effort?: string;
   /** transient system-prompt suffix (plan mode) — never persisted into history */
   systemSuffix?: string;
   /** mid-turn supplements (Alt+Enter): appended as user messages before the next model call */

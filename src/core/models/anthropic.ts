@@ -8,6 +8,7 @@ import type {
   Usage
 } from '../types.js';
 import { argsObject, parseArgs, parseEvent, postJson, resolveApiKey, sseLines } from './util.js';
+import { anthropicEffort } from './reasoning.js';
 
 function toAnthropicMessages(messages: Message[]) {
   return messages.map((m) => ({
@@ -72,14 +73,9 @@ export const anthropicAdapter: ModelAdapter = {
       messages: toAnthropicMessages(req.messages),
       stream: true
     };
-    if (req.effort) {
-      let budget = req.effort === 'high' ? 16_000 : req.effort === 'medium' ? 8_000 : 4_000;
-      const maxT = (body.max_tokens as number) ?? 8192;
-      // thinking budget must leave room for the answer and never exceed max_tokens
-      budget = Math.min(budget, Math.max(1024, maxT - 1024));
-      body.max_tokens = Math.max(maxT, budget + 1024);
-      body.thinking = { type: 'enabled', budget_tokens: budget };
-    }
+    // the level is spelled per model family: adaptive thinking + output_config.effort (Claude 4.6+,
+    // GLM), or a token budget on the older Claudes (reasoning.ts)
+    if (req.effort) Object.assign(body, anthropicEffort(spec.model, req.effort, (body.max_tokens as number) ?? 8192));
     if (req.tools.length) {
       body.tools = req.tools.map((t) => ({
         name: t.name,

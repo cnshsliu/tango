@@ -37,6 +37,7 @@ import { cleanStaleLocks, holdSessionLock, sessionHolder } from './core/session-
 import { stillHolds } from './core/liveness.js';
 import { costUsd, displayPlatform, groupModels } from './core/models/registry.js';
 import { retryText } from './core/models/util.js';
+import { effortsFor } from './core/models/reasoning.js';
 import type { AskFn, PermissionMode } from './core/permissions.js';
 import type { ToolResult } from './core/types.js';
 import { describeSources, localFile, projectFile, projectRoots, readLayerJson, resolveConfig, setTrust, updateLocalConfig, type Resolved } from './core/project-config.js';
@@ -396,6 +397,8 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
     branch: store.meta()?.branch ?? '',
     sessionName: store.meta()?.name ?? '',
     mode: perm.mode,
+    effort: agent.effort ?? 'off',
+    efforts: effortsFor(agent.model), // what /effort may take for this model
     totalCostUsd: sessionCostUsd,
     contextTokens: store.allMessages().filter((m) => m.role === 'assistant').at(-1)?.usage?.input || agent.contextTokenEstimate(),
     contextWindow: agent.model.contextWindow ?? 128_000,
@@ -1263,11 +1266,21 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
         return;
       }
       case 'set_effort': {
-        const raw = String(cmd.level ?? 'off');
-        const level = raw === 'low' || raw === 'medium' || raw === 'high' ? raw : undefined;
-        if (raw !== 'off' && !level) return reply(cmd, false, undefined, 'effort: low | medium | high | off');
-        agent.effort = level;
-        reply(cmd, true, { effort: level ?? 'off' });
+        // the levels differ per model (reasoning.ts): offer what this one takes, refuse the rest
+        const raw = String(cmd.level ?? 'off').trim().toLowerCase();
+        const efforts = effortsFor(agent.model);
+        if (raw !== 'off' && !efforts.includes(raw)) {
+          return reply(
+            cmd,
+            false,
+            undefined,
+            efforts.length
+              ? `effort "${raw}": ${agent.model.id} takes ${efforts.join(' | ')} | off`
+              : `effort "${raw}": ${agent.model.id} has no effort levels (only off)`
+          );
+        }
+        agent.effort = raw === 'off' ? undefined : raw;
+        reply(cmd, true, { effort: agent.effort ?? 'off', efforts });
         return;
       }
       case 'set_plan': {
@@ -1679,13 +1692,20 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
       case 'set_model': {
         try {
           const model = pickModel(await loadModels(), {}, String(cmd.modelId ?? ''));
+          // a level chosen for the previous model may not exist on this one: then it is off, and said
+          const efforts = effortsFor(model);
+          const effortDropped = agent.effort && !efforts.includes(agent.effort) ? agent.effort : undefined;
+          if (effortDropped) agent.effort = undefined;
           agent.setModel(model);
           // same as the REPL: an explicit switch becomes the default for new sessions
           await saveConfig({ ...(await loadConfig()), model: model.id });
           reply(cmd, true, {
             model: model.id,
             warning: keyProblem(model),
-            contextWindow: model.contextWindow ?? 128_000
+            contextWindow: model.contextWindow ?? 128_000,
+            effort: agent.effort ?? 'off',
+            efforts,
+            ...(effortDropped ? { effortDropped } : {})
           });
         } catch (e: any) {
           reply(cmd, false, undefined, e.message);
@@ -2093,6 +2113,7 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
           contextWindow: agent.model.contextWindow ?? 128_000,
           autocompact: agent.compactAt,
           effort: agent.effort ?? 'off',
+          efforts: effortsFor(agent.model),
           sessionTokens,
           goal: goal.text,
           loop: loop.prompt || null,

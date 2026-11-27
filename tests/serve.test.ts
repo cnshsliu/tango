@@ -3129,3 +3129,60 @@ test('serve: a secret printed by a tool is redacted before it is shown, stored o
     await rm(work, { recursive: true, force: true });
   }
 });
+
+test('serve: /effort offers what the current model takes, refuses the rest, and drops a level the next model lacks', async () => {
+  const mock = await startMock();
+  const home = await mkdtemp(join(tmpdir(), 'tango-serve-home-'));
+  const work = await mkdtemp(join(tmpdir(), 'tango-serve-work-'));
+  const base = `http://127.0.0.1:${(mock.server.address() as AddressInfo).port}/v1`;
+  await writeFile(join(home, 'models.json'), JSON.stringify([
+    // a name nobody described: the default levels
+    { id: 'mock/mock', provider: 'mock', model: 'm', api: 'openai-completions', baseUrl: base, apiKey: 'MOCK_SERVE_KEY', contextWindow: 8000 },
+    // read from the name: GLM-5.4 takes low high max
+    { id: 'mock/glm-x', provider: 'mock', model: 'glm-5.4', api: 'openai-completions', baseUrl: base, apiKey: 'MOCK_SERVE_KEY', contextWindow: 8000, reasoning: true },
+    // said explicitly in models.json: that wins over the name
+    { id: 'mock/flat', provider: 'mock', model: 'm', api: 'openai-completions', baseUrl: base, apiKey: 'MOCK_SERVE_KEY', contextWindow: 8000, efforts: ['high'] }
+  ]));
+  mock.setScript(() => SSE({ choices: [{ delta: { content: 'ok' }, finish_reason: 'stop' }] }) + 'data: [DONE]\n\n');
+  const s = await startServe(home, work, 0);
+  let n = 0;
+  const call = async (cmd: object) => {
+    const id = ++n;
+    s.send({ id, ...cmd });
+    return s.until((f: any) => f.type === 'result' && f.id === id, JSON.stringify(cmd));
+  };
+  try {
+    const hello = await s.next();
+    assert.equal(hello.type, 'hello');
+    assert.equal(hello.effort, 'off');
+    assert.deepEqual(hello.efforts, ['low', 'medium', 'high'], 'hello says what /effort may take');
+    let r = await call({ cmd: 'set_effort', level: 'medium' });
+    assert.deepEqual([r.ok, r.data.effort, r.data.efforts], [true, 'medium', ['low', 'medium', 'high']]);
+    r = await call({ cmd: 'set_effort', level: 'max' });
+    assert.equal(r.ok, false, 'a level this model does not take is refused, not sent');
+    assert.match(String(r.error), /mock\/mock takes low \| medium \| high \| off/);
+    // a model without "medium": the level is off, and the reply says so
+    r = await call({ cmd: 'set_model', modelId: 'mock/glm-x' });
+    assert.equal(r.ok, true, JSON.stringify(r));
+    assert.deepEqual([r.data.effort, r.data.effortDropped, r.data.efforts], ['off', 'medium', ['low', 'high', 'max']]);
+    r = await call({ cmd: 'set_effort', level: 'max' });
+    assert.deepEqual([r.ok, r.data.effort], [true, 'max']);
+    r = await call({ cmd: 'set_effort', level: 'medium' });
+    assert.match(String(r.error), /mock\/glm-x takes low \| high \| max \| off/);
+    s.send({ id: ++n, cmd: 'status' });
+    const st = await s.until((f: any) => f.type === 'result' && f.id === n, 'status');
+    assert.deepEqual([st.data.effort, st.data.efforts], ['max', ['low', 'high', 'max']]);
+    // the explicit list in models.json wins over the name
+    r = await call({ cmd: 'set_model', modelId: 'mock/flat' });
+    assert.deepEqual([r.data.effort, r.data.effortDropped, r.data.efforts], ['off', 'max', ['high']]);
+    r = await call({ cmd: 'set_effort', level: 'low' });
+    assert.match(String(r.error), /mock\/flat takes high \| off/);
+    r = await call({ cmd: 'set_effort', level: 'off' });
+    assert.deepEqual([r.ok, r.data.effort], [true, 'off']);
+  } finally {
+    s.child.kill();
+    mock.server.close();
+    await rm(home, { recursive: true, force: true });
+    await rm(work, { recursive: true, force: true });
+  }
+});

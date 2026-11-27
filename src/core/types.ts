@@ -83,6 +83,12 @@ export interface ModelSpec {
    */
   thinkingBudget?: number;
   reasoning?: boolean;
+  /**
+   * Reasoning effort levels this model's endpoint accepts, e.g. ["low", "high", "max"] (models.dev
+   * names, see reasoning.ts); [] when there are none. Unset: taken from the preset table, or from
+   * the model's name.
+   */
+  efforts?: string[];
   /** accepts image input (vision). Unset = unknown: images are still sent, with a heads-up notice */
   vision?: boolean;
   /** per-model override of config `retries` (failed requests retried before giving up) */
@@ -117,8 +123,8 @@ export interface CompletionRequest {
   tools: ToolSchema[];
   maxTokens?: number;
   signal?: AbortSignal;
-  /** reasoning effort for supporting adapters (/effort) */
-  effort?: 'low' | 'medium' | 'high';
+  /** a reasoning effort level the model accepts (`effortsFor`), e.g. "high", "max" (/effort) */
+  effort?: string;
   /** retries for a request that fails before any output (network error, 429, 5xx); default 10 */
   retries?: number;
   /** told before each retry, so the user sees "retrying n/max" instead of silence */

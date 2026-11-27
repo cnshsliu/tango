@@ -819,7 +819,7 @@ const SLASH: &[(&str, &str)] = &[
         "/editor",
         "用 $VISUAL/$EDITOR 编辑当前草稿（nvim 专用 /nvim）",
     ),
-    ("/effort [low|medium|high|off]", "查看/设置推理力度"),
+    ("/effort [档位|off]", "查看/设置推理力度 · 档位随当前模型而定"),
     ("/exit", "退出"),
     (
         "/export [md|html]",
@@ -1177,6 +1177,22 @@ fn note_slot(todos: &[TodoItem]) -> usize {
         .iter()
         .position(|t| !matches!(&t.kind, TodoKind::Note { done: false, .. }))
         .unwrap_or(todos.len())
+}
+
+/// One line for an effort level in the /effort picker. The names are the API's and differ per
+/// model (`low high max` on GLM-5.4, `low medium high xhigh max` on Claude Opus 5.5, …).
+fn effort_note(level: &str) -> &'static str {
+    match level {
+        "none" => "不思考",
+        "minimal" => "几乎不思考",
+        "low" => "轻度推理",
+        "medium" => "中等推理",
+        "high" => "增强推理",
+        "xhigh" => "更强推理",
+        "max" => "最深推理",
+        "ultra" => "极致推理",
+        _ => "",
+    }
 }
 
 /// Something the model left for the user to act on: a blocking choice (?choice) the
@@ -1857,6 +1873,10 @@ pub struct App {
     pending: Vec<(u64, Pending)>,
     permission: Option<Permission>,
     model: String,
+    /// reasoning effort level in use ("off" = the endpoint's default), and the levels /effort may
+    /// take for the current model (they differ per model; serve sends both with hello and /model)
+    effort: String,
+    efforts: Vec<String>,
     mode: String,
     session: String,
     cost: f64,
@@ -1991,6 +2011,9 @@ impl App {
             pending: Vec::new(),
             permission: None,
             model: "…".into(),
+            effort: "off".into(),
+            // until serve says what the model takes (hello): the commonest levels
+            efforts: ["low", "medium", "high"].iter().map(|s| s.to_string()).collect(),
             mode: String::new(),
             session: String::new(),
             cost: 0.0,
@@ -3424,6 +3447,12 @@ impl App {
         })
     }
 
+    fn string_array(v: &Value) -> Vec<String> {
+        v.as_array()
+            .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+            .unwrap_or_default()
+    }
+
     fn call_summary(input: &Value) -> String {
         let m = input.as_object();
         // task sub-agents: `explore · find the auth middleware` (+ ` · 后台`)
@@ -3872,10 +3901,21 @@ impl App {
             .iter()
             .map(|(m, d)| (m.to_string(), d.to_string(), m.to_string()))
             .collect(),
-            "/effort" => ["low", "medium", "high", "off"]
-                .iter()
-                .map(|e| (e.to_string(), String::new(), e.to_string()))
-                .collect(),
+            // the levels differ per model (serve sends them with hello and /model); off is always there
+            "/effort" => {
+                let cur = self.effort.as_str();
+                let mut all: Vec<(String, String, String)> = self
+                    .efforts
+                    .iter()
+                    .map(|e| {
+                        let shown = if e == cur { format!("{e} (当前)") } else { e.clone() };
+                        (shown, effort_note(e).to_string(), e.clone())
+                    })
+                    .collect();
+                let off = if cur == "off" { "off (当前)" } else { "off" };
+                all.push((off.to_string(), "不发参数 · 用服务商的默认".to_string(), "off".to_string()));
+                all
+            }
             "/model" => self
                 .arg_models
                 .iter()
@@ -7491,6 +7531,8 @@ impl App {
                 self.statusline = v["statusline"].as_str().map(|t| t.to_string());
                 self.mouse_capture = Some(self.mouse);
                 self.model = v["model"].as_str().unwrap_or("?").into();
+                self.effort = v["effort"].as_str().unwrap_or("off").into();
+                self.efforts = Self::string_array(&v["efforts"]);
                 self.mode = v["mode"].as_str().unwrap_or("?").into();
                 self.serve_cwd = v["cwd"].as_str().map(Into::into);
                 self.load_notes();
@@ -7987,12 +8029,26 @@ impl App {
                         }
                         (Pending::Model, true) => {
                             self.model = d["model"].as_str().unwrap_or("?").into();
+                            self.effort = d["effort"].as_str().unwrap_or("off").into();
+                            self.efforts = Self::string_array(&d["efforts"]);
                             self.push(
                                 format!("model → {} (saved as default)", self.model),
                                 Tone::Muted,
                             );
                             if let Some(w) = d["warning"].as_str() {
                                 self.push(format!("! {w}"), Tone::Warning);
+                            }
+                            // the level chosen for the previous model does not exist on this one
+                            if let Some(old) = d["effortDropped"].as_str() {
+                                let choices = self.efforts.join(" · ");
+                                self.push(
+                                    if self.efforts.is_empty() {
+                                        format!("推理力度 {old} 对 {} 不适用，已关闭 · 这个模型没有可选档位", self.model)
+                                    } else {
+                                        format!("推理力度 {old} 对 {} 不适用，已关闭 · 可选 {choices} · off", self.model)
+                                    },
+                                    Tone::Warning,
+                                );
                             }
                         }
                         (Pending::Mode, true) => {
@@ -8798,8 +8854,24 @@ impl App {
                             );
                         }
                         (Pending::Effort, true) => {
-                            let e = d["effort"].as_str().unwrap_or("off");
-                            self.push(format!("推理力度 → {e}"), Tone::Muted);
+                            self.effort = d["effort"].as_str().unwrap_or("off").into();
+                            if d.get("efforts").is_some() {
+                                self.efforts = Self::string_array(&d["efforts"]);
+                            }
+                            let choices = self.efforts.join(" · ");
+                            // bare /effort asks `status`, which also carries the model: show what there is to pick
+                            if d.get("model").is_some() {
+                                self.push(
+                                    if self.efforts.is_empty() {
+                                        format!("推理力度：{} · 这个模型没有可选档位", self.effort)
+                                    } else {
+                                        format!("推理力度：{} · 可选 {choices} · off", self.effort)
+                                    },
+                                    Tone::Muted,
+                                );
+                            } else {
+                                self.push(format!("推理力度 → {}", self.effort), Tone::Muted);
+                            }
                         }
                         (Pending::Memory, true) => {
                             let text = d["text"].as_str().unwrap_or("");
@@ -15703,6 +15775,93 @@ mod tests {
             &mut serve,
         );
         assert!(app.lines.iter().any(|l| l.text.contains("high")));
+    }
+
+    #[test]
+    fn effort_completion_offers_what_the_current_model_takes() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        // until serve has said otherwise: the commonest levels, so the old "h → high" still works
+        app.clear_input();
+        type_str(&mut app, &mut serve, "/effort h");
+        app.key(KeyCode::Tab.into(), &mut serve);
+        assert_eq!(typed(&app), "/effort high");
+        // GLM-5.4: low high max, high in use
+        app.efforts = ["low", "high", "max"].iter().map(|s| s.to_string()).collect();
+        app.effort = "high".into();
+        app.clear_input();
+        type_str(&mut app, &mut serve, "/effort ");
+        let pop = app.popup.as_ref().unwrap();
+        assert_eq!(pop.items, vec!["low", "high (当前)", "max", "off"]);
+        assert_eq!(
+            pop.descs,
+            vec!["轻度推理", "增强推理", "最深推理", "不发参数 · 用服务商的默认"]
+        );
+        // a level this model does not take is not offered
+        app.clear_input();
+        type_str(&mut app, &mut serve, "/effort me");
+        assert!(app.popup.is_none(), "medium is not a level of GLM-5.4");
+        // (a lone "x" still fuzzy-matches "max": the subsequence rule every picker has)
+        app.clear_input();
+        type_str(&mut app, &mut serve, "/effort ul");
+        assert!(app.popup.is_none(), "ultra is not one either");
+        app.clear_input();
+        type_str(&mut app, &mut serve, "/effort ma");
+        app.key(KeyCode::Tab.into(), &mut serve);
+        assert_eq!(typed(&app), "/effort max");
+        // a model with nothing to choose: off is all there is
+        app.efforts = vec![];
+        app.clear_input();
+        type_str(&mut app, &mut serve, "/effort l");
+        assert!(app.popup.is_none());
+        app.clear_input();
+        type_str(&mut app, &mut serve, "/effort o");
+        app.key(KeyCode::Tab.into(), &mut serve);
+        assert_eq!(typed(&app), "/effort off");
+    }
+
+    #[test]
+    fn effort_levels_follow_the_model_and_a_dropped_level_is_announced() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.effort = "medium".into();
+        // switching to a model without "medium": serve turns it off and says which was dropped
+        app.run_slash("/model mock/glm", &mut serve);
+        let sent: Value = serde_json::from_str(&serve.sent[0]).unwrap();
+        assert_eq!(sent["cmd"], "set_model");
+        app.frame(
+            json!({"type": "result", "id": sent["id"], "ok": true,
+                   "data": {"model": "mock/glm", "contextWindow": 200, "effort": "off",
+                            "efforts": ["low", "high", "max"], "effortDropped": "medium"}}),
+            &mut serve,
+        );
+        assert_eq!(app.model, "mock/glm");
+        assert_eq!(app.effort, "off");
+        assert_eq!(app.efforts, vec!["low", "high", "max"]);
+        let text = app.lines.iter().map(|l| l.text.as_str()).collect::<Vec<_>>().join("\n");
+        assert!(text.contains("推理力度 medium 对 mock/glm 不适用，已关闭 · 可选 low · high · max · off"), "{text}");
+        // a level the model does not take: serve refuses it and the reason is shown
+        app.run_slash("/effort medium", &mut serve);
+        let sent: Value = serde_json::from_str(&serve.sent[1]).unwrap();
+        assert_eq!((sent["cmd"].as_str(), sent["level"].as_str()), (Some("set_effort"), Some("medium")));
+        app.frame(
+            json!({"type": "result", "id": sent["id"], "ok": false,
+                   "error": "effort \"medium\": mock/glm takes low | high | max | off"}),
+            &mut serve,
+        );
+        assert_eq!(app.effort, "off", "a refused level changes nothing");
+        assert!(app.lines.iter().any(|l| l.text.contains("takes low | high | max | off")), "{text}");
+        // bare /effort asks status: the level in use and what there is to pick
+        app.run_slash("/effort", &mut serve);
+        let sent: Value = serde_json::from_str(&serve.sent[2]).unwrap();
+        assert_eq!(sent["cmd"], "status");
+        app.frame(
+            json!({"type": "result", "id": sent["id"], "ok": true,
+                   "data": {"model": "mock/glm", "mode": "ask", "effort": "max", "efforts": ["low", "high", "max"]}}),
+            &mut serve,
+        );
+        assert_eq!(app.effort, "max");
+        assert!(app.lines.iter().any(|l| l.text == "推理力度：max · 可选 low · high · max · off"));
     }
 
     #[test]

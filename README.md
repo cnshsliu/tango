@@ -214,8 +214,23 @@ isolation), MCP server→client capabilities (sampling/roots), plugin marketplac
   the goal is done; NO → one auto-continuation, YES → cleared with a notice. Hard cap
   (`/goal max N`, default 5), interrupt stops it, ●goal badge while active.
 - `/loop 10m <prompt>` — interval-repeated prompt (floor 10s), `/loop off` or ctrl+c stops.
-- `/effort low|medium|high|off` — reasoning effort (openai `reasoning_effort`, anthropic
-  thinking budget), session-scoped.
+- `/effort [level|off]` — how hard the model thinks before it answers, session-scoped. The levels
+  are the API's own and differ per model, so tango offers what the current one takes — `low | high |
+  max` on `zhipu-plan/glm-5.4`, `low | medium | high | xhigh | max` on `anthropic/claude-opus-5-5`,
+  `none | low | medium | high | xhigh | max` on `openai/gpt-6.1-terra`, `medium | high | xhigh` on
+  `opencode/gpt-5.5-pro`, nothing on a switch-only model such as `openrouter/google/gemma-4-31b-it:free`
+  — and refuses the rest (`/effort medium` on GLM-5.4 answers with the list). Tab completes the
+  levels; bare `/effort` shows the one in use and the choices; `tango --models` lists them per model.
+  `off` sends nothing (the endpoint's default). Switching to a model without the level in use turns
+  it off and says so. The lists come from models.dev, read provider by provider (the same model behind
+  another provider can take other levels) and checked against the live endpoints where a key was at
+  hand. A model described in `models.json` sets its own with `efforts: ["low", "high", "max"]` (empty:
+  nothing to choose); a model nobody has described is read from its name (`reasoning.ts`). How a level
+  is spelled differs as well: Chat Completions takes `reasoning_effort` (nested under `reasoning` on
+  OpenRouter; DeepSeek and GLM also get their `thinking` switch, Qwen `enable_thinking`), and the
+  Messages API takes `output_config.effort` with `thinking.type: adaptive` on Claude 4.6 and the Claude
+  5 models (they reject the older token budget), `enabled` on GLM and the rest, and only a
+  `budget_tokens` on Claude 3.7 and 4.0–4.5.
 - `/review [paths]` / `/security-review` — the working diff inlined into a instructed
   correctness/security audit prompt.
 - `/commit-push` / `/commit-pr` — preset prompts: the model looks at the diff and the log, commits
@@ -572,7 +587,8 @@ stdin line, one JSON frame per stdout line. Human logs go to stderr; stdout is p
 Commands: `prompt`, `btw` (ephemeral, tool-free side question), `interrupt`, `shutdown` (`reason`:
 abort any turn, run SessionEnd hooks, reply, exit — sent by the TUI before it closes a session), `permission`
 (answers a `permission_request` frame by request id), `models` (list presets with key availability),
-`set_model` (also saved as the default), `set_mode`, `set_nvim_viewer` (persist `ask`/`readonly`),
+`set_model` (also saved as the default; → `model`, `warning`, `contextWindow`, `effort`, `efforts`, and `effortDropped` when the level in use is not one of the new model's, in which case it is off),
+ `set_mode`, `set_nvim_viewer` (persist `ask`/`readonly`),
 `set_theme`, `set_mouse`, `diff` (read-only working-tree/staged patch), `timeline` (turn list with
 snapshot flags), `rewind`/`undo`/`redo` (time travel; refused while a turn runs), `fork`/`branch`/
 `tree` (session forking and ancestry), `send` (`session`, `text` → `to`, `targetLive`), `handoff` / `takeover` (`session`, `note?` → `brief`; handoff also → `queueId`), `handoff_list` (→ `handoffs`), `handoff_cancel` (`queueId`), `find` (search all sessions incl. abandoned futures),
@@ -582,7 +598,7 @@ snapshot flags), `rewind`/`undo`/`redo` (time travel; refused while a turn runs)
 `compact`, `status`. Prompts run one at a time; `interrupt`, `permission`, `set_mode` and `status`
 skip that queue so they land mid-turn. A client switches sessions by respawning the child with
 `TANGO_RESUME=<id or prefix>` (and optionally `TANGO_MODE`, `TANGO_MODEL`) in the environment —
-serve takes them from there, no flags. Frames: `hello` (session/model/tools/context) → `stream`
+serve takes them from there, no flags. Frames: `hello` (session/model/tools/context, and with them `effort` and the `efforts` the model takes) → `stream`
 (token deltas) → `tool_result` / `permission_request` (a running `task` call also sends
 `task_progress`: `callId`, `agent`, `step`, `tool`, `detail` per sub-agent tool) → `message` → `turn_end` (usage, context
 window/tokens + running cost) → `result` (per command). Side questions use request-id-tagged
@@ -604,7 +620,7 @@ reply data. Most of these also skip the prompt queue.
 
 | group | commands |
 | --- | --- |
-| settings | `set_effort` (`level`), `set_plan` (`on`; → `plan`, `model`, `contextWindow`, `warning` when `roles.plan` is unknown), `set_autocompact` (`value`, 0 = off), `set_statusline` (`template`, null clears), `set_bubble` (`bubble`), `set_animations` (`animations`), `set_ascii` (`ascii`), `set_clipboard` (`clipboard`: auto, osc52 or native) |
+| settings | `set_effort` (`level`: one the current model takes, or `off`; → `effort`, `efforts`; one it does not take is an error naming those it does), `set_plan` (`on`; → `plan`, `model`, `contextWindow`, `warning` when `roles.plan` is unknown), `set_autocompact` (`value`, 0 = off), `set_statusline` (`template`, null clears), `set_bubble` (`bubble`), `set_animations` (`animations`), `set_ascii` (`ascii`), `set_clipboard` (`clipboard`: auto, osc52 or native) |
 | config and trust | `config_show` (→ merged `config`, `sources`, `line`), `trust_status` (→ `root`, `trusted`, `gated`, `line`), `set_trust` (`trusted` → `reload`: restart serve to apply) |
 | permissions | `permissions_list` (→ `allow` with each rule's layer), `permissions_add` / `permissions_remove` (`rule` → `allow`, `path` of the file written), `import` (`source`: claude-code, grok or codex; `path` → `imported`, `skipped`) |
 | directories | `cd` (`dir` → `cwd`, `branch`; `~` expands), `pwd` (→ `cwd`), `cwds` (→ `dirs`, directories used before that still exist), `add_dir` (`dir` → `extraDirs`, `path`) |
@@ -956,7 +972,7 @@ All user state lives in `~/.tango/` (override with `TANGO_HOME`):
 | file                     | purpose                                                                                                                                                  |
 | ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `config.json`            | default model (`/model <id>` writes it); `feishuWebhook` for notify/tasks; `theme`: `dark` (default), `light`, or `auto` from the terminal's background (OSC 11, then `COLORFGBG`) |
-| `models.json`            | extra/overriding model specs, same shape as built-in presets                                                                                             |
+| `models.json`            | extra/overriding model specs, same shape as built-in presets; `efforts` names the reasoning levels `/effort` may take for that model                                    |
 | `tasks.json`             | scheduled tasks (`tango task add`)                                                                                                                       |
 | `AGENTS.md`              | global instructions appended to the system prompt. Project ones are read from cwd up to `/`; an `AGENTS.override.md` replaces the `AGENTS.md` of its own directory |
 | `skills/<name>/SKILL.md` | global skills (project-level: `<cwd>/.tango/skills/`)                                                                                                    |

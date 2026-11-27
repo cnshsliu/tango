@@ -21,6 +21,7 @@ import { rescueLaunchDir } from './core/launch-dir.js';
 import { listDrafts, promoteDraft, saveDraft } from './core/skills.js';
 import { keyEnvName, retryText } from './core/models/util.js';
 import { groupModels } from './core/models/registry.js';
+import { effortsFor } from './core/models/reasoning.js';
 import { SessionStore, shortId, type SessionSummary } from './core/session.js';
 import { resolveConfig, updateLocalConfig, type Resolved } from './core/project-config.js';
 import { suggestRules, type AskFn, type PermissionMode } from './core/permissions.js';
@@ -230,7 +231,10 @@ function printModels(models: ModelSpec[], current?: string): void {
       const source = keyEnvName(m) ?? (m.apiKey ? 'literal key' : 'no key');
       const tag = m.region ? `${m.region} · ` : '';
       const note = hasKey(m) ? `  ${tag}${source}` : `  ${tag}(${keyProblem(m)})`;
-      console.log(`  ${mark} ${m.id}${m.id === current ? cyan('  (current)') : ''}${dim(note)}`);
+      // the reasoning levels /effort takes on this model (they differ per model)
+      const efforts = effortsFor(m);
+      const levels = efforts.length ? ` · effort ${efforts.join('/')}` : '';
+      console.log(`  ${mark} ${m.id}${m.id === current ? cyan('  (current)') : ''}${dim(note + levels)}`);
     }
   }
   console.log(dim(`\nconfig: ${tangoDir()}/config.json · model overrides: ${tangoDir()}/models.json`));

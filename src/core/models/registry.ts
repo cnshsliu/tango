@@ -1006,6 +1006,103 @@ export const presets: ModelSpec[] = [
 const VISION_MODEL = /^(claude-|gemini-|grok-4\.7$|gpt-(?!.*codex)|qwen4-max$)/;
 for (const p of presets) if (VISION_MODEL.test(p.model)) p.vision = true;
 
+/**
+ * Effort levels each preset's endpoint accepts, in models.dev's words, read provider by provider:
+ * the same model behind another provider can take other levels (GLM-5.3: `low high max` on
+ * bigmodel.cn, `none low high max` elsewhere). Checked against the live endpoint where a key was at
+ * hand — Claude Opus 5.5 on api.anthropic.com; GLM-5.4 and GLM-5.3-Flash on bigmodel.cn, from the
+ * docs and by measuring the thinking tokens; gemini-4-carbon on Google's OpenAI-compatible endpoint.
+ * An empty list is a model with no level to choose (a switch, or always thinking). A preset that is
+ * not listed here falls back to its model's name (`effortsFor` in reasoning.ts).
+ */
+const PRESET_EFFORTS: { id: string; efforts: string[] }[] = [
+  { id: 'deepseek/deepseek-flash', efforts: ["low", "high", "max"] },
+  { id: 'deepseek/deepseek-v4-pro', efforts: ["low", "high", "max"] },
+  { id: 'kimi/kimi-k3.1-pro', efforts: ["low", "high", "max"] },
+  { id: 'kimi/kimi-k3.1-pro-highspeed', efforts: ["low", "high", "max"] },
+  { id: 'qwen/qwen3.8-max', efforts: ["low", "medium", "xhigh"] },
+  { id: 'qwen/qwen3.8-flash', efforts: ["low", "medium", "xhigh"] },
+  { id: 'zhipu/glm-5.3', efforts: ["low", "high", "max"] },
+  { id: 'zhipu/glm-5.3-flash', efforts: ["low", "high", "max"] },
+  { id: 'zhipu-plan/glm-5.3', efforts: ["low", "high", "max"] },
+  { id: 'zhipu-plan/glm-5.4', efforts: ["low", "high", "max"] },
+  { id: 'zhipu-plan/glm-5.3-flash', efforts: ["low", "high", "max"] },
+  { id: 'kimi-code/kimi-for-coding', efforts: ["none", "low", "high", "max"] },
+  { id: 'kimi-intl/kimi-k3.1-pro', efforts: ["low", "high", "max"] },
+  { id: 'kimi-intl/kimi-k3.1-pro-highspeed', efforts: ["low", "high", "max"] },
+  { id: 'anthropic/claude-opus-5-5', efforts: ["low", "medium", "high", "xhigh", "max"] },
+  { id: 'anthropic/claude-haiku-5-5', efforts: ["low", "medium", "high", "xhigh", "max"] },
+  { id: 'openai/gpt-6-astra', efforts: ["low", "medium", "high", "xhigh", "max"] },
+  { id: 'openai/gpt-6.1-terra', efforts: ["none", "low", "medium", "high", "xhigh", "max"] },
+  { id: 'google/gemini-4-carbon', efforts: ["none", "low", "medium", "high"] },
+  { id: 'google/gemini-3.8-flash', efforts: ["none", "low", "medium", "high"] },
+  { id: 'xai/grok-4.7', efforts: ["low", "medium", "high", "xhigh"] },
+  { id: 'xai/grok-build-0.1', efforts: [] },
+  { id: 'opencode/claude-fable-5-1', efforts: ["low", "medium", "high", "xhigh", "max"] },
+  { id: 'opencode/claude-haiku-5-5', efforts: ["low", "medium", "high", "xhigh", "max"] },
+  { id: 'opencode/claude-opus-5-5', efforts: ["low", "medium", "high", "xhigh", "max"] },
+  { id: 'opencode/claude-sonnet-5-5', efforts: ["low", "medium", "high", "xhigh", "max"] },
+  { id: 'opencode/deepseek-v4.1-flash', efforts: ["low", "high", "max"] },
+  { id: 'opencode/deepseek-v4-pro', efforts: ["high", "max"] },
+  { id: 'opencode/gemini-3.5-flash-lite', efforts: ["minimal", "low", "medium", "high"] },
+  { id: 'opencode/gemini-3.8-flash', efforts: ["low", "medium", "high"] },
+  { id: 'opencode/gemini-4-argon', efforts: ["low", "medium", "high"] },
+  { id: 'opencode/glm-5.3', efforts: ["low", "high", "max"] },
+  { id: 'opencode/glm-5.3-flash', efforts: ["low", "high", "max"] },
+  { id: 'opencode/gpt-5.3-codex', efforts: ["none", "low", "medium", "high", "xhigh"] },
+  { id: 'opencode/gpt-5.3-codex-spark', efforts: ["low", "medium", "high", "xhigh"] },
+  { id: 'opencode/gpt-5.4-mini', efforts: ["none", "low", "medium", "high", "xhigh"] },
+  { id: 'opencode/gpt-5.4-nano', efforts: ["none", "low", "medium", "high", "xhigh"] },
+  { id: 'opencode/gpt-5.5', efforts: ["none", "low", "medium", "high", "xhigh"] },
+  { id: 'opencode/gpt-5.5-pro', efforts: ["medium", "high", "xhigh"] },
+  { id: 'opencode/gpt-6-astra', efforts: ["low", "medium", "high", "xhigh", "max"] },
+  { id: 'opencode/gpt-6.1-sol', efforts: ["low", "medium", "high", "xhigh", "max"] },
+  { id: 'opencode/gpt-6-luna', efforts: ["none", "low", "medium", "high", "xhigh", "max"] },
+  { id: 'opencode/gpt-5.6-terra', efforts: ["none", "low", "medium", "high", "xhigh", "max"] },
+  { id: 'opencode/grok-4.7', efforts: ["low", "medium", "high", "xhigh"] },
+  { id: 'opencode/grok-build-0.1', efforts: [] },
+  { id: 'opencode/kimi-k2.7-code', efforts: [] },
+  { id: 'opencode/kimi-k3', efforts: ["low", "high", "max"] },
+  { id: 'opencode/minimax-m3', efforts: [] },
+  { id: 'opencode/muse-wonder-1.0', efforts: ["minimal", "low", "medium", "high", "xhigh", "max"] },
+  { id: 'opencode/mistral-large-4', efforts: ["none", "high"] },
+  { id: 'opencode/qwen3.8-flash', efforts: ["low", "medium", "xhigh"] },
+  { id: 'opencode/muse-ember-1.0', efforts: ["minimal", "low", "medium", "high", "xhigh", "max"] },
+  { id: 'opencode/claude-fable-5-2', efforts: ["low", "medium", "high", "xhigh", "max"] },
+  { id: 'opencode/gemini-4-carbon', efforts: ["low", "medium", "high"] },
+  { id: 'opencode/gemini-4-hydrogen', efforts: ["low", "medium", "high", "xhigh"] },
+  { id: 'opencode/gpt-6.2-sol', efforts: ["low", "medium", "high", "xhigh", "max"] },
+  { id: 'opencode/gpt-6.2-astra', efforts: ["low", "medium", "high", "xhigh", "max"] },
+  { id: 'openrouter/particle-ai/particle-1:free', efforts: ["none", "minimal", "low", "medium", "high", "xhigh", "max"] },
+  { id: 'openrouter/nvidia/nemotron-3.5-super-vl:free', efforts: [] },
+  { id: 'openrouter/nvidia/nemotron-3.5-lightning:free', efforts: [] },
+  { id: 'openrouter/nvidia/nemotron-3-ultra-550b-a55b:free', efforts: ["none", "medium", "high"] },
+  { id: 'openrouter/google/gemma-4-26b-a4b-it:free', efforts: [] },
+  { id: 'openrouter/google/gemma-4-31b-it:free', efforts: [] },
+  { id: 'openrouter/liquid/lfm-3-1.7b:free', efforts: [] },
+  { id: 'openrouter/anthropic/claude-opus-5.5', efforts: ["low", "medium", "high", "xhigh", "max"] },
+  { id: 'openrouter/anthropic/claude-sonnet-5.5', efforts: ["low", "medium", "high", "xhigh", "max"] },
+  { id: 'openrouter/anthropic/claude-haiku-5.5', efforts: ["none", "low", "medium", "high", "xhigh", "max"] },
+  { id: 'openrouter/openai/gpt-6-astra', efforts: ["low", "medium", "high", "xhigh", "max"] },
+  { id: 'openrouter/openai/gpt-6.1-terra', efforts: ["none", "low", "medium", "high", "xhigh", "max"] },
+  { id: 'openrouter/openai/gpt-6.2-sol', efforts: ["low", "medium", "high", "xhigh", "max"] },
+  { id: 'openrouter/google/gemini-4-carbon', efforts: ["low", "medium", "high"] },
+  { id: 'openrouter/google/gemini-3.8-flash', efforts: ["low", "medium", "high"] },
+  { id: 'openrouter/x-ai/grok-4.7', efforts: ["low", "medium", "high", "xhigh"] },
+  { id: 'openrouter/moonshotai/kimi-k3.1-pro', efforts: ["none", "low", "high", "max"] },
+  { id: 'openrouter/z-ai/glm-5.3', efforts: ["low", "high", "max"] },
+  { id: 'openrouter/z-ai/glm-5.3-flash', efforts: ["low", "high", "max"] },
+  { id: 'openrouter/qwen/qwen3.8-max-0902', efforts: ["minimal", "low", "medium", "high", "xhigh"] },
+  { id: 'openrouter/qwen/qwen3.8-flash', efforts: [] },
+  { id: 'openrouter/deepseek/deepseek-v4-pro', efforts: ["none", "high", "xhigh"] },
+  { id: 'openrouter/deepseek/deepseek-v4.1-flash', efforts: ["none", "low", "high", "max"] },
+  { id: 'openrouter/minimax/minimax-m3', efforts: [] },
+  { id: 'openrouter/mistralai/mistral-large-4-0', efforts: ["low", "medium", "high"] },];
+for (const p of presets) {
+  const e = PRESET_EFFORTS.find((x) => x.id === p.id);
+  if (e) p.efforts = e.efforts;
+}
+
 /** Source platform (tokenhub) a model is reached through; falls back to provider. */
 export function platformOf(m: ModelSpec): string {
   return m.platform ?? m.provider;

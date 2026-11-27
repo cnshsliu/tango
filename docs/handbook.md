@@ -459,7 +459,7 @@ while a turn is running unless noted. `/help` prints a short list inside the TUI
 | `/mode [confirm\|ask\|auto\|readonly]` | Show or set the permission mode. Bare: a picker with all modes (clicking the mode label in the input box's info row opens it too, the current mode selected; click it again to close, or click the model name to swap to the model picker); switching to auto asks for the risk acknowledgement first |
 | `/auto` | Short for `/mode auto` (完全放行): opens the same risk acknowledgement. Its checkbox row and `启用` button are clickable |
 | `/plan` | Toggle plan mode: writes refused, the model produces a plan |
-| `/effort [low\|medium\|high\|off]` | Show or set reasoning effort for this session |
+| `/effort [档位\|off]` | Show or set how hard the model thinks, for this session. The levels are the model's own: `low high max` on GLM-5.4, `low medium high xhigh max` on Claude Opus 5.5, `none low medium high xhigh max` on GPT-6.1 Terra, none on a switch-only model. Tab lists what the current one takes; bare: the level in use and the choices. `off` sends nothing |
 | `/goal <text>` | Keep working toward a goal. After each turn tango checks whether it's done and continues if not |
 | `/goal off\|pause\|resume` · `/goal max N` | Clear, pause or resume the goal · set the round cap (1–50, default 5). Bare `/goal` shows status |
 | `/loop <interval> <prompt>` | Repeat a prompt on an interval, e.g. `/loop 10m check the build` (minimum 10s) |

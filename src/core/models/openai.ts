@@ -8,6 +8,7 @@ import type {
   Usage
 } from '../types.js';
 import { argsObject, parseArgs, parseEvent, postJson, resolveApiKey, sseLines } from './util.js';
+import { openaiEffort } from './reasoning.js';
 
 /**
  * Map a chat-completions usage object onto Usage. prompt_tokens already includes cached and
@@ -105,8 +106,9 @@ export const openaiAdapter: ModelAdapter = {
     // OpenAI's reasoning models reject max_tokens; other compatible APIs don't all accept the new name.
     const maxKey = /api\.openai\.com/.test(spec.baseUrl) ? 'max_completion_tokens' : 'max_tokens';
     body[maxKey] = req.maxTokens ?? spec.maxTokens ?? 8192;
-    // only reasoning-capable endpoints take the param; others may 400 on it
-    if (req.effort && spec.reasoning !== false) body.reasoning_effort = req.effort;
+    // only reasoning-capable endpoints take the param; others may 400 on it. How it is spelled
+    // differs (OpenRouter nests it; DeepSeek and GLM want the switch set too): reasoning.ts
+    if (req.effort && spec.reasoning !== false) Object.assign(body, openaiEffort(spec.model, spec.baseUrl, req.effort));
     if (typeof spec.thinkingBudget === 'number') body.thinking_budget = spec.thinkingBudget;
     if (req.tools.length) {
       body.tools = req.tools.map((t) => ({
