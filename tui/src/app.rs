@@ -10208,7 +10208,7 @@ impl App {
             }
             if n == 0 {
                 f.render_widget(
-                    Paragraph::new("（空 · /todo <内容> 记一条；模型的 ?choice/?suggest 也收进这里）"),
+                    Paragraph::new("（空 · /todo <内容> 记一条；Tango 的 ?choice/?suggest 也收进这里）"),
                     inner,
                 );
             }
