@@ -358,6 +358,7 @@ export async function serveStdio(args: HostArgs & { readonly?: boolean }): Promi
   );
   agent.events.on('error', ({ error }) => out({ type: 'error', message: error.message }));
   agent.events.on('retry', (info) => out({ type: 'retry', ...info, text: retryText(info) }));
+  agent.events.on('diagnostics', (d) => out({ type: 'diagnostics', ...d }));
 
   const denyPending = () => {
     for (const resolve of pending.values()) resolve(false);
@@ -949,6 +950,11 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
         );
         // language servers for the lsp tool: what runs, and how to get what doesn't
         const { SERVERS, resolveCommand, installCommand } = await import('./core/lsp.js');
+        add(
+          'lsp diagnostics',
+          config.lspDiagnostics !== false,
+          config.lspDiagnostics === false ? 'off (lspDiagnostics: false)' : 'on · after each edit of a file whose server is installed'
+        );
         for (const def of SERVERS) {
           const found = resolveCommand(def, cwd);
           const how = installCommand(def);

@@ -11,6 +11,7 @@ import { Agent } from './core/agent.js';
 import { checkpointEnabled, installCheckpoints } from './core/checkpoint.js';
 import { keyProblem, loadModels, pickModel, sessionsDir, tangoDir } from './core/config.js';
 import { installDiagnostics } from './core/diagnostics.js';
+import { installLspDiagnostics } from './core/lsp-diagnostics.js';
 import { EventBus } from './core/events.js';
 import { mergeHookConfigs, runHooks, type HookConfig, type HookOutcome } from './core/hooks.js';
 import { resolveConfig, type Resolved } from './core/project-config.js';
@@ -252,7 +253,7 @@ function installLifecycleHooks(
   }
 }
 
-type AgentCfg = { checkpoint?: string; permissions?: { allow: string[] }; extraDirs?: string[]; hooks?: { beforeTool?: string; afterTool?: string } & Record<string, unknown>; maxTurns?: number; retries?: number; projectDir?: string; roles?: { subagent?: string }; subAgents?: SubAgentDef[] };
+type AgentCfg = { checkpoint?: string; permissions?: { allow: string[] }; extraDirs?: string[]; hooks?: { beforeTool?: string; afterTool?: string } & Record<string, unknown>; maxTurns?: number; retries?: number; lspDiagnostics?: boolean; projectDir?: string; roles?: { subagent?: string }; subAgents?: SubAgentDef[] };
 
 /** `sub`: a `task` sub-agent — given tools, tool hooks only, no checkpoints (the parent's covers it). */
 export function makeAgent(model: ModelSpec, store: SessionStore, cwd: string, perm: PermState, cfg: AgentCfg = {}, sub?: { tools: ToolRegistry; readonly: boolean }): Agent {
@@ -305,6 +306,7 @@ export function makeAgent(model: ModelSpec, store: SessionStore, cwd: string, pe
     plan: () => plan.on
   });
   installDiagnostics(events, () => agent.cwd); // /cd moves the checker root too
+  installLspDiagnostics(events, () => agent.cwd, () => cfg.lspDiagnostics !== false); // the TUI's /problems
   // hook chains: config first, then every enabled plugin in sorted order
   const beforeChain = [cfg.hooks?.beforeTool, ...(plugins.hooks.beforeTool ?? [])].filter(Boolean) as string[];
   const afterChain = [cfg.hooks?.afterTool, ...(plugins.hooks.afterTool ?? [])].filter(Boolean) as string[];

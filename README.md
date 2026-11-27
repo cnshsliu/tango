@@ -141,7 +141,7 @@ TUI commands: `/model`, `/agents`, `/resume`, `/back`, `/forward`, `/new`, `/res
 `/loop`, `/effort`, `/review`, `/security-review`, `/commit-push`, `/commit-pr`, `/bg`, `/tasks`, `/stop`, `/subagent`,
 `/worktree`, `/mcp`, `/plugins`, `/vim`, `/nvim`, `/editor`, `/multiline`, `/btw`, `/diff`,
 `/focus`, `/density`, `/mouse`, `/animations`, `/ascii`, `/clipboard`, `/theme`, `/compact`, `/autocompact`, `/skill`, `/skills`,
-`/memory`, `/remember`, `/cost`, `/usage`, `/stats`, `/insights`, `/context`, `/queue`,
+`/memory`, `/remember`, `/cost`, `/usage`, `/stats`, `/insights`, `/context`, `/queue`, `/problems`,
 `/timestamps`, `/statusline`, `/preset`, `/permissions`, `/import`, `/cd`, `/pwd`, `/add_dir`,
 `/config`, `/trust`, `/keymap`, `/init`, `/doctor`, `/debug-zip`, `/status`, `/clear`, `/rewind`, `/undo`,
 `/redo`, `/fork`, `/handoff`, `/takeover`, `/branch`, `/tree`, `/find`, `/export`, `/transcript`, `/copy`, `/recap`,
@@ -619,6 +619,10 @@ Other frames: `notice` (a chat-line message such as a skipped config file or goa
 `retry` (`attempt`, `max`, `reason`, `delayMs`, `text`: a model request failed before any output —
 including an `error` event or a stall inside an HTTP 200 stream — and is retried after `delayMs`;
 the TUI prints `text` as a muted line),
+`diagnostics` (`file`, `problems`: what a language server reports for a file tango just edited, while
+`lspDiagnostics` is on and the file's language server is installed — `line`, `col`, `severity`
+error/warning/info/hint, `message`, `code`, `source`; errors first, at most 200; the newest list
+replaces the file's older one and an empty list drops the file),
 `error` (a failed command without a request id; `fatal: true` when serve cannot start),
 `cwd_missing` (`cwd`, `dirs`: the session directory is gone; `dirs` are directories the user
 has used that still exist; the TUI opens a picker, and `/cd` or a typed `/路径` switches), and
@@ -675,7 +679,10 @@ terminals of 24+ rows, a footer shows `~/dir:branch` on the left (refreshed by `
 (`shift+tab mode`, `ctrl+p commands`) on the right when they fit. Both hints are clickable: `shift+tab mode`
 opens the mode picker on the current mode (like clicking the mode label; pressing Shift+Tab itself switches to the next mode), `ctrl+p commands` opens the command palette. The bottom status bar (cost ·
 session · ctx, fitted to the terminal width — on a narrow screen ctx and sess go first, then the
-pinned ▶, while cost and the ❓ badge stay) no longer repeats the model and mode. `ctx` is the input size of the last model request (fresh + cache read + cache write tokens; for
+pinned ▶, while cost and the ❓ badge stay) no longer repeats the model and mode. With `lspDiagnostics` on, the bar also carries a problems
+badge, ` ✗2 ⚠1 /problems ` (errors, warnings; ASCII mode ` !2 w1 `), while a language server reports
+errors or warnings for a file tango edited; it is clickable and opens `/problems`, and on a narrow
+screen only ` ✗2 ` stays. `ctx` is the input size of the last model request (fresh + cache read + cache write tokens; for
 Anthropic-style endpoints taken from `message_start` or, when a gateway sends zeros there, `message_delta`).
 When an endpoint reports no input count at all, ctx shows tango's own estimate of the history instead of 0. Session ids are shown
 short everywhere (status bar, `/send`, handoff/takeover, mail notices, `/tasks`, `tango --sessions`): a uuid's
@@ -703,7 +710,7 @@ the clipboard, Esc closes), never Neovim, whatever `nvimViewer` says; Ctrl+E ins
 item to Neovim. Closing the viewer restores the original chat position. All overlays use the shared `tui/src/dialog.rs` frame:
 rounded complete borders, a themed surface and title background, bottom key hints, and content
 confined to the inner rectangle. A modal dialog (a permission
-prompt, the full-access prompt, a picker, the viewer, `/queue`, `/todo`, the message menu) stands
+prompt, the full-access prompt, a picker, the viewer, `/queue`, `/todo`, `/problems`, the message menu) stands
 on a scrim: the rest of the screen is dimmed behind it — near-black `#0b0c10` under a `#23272f`
 surface in the dark theme, gray `#dfe1e4` under `#fbfbf9` in the light one — so it stands out
 whatever the terminal's own background is. The completion list and the `?choice` panel are not
@@ -744,7 +751,7 @@ one rule: only `/exit` (or `/quit`) or a deliberate double Ctrl+C leaves the ses
 staged: with text in the input it clears the input first; with an empty input it interrupts the
 running turn (as often as you like, it never quits mid-turn); when idle, the first press shows
 "再按一次 Ctrl+C 退出" on the input rule and a second one within 2s quits (any other key cancels);
-Esc closes popups, else does the same (OpenCode-style): with a dialog open (picker, completion list, `/todo`, `/queue`, a `?choice` panel), the first Esc only closes it, even mid-turn, and the next Esc interrupts. `TANGO_BIN` overrides the server binary (e.g. `TANGO_BIN="node bin/tango.js"`
+Esc closes popups, else does the same (OpenCode-style): with a dialog open (picker, completion list, `/todo`, `/queue`, `/problems`, a `?choice` panel), the first Esc only closes it, even mid-turn, and the next Esc interrupts. `TANGO_BIN` overrides the server binary (e.g. `TANGO_BIN="node bin/tango.js"`
 for dev builds). Bare `/model` and `/resume` open centered pickers (`/resume <id or prefix>` switches directly); picking a session kills the
 serve child and respawns it with `TANGO_RESUME`, so both the model context and the visible
 transcript come back. `/new` starts fresh while keeping the current model and permission mode.
@@ -767,6 +774,16 @@ you scroll); click it to jump to that prompt. Ctrl+T opens a transcript with `/`
 and `c` to copy. Tool failures show key output inline; `/focus` hides successful tools and thinking
 but never errors. The status bar includes context tokens/window/percentage with 60%/80% warning
 thresholds. `/diff` opens a read-only working-tree patch (`--staged` and optional paths supported).
+After each successful `write`/`edit` of a file whose language server is installed (the `lsp` tool's:
+`typescript-language-server`, `pyright-langserver`, `rust-analyzer`, `gopls`, `clangd`), tango hands the
+new text to the server and its published diagnostics for that file reach the TUI live:
+` ✗2 ⚠1 /problems ` in the status bar, and `/problems` lists them as `file:line:col  ✗ message`
+(files by name, errors first, info and hints included, ↑↓/wheel to scroll). Enter puts a fix request
+for the row in the input — `请修复 @file#12：message` — and sends nothing; `y` copies the list,
+`x` clears it, Esc closes. An empty list drops its file, a session switch or `/cd` clears everything,
+nothing is installed or asked for, and a language without a server contributes nothing. The model
+keeps getting the project checker's output after an edit, which also covers the files an edit
+breaks elsewhere. `"lspDiagnostics": false` turns the TUI side off.
 `/btw <question>` opens a separate streamed answer without tools or session-history writes.
 Set `theme` in `~/.tango/config.json` to `dark`, `light`, or `auto`; `auto` asks the terminal for
 its background color at startup (OSC 11, with a DA1 query so terminals that don't answer cost no
@@ -1015,6 +1032,7 @@ used as the literal key. Nothing is inferred. `tango --models` shows which varia
 | `autocompact` | compact when context passes this share of the window (default `0.75`); `off` disables | `/autocompact` |
 | `maxTurns` | model round-trips per prompt before tango stops the loop (1-500, default 64); `--max-tool-rounds` overrides it for one run | edit |
 | `redactSecrets` | `false` turns off secret redaction in tool output (default on; see "Secrets in tool output") | edit |
+| `lspDiagnostics` | `false` turns off language-server diagnostics in the TUI: after tango edits a file whose language server is installed, the server's errors and warnings show as ` ✗2 ⚠1 /problems ` in the status bar and in `/problems` (default on; see "TUI") | edit |
 | `retries` | retries for a model request that fails before any output: network errors (reset, refused, DNS, timeout), HTTP 408/409/425/429/5xx/529, and a failure inside an HTTP 200 stream before its first event — an `error` event (overload, rate limit, a gateway's `upstream_error`) or a stream that stays silent (0-10, default 10; `0` turns retrying off). Waits 1s, 2s, 4s, 8s, then 15s each (or the server's `Retry-After`); each retry is announced ("第 1/10 次重试") with the reason; Esc cancels the wait. 401/403/400 are never retried, nor a stream that already started; an `error` event tango cannot classify gets at most 3 retries. A model in `models.json` can set its own `retries` | edit |
 | `warming` | keep prompt caches warm: `true` or `{ "interval": 240, "duration": 1800 }` (see "Session warming") | edit |
 | `statusline` | status bar template with `{model} {mode} {cost} {ctx} {pct} {session} {tokens}` | `/statusline` |

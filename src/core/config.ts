@@ -20,6 +20,8 @@ export interface Config {
   feishuWebhook?: string;
   /** false turns off secret redaction in tool output (default on); see redact.ts */
   redactSecrets?: boolean;
+  /** false turns off language-server diagnostics in the TUI (status-bar count, /problems); default on */
+  lspDiagnostics?: boolean;
   /** TUI palette: fixed dark/light or auto (OSC 11 background query, then COLORFGBG) */
   theme?: 'dark' | 'light' | 'auto';
   /** Mouse capture; false keeps native terminal selection. Missing means true. */

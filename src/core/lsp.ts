@@ -3,13 +3,14 @@
  * Content-Length framing. One server process per (language, project root), started on first use
  * and kept until the tango process exits. Only what the tool needs: initialize, didOpen, and
  * request/response; server→client requests get an empty result so servers never stall on us.
+ * Diagnostics the server publishes are kept per file and handed to `onDiagnostics` (lsp-diagnostics.ts).
  */
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, extname, join } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export interface ServerDef {
   /** language id sent in didOpen */
@@ -157,6 +158,10 @@ export class LspClient {
   private seq = 0;
   private pending = new Map<number, Pending>();
   private opened = new Map<string, number>();
+  /** what the server last published for a file (raw LSP Diagnostics) */
+  private published = new Map<string, any[]>();
+  /** called for every textDocument/publishDiagnostics, with the file path */
+  onDiagnostics?: (file: string, diagnostics: any[]) => void;
   private ready: Promise<void>;
   private stderr = '';
   exited = false;
@@ -164,6 +169,12 @@ export class LspClient {
 
   constructor(readonly def: ServerDef, readonly root: string, cmd: [string, string[]]) {
     this.child = spawn(cmd[0], cmd[1], { cwd: root, stdio: ['pipe', 'pipe', 'pipe'] });
+    // The server is never what keeps tango alive: a one-shot `tango -p` run (or a test process)
+    // exits when its own work is done, and the server follows — its stdin closes. A request in
+    // flight is still answered or timed out: its timer holds the event loop until then.
+    this.child.unref();
+    for (const pipe of [this.child.stdin, this.child.stdout, this.child.stderr])
+      (pipe as unknown as { unref?: () => void } | null)?.unref?.();
     this.child.on('error', (e) => this.fail(new Error(`${def.language} language server: ${e.message}`)));
     this.child.on('exit', (code) => this.fail(new Error(`${def.language} language server exited (${code}): ${this.stderr.slice(-500)}`)));
     this.child.stderr.on('data', (b: Buffer) => (this.stderr = (this.stderr + b.toString()).slice(-4000)));
@@ -219,7 +230,19 @@ export class LspClient {
       this.write({ id: msg.id, result });
       return;
     }
-    if (msg.id === undefined) return; // notifications (diagnostics, progress): not needed
+    if (msg.method === 'textDocument/publishDiagnostics') {
+      const uri: string | undefined = msg.params?.uri;
+      if (uri?.startsWith('file:')) {
+        try {
+          const file = fileURLToPath(uri);
+          const diagnostics: any[] = msg.params.diagnostics ?? [];
+          this.published.set(file, diagnostics);
+          this.onDiagnostics?.(file, diagnostics);
+        } catch {}
+      }
+      return;
+    }
+    if (msg.id === undefined) return; // other notifications (progress): not needed
     const p = this.pending.get(msg.id);
     if (!p) return;
     this.pending.delete(msg.id);
@@ -251,6 +274,9 @@ export class LspClient {
         workspaceFolders: [{ uri: rootUri, name: this.root.split('/').pop() }],
         capabilities: {
           textDocument: {
+            // typescript-language-server publishes nothing unless the client says it takes
+            // diagnostics; tagSupport lets it mark deprecated (1) and unnecessary (2) ones
+            publishDiagnostics: { relatedInformation: true, tagSupport: { valueSet: [1, 2] }, codeDescriptionSupport: true },
             definition: { linkSupport: true },
             references: {},
             hover: { contentFormat: ['markdown', 'plaintext'] },
@@ -280,6 +306,11 @@ export class LspClient {
     }
     this.opened.set(uri, version);
     return uri;
+  }
+
+  /** The diagnostics the server last published for `file`; undefined when it never did. */
+  latestDiagnostics(file: string): any[] | undefined {
+    return this.published.get(file);
   }
 
   async request(method: string, params: unknown, timeoutMs?: number): Promise<any> {

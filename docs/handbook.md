@@ -45,8 +45,8 @@ git diff | tango "review this patch"
 | Run a command | Type `/` and Tab-complete (works while a turn runs too), or open the palette with Ctrl+P |
 | Fill in an argument | After `/mode `, `/effort `, `/model `, `/send ` or `/resume `, press Tab: the first match goes in, each further Tab swaps in the next, Shift+Tab goes back (zsh menu-complete). Typed letters filter first; `/model glm54` finds `zhipu-plan/glm-5.4`. Enter runs what is in the input |
 | Answer a `?choice` panel | ↑↓/click + Enter, or type the option number + Enter. Tab answers in your own words: the input fills with the ask as a lead-in (`关于…，Tango 在等你选择: `) in the conversation's language — only what you write after it is sent; the panel's title uses the same language. Esc collapses the panel |
-| Interrupt the running turn | Esc or Ctrl+C. If a dialog is open (picker, completion list, `/todo`, `/queue`, a `?choice` panel), the first Esc only closes it and the turn keeps running; press Esc again to interrupt. Ctrl+C interrupts right away |
-| Use a dialog with the mouse | Click a key in its bottom hint (`y 允许`, `n 拒绝`, `esc 关闭`, `enter 确认` …): it does what pressing that key does. Every dialog works this way: permission, pickers, viewers, `/queue`, `/todo`, `?choice` |
+| Interrupt the running turn | Esc or Ctrl+C. If a dialog is open (picker, completion list, `/todo`, `/queue`, `/problems`, a `?choice` panel), the first Esc only closes it and the turn keeps running; press Esc again to interrupt. Ctrl+C interrupts right away |
+| Use a dialog with the mouse | Click a key in its bottom hint (`y 允许`, `n 拒绝`, `esc 关闭`, `enter 确认` …): it does what pressing that key does. Every dialog works this way: permission, pickers, viewers, `/queue`, `/todo`, `/problems`, `?choice` |
 | Search earlier prompts | Ctrl+R |
 | Park a half-written draft | Alt+S (press again to restore) |
 | Edit a draft in Neovim | Ctrl+E, or `/nvim` |
@@ -196,6 +196,11 @@ command for your machine (`rustup component add rust-analyzer`, `npm install -g 
 yes and it runs it through a permission dialog that shows the exact command, then carries on with
 the server. Say no and it falls back to grep. `/doctor` shows which servers you have and how to
 get the rest. The first question in a project takes a second or two while the server loads it.
+
+The same servers report to you, not only to the model. After tango edits a file, the server's
+diagnostics for it appear as ` ✗2 ⚠1 /problems ` in the status bar (errors, warnings; click it) and
+in `/problems`, where Enter turns a row into a ready-to-send fix request. Problems in other files
+that the edit caused still come from the project checker, in the tool output the model reads.
 
 ### Long-running commands (dev servers, watchers)
 
@@ -540,6 +545,7 @@ while a turn is running unless noted. `/help` prints a short list inside the TUI
 | `/config` | View the merged config and the files it came from |
 | `/trust [yes\|no]` | Whether this project's hooks, rules and MCP servers apply. Bare: show state and ask |
 | `/doctor` | Check the environment: git, API keys, directories, versions |
+| `/problems` | What the language servers report for the files tango edited in this session: `file:line:col  ✗ message`, files by name, errors first. ↑↓/wheel scroll, Enter puts a fix request for the row in the input (`请修复 @file#12：message`, nothing is sent), `y` copies the list, `x` clears it. While there are errors or warnings the status bar shows ` ✗2 ⚠1 /problems ` — click it to open the list. An empty report drops its file. Needs the file's language server (see "Code navigation"); `"lspDiagnostics": false` turns it off |
 | `/debug-zip` (`/feedback`) | Write a diagnostics zip (webhook redacted) to the working directory |
 
 ### Input and display

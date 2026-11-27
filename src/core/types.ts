@@ -152,6 +152,19 @@ export interface ModelAdapter {
   stream(spec: ModelSpec, req: CompletionRequest): AsyncIterable<StreamEvent>;
 }
 
+/** One problem a language server reports for a file (LSP Diagnostic, 1-based positions). */
+export interface LspProblem {
+  line: number;
+  col: number;
+  severity: 'error' | 'warning' | 'info' | 'hint';
+  /** on one line, at most 400 chars */
+  message: string;
+  /** the server's code, e.g. "TS2322" */
+  code?: string;
+  /** who reported it, e.g. "ts", "rustc" */
+  source?: string;
+}
+
 // ---------- Tools ----------
 
 export interface ToolContext {
@@ -240,6 +253,8 @@ export interface TangoEvents {
   task_done: { id: string; agent: string; description: string; ok: boolean; sessionId: string; costUsd: number; background: boolean };
   /** a model request failed before any output and is about to be retried */
   retry: RetryInfo;
+  /** a language server published what it thinks of a file tango edited (serve sends it to the TUI); `file` is relative to cwd */
+  diagnostics: { file: string; problems: LspProblem[] };
   error: { error: Error };
 }
 

@@ -799,6 +799,10 @@ const SLASH: &[(&str, &str)] = &[
         "/todo [内容]",
         "记一条待办（/todo 买菜），并打开待办列表 · 不带内容只开关列表",
     ),
+    (
+        "/problems",
+        "语言服务器对 tango 改过的文件报告的问题（✗ 错误数也在状态栏）",
+    ),
     ("/clear", "清空屏幕（上下文保留）"),
     ("/compact", "压缩较早的上下文"),
     (
@@ -1251,6 +1255,84 @@ enum TodoAction {
     Reply(usize),  // preload a heuristic question into the input box for answering
     Drop(usize),   // dismiss without acting
     Done(usize),   // a note: tick / untick
+}
+
+/// How bad a language-server problem is; the order is the list's (errors first).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Severity {
+    Error,
+    Warning,
+    Info,
+    Hint,
+}
+
+impl Severity {
+    fn parse(v: Value) -> Self {
+        match v.as_str() {
+            Some("warning") => Severity::Warning,
+            Some("info") => Severity::Info,
+            Some("hint") => Severity::Hint,
+            _ => Severity::Error, // LSP leaves the reading of a missing severity to the client
+        }
+    }
+
+    /// The marker in the list and the status bar (ASCII mode: `!` `w` `i` `-`).
+    fn icon(self, ascii: bool) -> &'static str {
+        match (self, ascii) {
+            (Severity::Error, false) => "✗",
+            (Severity::Error, true) => "!",
+            (Severity::Warning, false) => "⚠",
+            (Severity::Warning, true) => "w",
+            (Severity::Info, false) => "ℹ",
+            (Severity::Info, true) => "i",
+            (Severity::Hint, false) => "·",
+            (Severity::Hint, true) => "-",
+        }
+    }
+
+    fn tone(self) -> Tone {
+        match self {
+            Severity::Error => Tone::Error,
+            Severity::Warning => Tone::Warning,
+            Severity::Info | Severity::Hint => Tone::Muted,
+        }
+    }
+}
+
+/// One problem a language server reports for a file (`diagnostics` frame; positions are 1-based).
+#[derive(Clone, Debug, PartialEq)]
+struct Problem {
+    line: u32,
+    col: u16,
+    severity: Severity,
+    message: String,
+    code: Option<String>,
+    source: Option<String>,
+}
+
+impl Problem {
+    fn from_json(v: &Value) -> Option<Problem> {
+        let message = v["message"].as_str()?.trim();
+        if message.is_empty() {
+            return None;
+        }
+        Some(Problem {
+            line: v["line"].as_u64().unwrap_or(1).max(1) as u32,
+            col: v["col"].as_u64().unwrap_or(1).max(1) as u16,
+            severity: Severity::parse(v["severity"].clone()),
+            message: message.to_string(),
+            code: v["code"].as_str().map(str::to_string),
+            source: v["source"].as_str().map(str::to_string),
+        })
+    }
+}
+
+/// What a language server last reported for one file tango edited: the newest list
+/// replaces the older one, and an empty list drops the file (`/problems` lists them).
+#[derive(Clone, Debug, PartialEq)]
+struct FileProblems {
+    file: String,
+    items: Vec<Problem>,
 }
 
 /// The model asked the user to pick; the panel renders above the input box.
@@ -1796,6 +1878,16 @@ pub struct App {
     todo_dialog: bool,
     /// clickable button rects of the /todo dialog, rebuilt every draw
     todo_buttons: Vec<(Rect, TodoAction)>,
+    /// what language servers last reported per file tango edited, by file name (/problems)
+    problems: Vec<FileProblems>,
+    /// /problems dialog open
+    problems_dialog: bool,
+    /// the /problems dialog's selected row over the whole list (keyboard, wheel)
+    problems_sel: usize,
+    /// clickable rows of the /problems dialog (rect → row), rebuilt every draw
+    problems_rows: Vec<(Rect, usize)>,
+    /// the status bar's problems badge, rebuilt every draw (a click opens /problems)
+    problems_area: Rect,
     /// when the running turn started — drives the elapsed readout and tip rotation
     turn_started: Option<std::time::Instant>,
     /// chars received this turn (text + thinking deltas) — the ↓ readout
@@ -1976,6 +2068,11 @@ impl App {
             notes_home: None,
             todo_dialog: false,
             todo_buttons: Vec::new(),
+            problems: Vec::new(),
+            problems_dialog: false,
+            problems_sel: 0,
+            problems_rows: Vec::new(),
+            problems_area: Rect::default(),
             turn_started: None,
             turn_chars: 0,
             last_output: None,
@@ -2134,6 +2231,11 @@ impl App {
         self.last_visual_total = 0;
         self.unread_rows = 0;
         self.jump_area = Rect::default();
+        // problems belong to the session that edited the files
+        self.problems.clear();
+        self.problems_sel = 0;
+        self.problems_dialog = false;
+        self.problems_rows.clear();
         self.respawn = Some(target);
     }
 
@@ -2689,6 +2791,109 @@ impl App {
         if let Some(TodoKind::Suggest { text }) = self.todos.get(idx).map(|t| t.kind.clone()) {
             self.todos.remove(idx);
             self.submit_text(serve, format!("请执行这条建议：{text}"), vec![]);
+        }
+    }
+
+    /// Every problem on one line: `file:line:col  ✗ message`, files by name, errors first.
+    fn problem_rows(&self) -> Vec<(String, Severity)> {
+        self.problems
+            .iter()
+            .flat_map(|f| {
+                f.items.iter().map(move |p| {
+                    (
+                        format!(
+                            "{}:{}:{}  {} {}",
+                            f.file,
+                            p.line,
+                            p.col,
+                            p.severity.icon(self.ascii),
+                            p.message
+                        ),
+                        p.severity,
+                    )
+                })
+            })
+            .collect()
+    }
+
+    fn problem_count(&self) -> usize {
+        self.problems.iter().map(|f| f.items.len()).sum()
+    }
+
+    /// (errors, warnings) over every file
+    fn problem_counts(&self) -> (usize, usize) {
+        self.problems
+            .iter()
+            .flat_map(|f| f.items.iter())
+            .fold((0, 0), |(e, w), p| match p.severity {
+                Severity::Error => (e + 1, w),
+                Severity::Warning => (e, w + 1),
+                Severity::Info | Severity::Hint => (e, w),
+            })
+    }
+
+    /// The file and problem at row `idx` of the flattened list.
+    fn problem_at(&self, idx: usize) -> Option<(&FileProblems, &Problem)> {
+        let mut i = idx;
+        for f in &self.problems {
+            if i < f.items.len() {
+                return Some((f, &f.items[i]));
+            }
+            i -= f.items.len();
+        }
+        None
+    }
+
+    fn close_problems(&mut self) {
+        self.problems_dialog = false;
+        self.problems_rows.clear();
+    }
+
+    /// /problems dialog keys: ↑↓/j k and 1-9 pick a row, enter puts a fix request for it in
+    /// the input (nothing is sent), y copies the list, x clears it, esc/q closes.
+    fn problems_key(&mut self, k: crossterm::event::KeyEvent) {
+        let n = self.problem_count();
+        let sel = self.problems_sel.min(n.saturating_sub(1));
+        match k.code {
+            KeyCode::Esc | KeyCode::Char('q') => self.close_problems(),
+            KeyCode::Up | KeyCode::Char('k') => self.problems_sel = sel.saturating_sub(1),
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.problems_sel = (sel + 1).min(n.saturating_sub(1))
+            }
+            KeyCode::Char(c @ '1'..='9') => {
+                let i = c as usize - '1' as usize;
+                if i < n {
+                    self.problems_sel = i;
+                }
+            }
+            KeyCode::Enter if n > 0 => {
+                let text = self
+                    .problem_at(sel)
+                    .map(|(f, p)| format!("请修复 @{}#{}：{}", f.file, p.line, p.message));
+                if let Some(text) = text {
+                    self.close_problems();
+                    self.input = text.chars().collect();
+                    self.cursor = self.input.len();
+                }
+            }
+            KeyCode::Char('y') => {
+                let text = self
+                    .problem_rows()
+                    .iter()
+                    .map(|(t, _)| t.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                match self.copy_to_clipboard(&text) {
+                    Ok(()) => self.toast(format!("已复制 {n} 条诊断")),
+                    Err(e) => self.push(format!("复制失败：{e}"), Tone::Error),
+                }
+            }
+            KeyCode::Char('x') => {
+                self.problems.clear();
+                self.problems_sel = 0;
+                self.problems_rows.clear();
+            }
+            _ => {}
         }
     }
 
@@ -4448,6 +4653,14 @@ impl App {
                 let id = serve.command("context", vec![]);
                 self.pending.push((id, Pending::Context));
             }
+            "/problems" => {
+                // the list of what language servers report for the files tango edited
+                self.problems_dialog = !self.problems_dialog;
+                self.problems_sel = 0;
+                if !self.problems_dialog {
+                    self.problems_rows.clear();
+                }
+            }
             "/todo" => {
                 // `/todo <text>` adds a note and shows the whole list; bare toggles it
                 let note = rest.trim();
@@ -6074,6 +6287,32 @@ impl App {
                         }
                         _ => {}
                     }
+                } else if self.problems_dialog {
+                    // the wheel scrolls the /problems list, never the chat behind it
+                    let n = self.problem_count();
+                    match m.kind {
+                        MouseEventKind::ScrollUp => {
+                            self.problems_sel = self.problems_sel.saturating_sub(3)
+                        }
+                        MouseEventKind::ScrollDown => {
+                            self.problems_sel = (self.problems_sel + 3).min(n.saturating_sub(1))
+                        }
+                        MouseEventKind::Down(MouseButton::Left) => {
+                            // a click picks a row; one outside the dialog closes it
+                            let pos = Position::new(m.column, m.row);
+                            let hit = self
+                                .problems_rows
+                                .iter()
+                                .find(|(r, _)| r.contains(pos))
+                                .map(|(_, i)| *i);
+                            if let Some(i) = hit {
+                                self.problems_sel = i;
+                            } else if self.modal_rect.map(|r| !r.contains(pos)).unwrap_or(true) {
+                                self.close_problems();
+                            }
+                        }
+                        _ => {}
+                    }
                 } else {
                     match m.kind {
                         MouseEventKind::ScrollUp => self.scroll_back += 3,
@@ -6083,6 +6322,11 @@ impl App {
                         // release so a drag from anywhere can select text)
                         MouseEventKind::Down(MouseButton::Left) => {
                             let pos = Position::new(m.column, m.row);
+                            // clicking the status-bar problems badge opens /problems
+                            if self.problems_area.width > 0 && self.problems_area.contains(pos) {
+                                self.run_slash("/problems", serve);
+                                return false;
+                            }
                             // clicking the status-bar sess span copies the full id
                             if self.session_id_area.width > 0 && self.session_id_area.contains(pos)
                             {
@@ -6714,6 +6958,11 @@ impl App {
         if self.todo_dialog && !ctrl {
             // modal like /queue: its keys never reach the input box
             self.todo_key(serve, k);
+            return;
+        }
+        if self.problems_dialog && !ctrl {
+            // modal like /todo: its keys never reach the input box
+            self.problems_key(k);
             return;
         }
         // the choices panel navigates only when the input is empty — typing wins
@@ -8783,9 +9032,13 @@ impl App {
                             self.serve_cwd = Some(std::path::PathBuf::from(&cwd));
                             self.serve_branch = d["branch"].as_str().unwrap_or("").to_string();
                             // notes are per directory: switch to the new directory's
-                            self.todos.retain(|t| !matches!(t.kind, TodoKind::Note { .. }));
+                            self.todos
+                                .retain(|t| !matches!(t.kind, TodoKind::Note { .. }));
                             self.notes_loaded = false;
                             self.load_notes();
+                            // problem paths are relative to the directory just left
+                            self.problems.clear();
+                            self.problems_sel = 0;
                             self.push(format!("cwd → {cwd}"), Tone::Success);
                         }
                         (Pending::Cwds, true) => {
@@ -9222,6 +9475,29 @@ impl App {
                 format!("error: {}", v["message"].as_str().unwrap_or("?")),
                 Tone::Error,
             ),
+            // a language server's view of a file tango edited (lsp-diagnostics.ts): the
+            // newest list replaces the file's old one; an empty list drops the file
+            "diagnostics" => {
+                let file = v["file"].as_str().unwrap_or("").trim();
+                if !file.is_empty() {
+                    let mut items: Vec<Problem> = v["problems"]
+                        .as_array()
+                        .map(|a| a.iter().filter_map(Problem::from_json).collect())
+                        .unwrap_or_default();
+                    items.sort_by_key(|p| (p.severity, p.line, p.col));
+                    self.problems.retain(|f| f.file != file);
+                    if !items.is_empty() {
+                        self.problems.push(FileProblems {
+                            file: file.to_string(),
+                            items,
+                        });
+                        self.problems.sort_by(|a, b| a.file.cmp(&b.file));
+                    }
+                    self.problems_sel = self
+                        .problems_sel
+                        .min(self.problem_count().saturating_sub(1));
+                }
+            }
             "cwd_missing" => {
                 let cwd = v["cwd"].as_str().unwrap_or("");
                 let msg = format!(
@@ -9667,6 +9943,25 @@ impl App {
                 x = x.saturating_add(w);
             }
         }
+        self.problems_area = Rect::default();
+        {
+            let mut x = 0u16;
+            for sp in &spans {
+                let w = display_width(sp.content.as_ref()) as u16;
+                if matches!(
+                    sp.content.trim_start().chars().next(),
+                    Some('✗' | '⚠' | '!' | 'w')
+                ) {
+                    self.problems_area = Rect {
+                        x: status_a.x + x,
+                        y: status_a.y,
+                        width: w,
+                        height: 1,
+                    };
+                }
+                x = x.saturating_add(w);
+            }
+        }
         f.render_widget(Paragraph::new(Line::from(spans)), status_a);
 
         if !self.busy {
@@ -10098,6 +10393,62 @@ impl App {
             self.queue_buttons.push((fb2, QueueAction::ClearAll));
         }
 
+        // the /problems dialog: what language servers report for the files tango edited
+        if self.problems_dialog {
+            let rows = self.problem_rows();
+            let h = (rows.len().min(16) as u16 + 3 + HINT_ROWS).min(area.height);
+            let w = 100u16.min(area.width);
+            let pop = Rect {
+                x: (area.width.saturating_sub(w)) / 2,
+                y: (area.height.saturating_sub(h)) / 2,
+                width: w,
+                height: h,
+            };
+            self.modal_rect = Some(pop);
+            let title = format!("诊断 · Problems ({})", rows.len());
+            let inner = dialog_frame(
+                &mut self.hint_buttons,
+                f,
+                pop,
+                &title,
+                "↑↓/滚轮 滚动 · enter 填入输入框 · y 复制 · x 清空 · esc 关闭",
+                self.theme,
+            );
+            self.problems_rows.clear();
+            if rows.is_empty() {
+                let text = "没有诊断 · tango 编辑文件后，语言服务器报告的问题列在这里";
+                f.render_widget(
+                    Paragraph::new(text).style(self.theme.style(Tone::Muted)),
+                    inner,
+                );
+            } else {
+                // the selection is kept in view: the window follows it (no stored offset)
+                let keep = (inner.height as usize).max(1);
+                let sel = self.problems_sel.min(rows.len() - 1);
+                let start = sel.saturating_sub(keep - 1);
+                for (i, (text, severity)) in rows.iter().enumerate().skip(start).take(keep) {
+                    let selected = i == sel;
+                    let tone = if selected {
+                        Tone::Badge
+                    } else {
+                        severity.tone()
+                    };
+                    let head = if selected { "❯ " } else { "  " };
+                    let text = format!(
+                        "{head}{}",
+                        clip_to_width(text, inner.width.saturating_sub(2) as usize)
+                    );
+                    let r = Rect {
+                        x: inner.x,
+                        y: inner.y + (i - start) as u16,
+                        width: inner.width,
+                        height: 1,
+                    };
+                    f.render_widget(Paragraph::new(text).style(self.theme.style(tone)), r);
+                    self.problems_rows.push((r, i));
+                }
+            }
+        }
         // the /todo dialog: every unanswered choice and side suggestion, one row each
         if self.todo_dialog {
             let n = self.todos.len();
@@ -11047,6 +11398,31 @@ impl App {
                 8,
             ));
         }
+        // errors and warnings among the language servers' problems; info and hints are
+        // in /problems only. The badge starts with ✗/⚠ (ASCII: !/w), which is how the
+        // click target and fit_status recognise it
+        let (errors, warnings) = self.problem_counts();
+        if errors + warnings > 0 {
+            let (x, w) = if self.ascii {
+                ("!", "w")
+            } else {
+                ("✗", "⚠")
+            };
+            let mut text = String::new();
+            if errors > 0 {
+                text.push_str(&format!(" {x}{errors}"));
+            }
+            if warnings > 0 {
+                text.push_str(&format!(" {w}{warnings}"));
+            }
+            text.push_str(" /problems ");
+            let tone = if errors > 0 {
+                Tone::Error
+            } else {
+                Tone::Warning
+            };
+            segs.push((Span::styled(text, self.theme.style(tone)), 9));
+        }
         if self.focus {
             segs.push((Span::styled(" focus ", self.theme.style(Tone::Badge)), 4));
         }
@@ -11089,12 +11465,13 @@ impl App {
                 16
             } else if text.starts_with('❓') || text.starts_with('?') {
                 4
-            } else if text
-                .chars()
-                .next()
-                .is_some_and(|c| c == '●')
-                || text == "idle"
-            {
+            } else if matches!(text.chars().next(), Some('✗' | '⚠' | '!' | 'w')) {
+                // the problems badge → its first count alone (never a clipped marker)
+                let head = text.split_whitespace().next().unwrap_or("").to_string();
+                let style = segs[i].0.style;
+                segs[i].0 = Span::styled(format!(" {head} "), style);
+                continue;
+            } else if text.chars().next().is_some_and(|c| c == '●') || text == "idle" {
                 // the work segment (busy dot, or idle):
                 // counter first, then the timer — the dot stays to the last
                 if text == "idle" {
@@ -11533,7 +11910,13 @@ impl App {
     /// Tests read the status bar through it; draw() renders the segments directly.
     #[cfg(test)]
     fn status_segments_text(&mut self) -> String {
-        self.status_spans(200)
+        self.status_segments_text_at(200)
+    }
+
+    /// the same at a given width (the narrow-screen tests)
+    #[cfg(test)]
+    fn status_segments_text_at(&mut self, width: u16) -> String {
+        self.status_spans(width)
             .iter()
             .map(|s| s.content.to_string())
             .collect::<Vec<_>>()
@@ -16217,6 +16600,155 @@ mod tests {
         assert!(app.toast.is_none());
     }
 
+    fn diag_frame(file: &str, line: u64, severity: &str, message: &str) -> Value {
+        json!({"type": "diagnostics", "file": file, "problems": [
+            {"line": line, "col": 3, "severity": severity, "message": message, "code": "2322"}
+        ]})
+    }
+
+    #[test]
+    fn diagnostics_frames_feed_the_problems_list_and_the_status_badge() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        assert!(
+            app.status_segments_text().find('✗').is_none(),
+            "no badge before any diagnostics"
+        );
+        app.frame(diag_frame("src/b.ts", 4, "warning", "unused x"), &mut serve);
+        app.frame(diag_frame("src/a.ts", 12, "error", "bad type"), &mut serve);
+        // the newest list for a file replaces its older one
+        app.frame(diag_frame("src/a.ts", 2, "error", "another"), &mut serve);
+        let status = app.status_segments_text();
+        assert!(status.contains(" ✗1 ⚠1 /problems "), "{status}");
+
+        app.run_slash("/problems", &mut serve);
+        assert!(app.problems_dialog);
+        let rows: Vec<String> = app.problem_rows().into_iter().map(|(t, _)| t).collect();
+        assert_eq!(rows.len(), 2, "files by name");
+        assert!(
+            rows[0].starts_with("src/a.ts:2:3  ✗ another"),
+            "{}",
+            rows[0]
+        );
+        assert!(
+            rows[1].starts_with("src/b.ts:4:3  ⚠ unused x"),
+            "{}",
+            rows[1]
+        );
+
+        // an empty list drops its file; with the last one gone, so is the badge
+        app.frame(
+            json!({"type": "diagnostics", "file": "src/a.ts", "problems": []}),
+            &mut serve,
+        );
+        assert_eq!(app.problem_count(), 1);
+        app.frame(
+            json!({"type": "diagnostics", "file": "src/b.ts", "problems": []}),
+            &mut serve,
+        );
+        assert!(app.problems.is_empty());
+        assert!(!app.status_segments_text().contains('✗'));
+    }
+
+    #[test]
+    fn problems_dialog_enter_fills_a_fix_request_and_esc_only_closes() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.frame(diag_frame("src/a.ts", 12, "error", "bad type"), &mut serve);
+        app.frame(diag_frame("src/b.ts", 3, "error", "second"), &mut serve);
+        app.run_slash("/problems", &mut serve);
+        let key = |app: &mut App, serve: &mut Serve, c: KeyCode| app.key(c.into(), serve);
+        key(&mut app, &mut serve, KeyCode::Down);
+        key(&mut app, &mut serve, KeyCode::Enter);
+        assert!(!app.problems_dialog);
+        let draft: String = app.input.iter().collect();
+        assert_eq!(draft, "请修复 @src/b.ts#3：second");
+        // Esc closes without touching the draft; a closed list ignores its keys
+        app.run_slash("/problems", &mut serve);
+        key(&mut app, &mut serve, KeyCode::Esc);
+        assert!(!app.problems_dialog);
+        key(&mut app, &mut serve, KeyCode::Char('x'));
+        assert_eq!(
+            app.problem_count(),
+            2,
+            "x only clears while the list is open"
+        );
+        app.run_slash("/problems", &mut serve);
+        key(&mut app, &mut serve, KeyCode::Char('x'));
+        assert_eq!(app.problem_count(), 0, "x clears the list while it is open");
+        assert!(!app.status_segments_text().contains('✗'));
+        assert!(serve.sent.is_empty(), "nothing was sent to serve");
+    }
+
+    #[test]
+    fn a_narrow_status_bar_keeps_the_error_count_of_the_problems_badge() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.frame(diag_frame("src/a.ts", 12, "error", "bad type"), &mut serve);
+        app.frame(diag_frame("src/b.ts", 3, "warning", "unused"), &mut serve);
+        // 20 columns cannot hold " ✗1 ⚠1 /problems ": the badge keeps its error count only
+        let narrow = app.status_segments_text_at(20);
+        assert!(narrow.contains(" ✗1 "), "{narrow}");
+        assert!(!narrow.contains("/problems"), "{narrow}");
+        assert!(!narrow.contains('⚠'), "{narrow}");
+        assert_eq!(
+            app.status_segments_text_at(40)
+                .contains(" ✗1 ⚠1 /problems "),
+            true
+        );
+    }
+
+    #[test]
+    fn problems_badge_click_opens_the_list() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.frame(diag_frame("src/a.ts", 12, "error", "bad type"), &mut serve);
+        let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        term.draw(|f| app.draw(f)).unwrap();
+        let area = app.problems_area;
+        assert!(area.width > 0, "the badge is on the status bar");
+        mouse(
+            &mut app,
+            &mut serve,
+            MouseEventKind::Down(MouseButton::Left),
+            area.x + 1,
+            area.y,
+        );
+        assert!(app.problems_dialog);
+        // the dialog is a modal: the screen behind it is dimmed, and its rows are clickable
+        term.draw(|f| app.draw(f)).unwrap();
+        assert!(app.modal_rect.is_some());
+        let screen = term.backend().to_string();
+        assert!(
+            screen.contains("Problems (1)"),
+            "the title counts the problems"
+        );
+        assert!(
+            screen.contains("src/a.ts:12:3"),
+            "the row names file, line and column"
+        );
+        assert!(screen.contains("bad type"), "and the server's message");
+        assert!(
+            screen.contains("enter 填入输入框"),
+            "the hint row names the keys"
+        );
+        assert_eq!(app.problems_rows.len(), 1);
+        let (row_rect, row) = app.problems_rows[0];
+        assert_eq!(row, 0);
+        // the wheel moves the selection instead of scrolling the chat
+        let before = app.scroll_back;
+        mouse(
+            &mut app,
+            &mut serve,
+            MouseEventKind::ScrollDown,
+            row_rect.x + 2,
+            row_rect.y,
+        );
+        assert_eq!(app.problems_sel, 0, "one row: the selection cannot move");
+        assert_eq!(app.scroll_back, before, "the chat behind did not scroll");
+    }
+
     #[test]
     fn retry_frames_show_attempt_progress() {
         let mut app = App::new();
@@ -17890,6 +18422,7 @@ mod tests {
                 assert!(a.popup.is_some());
             }),
             ("queue", |a| a.queue_dialog = true),
+            ("problems", |a| a.problems_dialog = true),
             ("prompt menu", |a| a.prompt_menu = Some(0)),
         ];
         for (name, open) in cases {
@@ -17898,10 +18431,17 @@ mod tests {
             open(&mut app);
             app.busy = true;
             app.key(esc(), &mut serve);
-            assert!(!interrupted(&serve), "{name}: the first Esc must only close the dialog");
             assert!(
-                !app.todo_dialog && app.picker.is_none() && app.popup.is_none()
-                    && !app.queue_dialog && app.prompt_menu.is_none()
+                !interrupted(&serve),
+                "{name}: the first Esc must only close the dialog"
+            );
+            assert!(
+                !app.todo_dialog
+                    && app.picker.is_none()
+                    && app.popup.is_none()
+                    && !app.queue_dialog
+                    && !app.problems_dialog
+                    && app.prompt_menu.is_none()
                     && (app.choices.is_none() || app.choices_collapsed),
                 "{name}: the dialog is still open"
             );
