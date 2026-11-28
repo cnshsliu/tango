@@ -1,0 +1,136 @@
+# Build and release.
+#
+# Every push to main and every pull request runs the checks, then packages the four targets;
+# the packages are kept as workflow artifacts for two weeks (a "dev" build: usable, unannounced).
+#
+# A push of a tag `vX.Y.Z` is the release decision: the same packages then become a GitHub
+# Release with SHA256SUMS, which is what install.sh downloads. Bump the version first (the
+# three places tests/release.test.ts keeps in sync), then `git tag vX.Y.Z && git push origin vX.Y.Z`.
+#
+# Manual run (workflow_dispatch): checks and packages only, no release.
+name: ci
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write # the release job uploads assets
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: check and test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: node scripts/docs-check.mjs
+      - run: npm run test:hooks
+      - run: npm run test:ts
+      - uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tui
+      - run: cargo test --release --locked
+        working-directory: tui
+
+  build:
+    name: package ${{ matrix.platform }}
+    needs: check
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            target: aarch64-apple-darwin
+            platform: darwin-arm64
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            platform: darwin-x64
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            platform: linux-x64
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            platform: linux-arm64
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tui
+          key: ${{ matrix.target }}
+      - run: cargo build --release --locked --target ${{ matrix.target }}
+        working-directory: tui
+      - name: version
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+          else
+            echo "version=dev.$(git rev-parse --short HEAD)" >> "$GITHUB_ENV"
+          fi
+      - name: package
+        run: scripts/package.sh "$version" "${{ matrix.platform }}" out "tui/target/${{ matrix.target }}/release/tango-tui"
+      - name: smoke test the package
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar -xzf "out/tango-$version-${{ matrix.platform }}.tar.gz" -C "$RUNNER_TEMP"
+          pkg="$RUNNER_TEMP/tango-$version-${{ matrix.platform }}"
+          "$pkg/tui/target/release/tango-tui" --version
+          TANGO_HOME="$(mktemp -d)" "$pkg/tui/target/release/tango-tui" doctor | head -n 3
+      - uses: actions/upload-artifact@v7
+        with:
+          name: tango-${{ matrix.platform }}
+          path: out/*.tar.gz
+          retention-days: 14
+
+  release:
+    name: release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: out
+          pattern: tango-*
+          merge-multiple: true
+      - name: checksums
+        run: |
+          cd out
+          sha256sum tango-*.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+      - name: GitHub release
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          gh release create "$GITHUB_REF_NAME" out/tango-*.tar.gz out/SHA256SUMS \
+            --title "tango $version" --generate-notes \
+            --notes "Install: \`curl -fsSL https://raw.githubusercontent.com/cnshsliu/tango/main/install.sh | sh\` — or download the package for your platform below and unpack it (needs Node 20+)."

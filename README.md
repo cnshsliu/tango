@@ -71,6 +71,22 @@ higher tier. Claude Haiku 5.5 steps up above 100K tokens, GPT-6 Astra and GPT-6.
 
 ## Quick start
 
+From a release (macOS on Apple silicon or Intel, Linux on x64 or arm64; Node 20 or newer on the
+PATH):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/cnshsliu/tango/main/install.sh | sh
+```
+
+`install.sh` picks the latest GitHub Release and the package for this machine, checks its
+SHA-256 against the release's `SHA256SUMS`, unpacks it under `~/.tango/releases/` and links
+`tango` (and `tang`) into `~/.local/bin`. `TANGO_VERSION=v0.2.0` installs a given release,
+`TANGO_INSTALL_DIR` another bin directory, `TANGO_HOME` another tango home, `GITHUB_TOKEN` is
+optional for the latest-release lookup; `TANGO_NO_SHA=1` skips the checksum (not recommended).
+Running it again upgrades in place: each version sits in its own directory and the link moves.
+
+From source:
+
 ```sh
 npm install
 npm run dev -- --help
@@ -84,7 +100,20 @@ Install globally (`npm link`) after `npm run build` and `cargo build --release` 
 an interactive launch (`tango`, `-c`, `-r`, `-m`, `-y`, `--readonly`, `--cwd`, `tango tui`)
 opens the TUI in that process, and everything else (prompts, `task`, `serve`, `repl`,
 `--help`, pipes) is exec'd into `node bin/tango.js` with the same arguments, so no idle
-launcher process stays around.
+launcher process stays around. A release package has the same shape: `bin/tango.js`, `dist/`,
+`package.json`, `install.sh`, `VERSION` and `tui/target/release/tango-tui` under one root —
+the launcher finds `bin/tango.js` three levels up from itself.
+
+**Builds and releases.** GitHub Actions (`.github/workflows/ci.yml`) runs the checks on every
+push to main and every pull request — typecheck, docs and hook coverage, the TypeScript and
+Rust tests — and then packages the four targets (`darwin-arm64`, `darwin-x64`, `linux-x64`,
+`linux-arm64`), each smoke-tested by running its own `tango --version` and `tango doctor`.
+The packages are kept as workflow artifacts for two weeks, named `dev.<commit>`. A release is
+a decision, not a push: tag `vX.Y.Z` and the same packages become a GitHub Release with
+`SHA256SUMS` and generated notes — what `install.sh` downloads. The version lives in three
+places (`package.json`, `tui/Cargo.toml`, `src/host.ts`) and `tests/release.test.ts` keeps them
+equal, so bump all three before tagging. `scripts/package.sh <version> <platform> <out-dir>
+[binary]` builds one package by hand from a built tree.
 
 ## CLI
 
