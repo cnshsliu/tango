@@ -1129,7 +1129,8 @@ test('C1+I5: interrupt drops queued prompts (they never reach the model) and rew
   try {
     await s.next();
     s.send({ id: 100, cmd: 'prompt', text: 'slow-A' });
-    await sleep(200);
+    // the count is taken once A's request is in: on a slow start (Windows) it may still be on its way
+    for (let i = 0; i < 100 && mock.requests.length < 1; i++) await sleep(50);
     const requestsBefore = mock.requests.length;
     s.send({ id: 101, cmd: 'prompt', text: 'queued-B' });
     await sleep(150);
@@ -2849,7 +2850,7 @@ test('handoff list/cancel and expiry: queued briefs can be listed, withdrawn, an
 test('project config: plain keys apply at once, a project hook waits for trust, the personal file stays out of git', async () => {
   const mock = await startMock();
   const home = await mkdtemp(join(tmpdir(), 'tango-serve-home-'));
-  const work = realpathSync(await mkdtemp(join(tmpdir(), 'tango-serve-work-')));
+  const work = realpathSync.native(await mkdtemp(join(tmpdir(), 'tango-serve-work-'))); // the long name on Windows too (TEMP may be an 8.3 path)
   await writeFile(join(home, 'models.json'), JSON.stringify([
     { id: 'mock/mock', provider: 'mock', model: 'm', api: 'openai-completions', baseUrl: `http://127.0.0.1:${(mock.server.address() as AddressInfo).port}/v1`, apiKey: 'MOCK_SERVE_KEY', contextWindow: 200 }
   ]));
@@ -2916,7 +2917,7 @@ test('project config: plain keys apply at once, a project hook waits for trust, 
   }
 });
 
-test('serve hooks: /bg and /subtask fire TaskCreated/SubagentStart (exit 2 refuses), TaskCompleted, /cd fires CwdChanged, shutdown fires SessionEnd', async () => {
+test('serve hooks: /bg and /subtask fire TaskCreated/SubagentStart (exit 2 refuses), TaskCompleted, /cd fires CwdChanged, shutdown fires SessionEnd', { skip: process.platform === 'win32' && 'the hook commands are POSIX shell scripts' }, async () => {
   const mock = await startMock();
   const home = await mkdtemp(join(tmpdir(), 'tango-serve-home-'));
   const work = await mkdtemp(join(tmpdir(), 'tango-serve-work-'));
