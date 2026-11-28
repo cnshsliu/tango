@@ -15,8 +15,18 @@
  */
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+// Run directly? `import.meta.url === file://…argv[1]` never holds on Windows (backslashes, drive
+// letter case), which left every one of these scripts doing nothing there: real paths compared.
+const isMain = (() => {
+  try {
+    return realpathSync.native(fileURLToPath(import.meta.url)) === realpathSync.native(process.argv[1]);
+  } catch {
+    return false;
+  }
+})();
 
 const ROOT = process.env.TANGO_PROJECT_DIR || process.cwd();
 const git = (...args) => spawnSync('git', args, { cwd: ROOT, encoding: 'utf8' }).stdout ?? '';
@@ -111,7 +121,7 @@ async function main() {
   return 2;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMain) {
   main().then(
     (code) => (process.exitCode = code),
     (e) => {

@@ -8,9 +8,18 @@
  *   node scripts/docs-check.mjs          → prints gaps, exit 1 when any
  *   node scripts/docs-check.mjs --json   → {gaps:[{kind,name,where}]}
  */
-import { readFileSync, readdirSync } from 'node:fs';
+import { readFileSync, readdirSync, realpathSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+// Run directly? `import.meta.url === file://…argv[1]` never holds on Windows (backslashes, drive
+// letter case), which left every one of these scripts doing nothing there: real paths compared.
+const isMain = (() => {
+  try {
+    return realpathSync.native(fileURLToPath(import.meta.url)) === realpathSync.native(process.argv[1]);
+  } catch {
+    return false;
+  }
+})();
 
 const root = process.env.DOCS_CHECK_ROOT ?? join(dirname(fileURLToPath(import.meta.url)), '..');
 const read = (p) => readFileSync(join(root, p), 'utf8');
@@ -85,7 +94,7 @@ export function gaps() {
   return out;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMain) {
   const found = gaps();
   if (process.argv.includes('--json')) console.log(JSON.stringify({ gaps: found }));
   else if (!found.length) console.log('docs coverage ok');

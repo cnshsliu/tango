@@ -14,6 +14,16 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+// Run directly? `import.meta.url === file://…argv[1]` never holds on Windows (backslashes, drive
+// letter case), which left every one of these scripts doing nothing there: real paths compared.
+const isMain = (() => {
+  try {
+    return realpathSync.native(fileURLToPath(import.meta.url)) === realpathSync.native(process.argv[1]);
+  } catch {
+    return false;
+  }
+})();
 
 const ROOT = realpathSync(process.cwd());
 /** Resolve symlinks (macOS /var → /private/var) so paths compare; a new file → its dir's real path. */
@@ -133,4 +143,4 @@ function main() {
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) main();
+if (isMain) main();
