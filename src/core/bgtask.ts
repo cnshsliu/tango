@@ -6,6 +6,7 @@
  */
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
+import { pathToFileURL } from 'node:url';
 import { createReadStream, createWriteStream, readFileSync } from 'node:fs';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
@@ -146,7 +147,8 @@ export async function startBgTask(args: {
   const cliEntry = resolve(process.argv[1]); // absolute: the child runs with cwd=worktree
   const interp: string[] = [];
   try {
-    interp.push('--import', createRequire(import.meta.url).resolve('tsx'));
+    // a file:// URL, not a path: node reads --import as a URL, and `D:\…` is a scheme there
+    interp.push('--import', pathToFileURL(createRequire(import.meta.url).resolve('tsx')).href);
   } catch {
     /* built bin: plain node runs the compiled output */
   }
