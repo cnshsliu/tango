@@ -973,7 +973,9 @@ with exit 1, a native command's exit code is the command's own, and a command th
 it forwarded (PowerShell reads a redirected stdin itself and hands nothing to the commands inside).
 A killed command takes everything it started with it: the process group here, the process tree on
 Windows. `grep` and `find` need ripgrep there — Windows has no POSIX `grep`, and its `find` searches
-strings.
+strings. Commands npm installed (`tsc`, pyright, the language servers) are run through their package's
+entry script on Windows, a global one from `%APPDATA%\npm`, since Node cannot spawn npm's `.cmd` shims
+without a shell.
 
 ## Background processes
 

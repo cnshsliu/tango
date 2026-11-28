@@ -3,22 +3,25 @@ import { existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import type { EventBus } from './events.js';
 import type { ToolContext } from './types.js';
+import { npmBinCommand } from './npm-bin.js';
 
 /** Per-extension project checkers: marker files to find the project root, then the command to run. */
 const CHECKERS: Record<string, { markers: string[]; run: (root: string) => [string, string[]] | undefined }> = {
   '.ts': {
     markers: ['tsconfig.json'],
-    run: (root) => (existsSync(join(root, 'node_modules/.bin/tsc')) ? [join(root, 'node_modules/.bin/tsc'), ['-p', root, '--noEmit']] : undefined)
+    run: (root) => npmBinCommand(root, 'tsc', ['-p', root, '--noEmit'])
   },
   '.tsx': {
     markers: ['tsconfig.json'],
-    run: (root) => (existsSync(join(root, 'node_modules/.bin/tsc')) ? [join(root, 'node_modules/.bin/tsc'), ['-p', root, '--noEmit']] : undefined)
+    run: (root) => npmBinCommand(root, 'tsc', ['-p', root, '--noEmit'])
   },
   '.py': {
     markers: ['pyproject.toml', 'setup.py', 'requirements.txt'],
     run: (root) => {
       if (existsSync(join(root, '.venv/bin/pyright'))) return [join(root, '.venv/bin/pyright'), ['--outputjson', root]];
-      if (existsSync(join(root, 'node_modules/.bin/pyright'))) return [join(root, 'node_modules/.bin/pyright'), ['--outputjson', root]];
+      // the npm pyright: its shim here, its entry script on Windows (npm-bin.ts)
+      const npm = npmBinCommand(root, 'pyright', ['--outputjson', root]);
+      if (npm) return npm;
       if (existsSync(join(root, '.venv/bin/ruff'))) return [join(root, '.venv/bin/ruff'), ['check', root]];
       return undefined;
     }
@@ -67,7 +70,7 @@ export async function diagnosticsFor(path: string, ctx: ToolContext): Promise<st
   if (!cmd) return ''; // project has no checker installed — stay silent, don't nag
 
   if (ext === '.py' && cmd[0].endsWith('pyright')) {
-    const r = await run(cmd[0], ['--outputjson', root], root, ctx.signal);
+    const r = await run(cmd[0], cmd[1], root, ctx.signal);
     try {
       const diag = JSON.parse(r.out.slice(r.out.indexOf('{'))).diagnostics ?? [];
       const errs = diag.filter((d: any) => d.severity === 'error' && resolve(d.file ?? '') === file);
@@ -82,7 +85,7 @@ export async function diagnosticsFor(path: string, ctx: ToolContext): Promise<st
     const lines = r.out.split('\n').filter((l) => l.includes('error'));
     return r.code === 0 ? '' : clip(lines.join('\n') || r.out);
   }
-  const r = await run(cmd[0], ['-p', root, '--noEmit', '--pretty', 'false'], root, ctx.signal);
+  const r = await run(cmd[0], [...cmd[1], '--pretty', 'false'], root, ctx.signal);
   if (r.code === 0) return '';
   return clip(r.out.split('\n').map((l) => l.replace(/^\.\.\.\//, '').replace(/^.*?\/(?=[\w.\-]+\(\d)/, '')).join('\n') || r.out);
 }

@@ -1,4 +1,6 @@
-import { test } from 'node:test';
+import { test as nodeTest } from 'node:test';
+// Not on Windows: file modes are a POSIX thing: Windows has no chmod, and tango does not pretend otherwise.
+const test = process.platform === 'win32' ? nodeTest.skip : nodeTest;
 import assert from 'node:assert/strict';
 import { chmodSync, statSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';

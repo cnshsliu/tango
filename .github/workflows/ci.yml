@@ -54,7 +54,11 @@ jobs:
     name: check and test (windows, port in progress)
     continue-on-error: true
     runs-on: windows-2025
+    timeout-minutes: 45
     steps:
+      # the runner's git turns LF into CRLF on checkout; tango's files and tests are LF
+      - run: git config --global core.autocrlf false
+      - run: choco install ripgrep --yes --no-progress
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
@@ -63,7 +67,8 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
         continue-on-error: true
-      - run: npm run test:ts
+      # a per-test timeout: a test that hangs on Windows fails in two minutes instead of holding the run
+      - run: node --import tsx --test --test-timeout=120000 "tests/*.test.ts"
         continue-on-error: true
       - uses: dtolnay/rust-toolchain@v1
         with:

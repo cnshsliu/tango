@@ -46,7 +46,7 @@ test('tango doctor prints the /doctor checks and opens no session', { timeout: 6
       assert.match(out, new RegExp(`[✓✗] ${name}\\b`), `a line for ${name}:\n${out}`);
     }
     assert.match(out, /✓ node\s+v\d+\.\d+/);
-    assert.match(out, new RegExp(`✓ sessions dir\\s+${home.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/sessions`), 'the temp home is the one checked');
+    assert.ok(out.includes(`✓ sessions dir  ${join(home, 'sessions')}`), `the temp home is the one checked:\n${out}`);
     // no key value ever reaches the output, only whether one resolves
     assert.ok(!out.includes('a-test-key-that-is-not-real-0000'));
     const sessions = await readdir(join(home, 'sessions')).catch(() => [] as string[]);

@@ -1,4 +1,6 @@
-import { test } from 'node:test';
+import { test as nodeTest } from 'node:test';
+// Not on Windows: it reads `ps` output formats; the Windows path of the same code is covered by tests/shell.test.ts.
+const test = process.platform === 'win32' ? nodeTest.skip : nodeTest;
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { readdirSync } from 'node:fs';

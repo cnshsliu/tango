@@ -1,4 +1,4 @@
-import { isAbsolute, relative, resolve } from 'node:path';
+import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { installCommand, serverFor } from './lsp.js';
 import type { EventBus } from './events.js';
 import { writesWorkspace, type ToolCallBlock } from './types.js';
@@ -117,12 +117,13 @@ export function ruleMatches(rule: AllowRule, call: ToolCallBlock, cwd: string): 
     // segment boundary: src matches src/a.ts, never src-evil/
     let target = resolve(cwd, String(input.path ?? ''));
     let prefix = resolve(cwd, rule.value);
-    if (process.platform === 'darwin') {
-      // macOS filesystems are case-insensitive by default; rules should match like the fs does
+    if (process.platform === 'darwin' || process.platform === 'win32') {
+      // macOS and Windows filesystems are case-insensitive by default; rules should match like the fs does
       target = target.toLowerCase();
       prefix = prefix.toLowerCase();
     }
-    return target === prefix || target.startsWith(prefix + '/');
+    // the platform's separator is the directory boundary (a `\` on Windows)
+    return target === prefix || target.startsWith(prefix + sep);
   }
   // bash: the rule covers the leading command tokens before ; && || |
   if (call.name !== 'bash') return false;
@@ -192,7 +193,7 @@ export function suggestRules(call: ToolCallBlock): string[] {
   if (WRITE_TOOLS.has(name)) {
     const path = String(input.path ?? '').trim();
     if (!path) return [];
-    const dir = path.includes('/') ? path.replace(/\/[^/]*$/, '') : '.';
+    const dir = /[/\\][^/\\]*$/.test(path) ? path.replace(/[/\\][^/\\]*$/, '') : '.';
     return [`path:${dir || '/'}`];
   }
   return [`tool:${name}`];

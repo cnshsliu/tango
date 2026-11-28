@@ -1,4 +1,6 @@
-import { test } from 'node:test';
+import { test as nodeTest } from 'node:test';
+// Not on Windows: the hooks it runs are POSIX shell scripts: they cannot run where tango's shell is PowerShell.
+const test = process.platform === 'win32' ? nodeTest.skip : nodeTest;
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';

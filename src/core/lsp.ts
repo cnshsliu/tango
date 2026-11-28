@@ -11,6 +11,8 @@ import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, extname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { npmBinCommand } from './npm-bin.js';
+import { IS_WINDOWS } from './shell.js';
 
 export interface ServerDef {
   /** language id sent in didOpen */
@@ -134,15 +136,22 @@ export const forgetProbes = () => runs.clear();
 export function resolveCommand(def: ServerDef, root: string): [string, string[]] | undefined {
   for (const [cmd, args] of def.commands) {
     if (cmd.includes('/')) {
-      // look in the root and its ancestors (monorepo node_modules)
+      // look in the root and its ancestors (monorepo node_modules); on Windows the package's
+      // entry script stands in for the .cmd shim npm puts in .bin (npm-bin.ts)
       let dir = root;
       while (true) {
-        if (existsSync(join(dir, cmd))) return [join(dir, cmd), args];
+        const found = npmBinCommand(dir, cmd.split('/').pop()!, args);
+        if (found) return found;
         const parent = dirname(dir);
         if (parent === dir) break;
         dir = parent;
       }
     } else {
+      // a name on PATH; a global npm install is reached through its entry script on Windows
+      if (IS_WINDOWS && process.env.APPDATA) {
+        const global = npmBinCommand(join(process.env.APPDATA, 'npm'), cmd, args);
+        if (global) return global;
+      }
       const found = onPath(cmd);
       if (found && usable(found)) return [found, args];
     }

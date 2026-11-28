@@ -41,9 +41,8 @@ export function shellInvocation(command: string, opts: { sh?: boolean; stdin?: b
       'Bypass',
       '-Command',
       [
-        'chcp.com 65001 > $null',
-        '[Console]::OutputEncoding = [Text.Encoding]::UTF8',
-        '$OutputEncoding = [Text.Encoding]::UTF8',
+        // a process without a console (a hidden one) cannot switch its code page: not fatal
+        'try { chcp.com 65001 > $null; [Console]::OutputEncoding = [Text.Encoding]::UTF8; $OutputEncoding = [Text.Encoding]::UTF8 } catch {}',
         '$ErrorActionPreference = "Stop"',
         '$failed = $false',
         'try {',
