@@ -5,7 +5,30 @@
  */
 import { spawnSync } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
+
+/**
+ * Every file under `root`, relative to it, without `.git` — what `find root -type f` listed
+ * before (Windows' find is a different program: there the list came back empty).
+ */
+function listFiles(root: string, dir: string = root, out: string[] = []): string[] {
+  let entries;
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return out;
+  }
+  for (const e of entries) {
+    const abs = join(dir, e.name);
+    if (e.isDirectory()) {
+      if (e.name === '.git' || e.name === 'node_modules') continue;
+      listFiles(root, abs, out);
+    } else if (e.isFile()) {
+      out.push(relative(root, abs));
+    }
+  }
+  return out;
+}
 import { tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
 import { homedir } from 'node:os';
@@ -182,13 +205,9 @@ export async function restoreSnapshot(cwd: string, target: string, later: string
   // 3. report files on disk that no snapshot knows about (the user's own work) — untouched
   const kept: string[] = [];
   const known = new Set([...targetFiles, ...laterFiles]);
-  const listing = spawnSync('find', [root, '-type', 'f', '-not', '-path', '*/.git/*'], { encoding: 'utf8', timeout: 30_000 });
-  if (listing.status === 0) {
-    for (const abs of listing.stdout.split('\n').filter(Boolean)) {
-      const rel = relative(root, abs);
-      if (!known.has(rel)) kept.push(rel);
-      if (kept.length >= 200) break; // big repos would flood the result frame
-    }
+  for (const rel of listFiles(root)) {
+    if (!known.has(rel)) kept.push(rel);
+    if (kept.length >= 200) break; // big repos would flood the result frame
   }
 
   // 4. gitlink (submodule) entries snapshot as pointers only — surface that
