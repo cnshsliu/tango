@@ -253,7 +253,7 @@ test('installCheckpoints: one snapshot per prompt, before the first write-effect
   const dir = await mkdtemp(join(tmpdir(), 'tango-ckpt-'));
   try {
     const g = (args: string[]) => spawnSync('git', args, { cwd: dir, encoding: 'utf8' });
-    g(['init', '-q']); g(['config', 'user.email', 't@t']); g(['config', 'user.name', 't']);
+    g(['init', '-q', '-b', 'main']); g(['config', 'user.email', 't@t']); g(['config', 'user.name', 't']);
     await writeFile(join(dir, 'seed.txt'), 'seed\n'); g(['add', '.']); g(['commit', '-q', '-m', 'init']);
 
     const store = await SessionStore.create(join(dir, 'sessions'), dir);

@@ -525,7 +525,7 @@ test('serve: timeline/rewind/undo/redo with real git restore', async () => {
   ]));
   // a real git repo so checkpoints produce real snapshots
   const git = (args: string[]) => spawnSync('git', args, { cwd: work, encoding: 'utf8' });
-  git(['init', '-q']); git(['config', 'user.email', 't@t']); git(['config', 'user.name', 't']);
+  git(['init', '-q', '-b', 'main']); git(['config', 'user.email', 't@t']); git(['config', 'user.name', 't']);
   await writeFile(join(work, 'seed.txt'), 'seed\n'); git(['add', '.']); git(['commit', '-q', '-m', 'init']);
 
   // turns: 1 write (v1), 2 write (v2 + leftover), 3 plain (no tools)
@@ -609,7 +609,7 @@ test('serve: fork/branch/tree — independent timelines sharing snapshot objects
     { id: 'mock/mock', provider: 'mock', model: 'mock-model', api: 'openai-completions', baseUrl: `http://127.0.0.1:${(mock.server.address() as AddressInfo).port}/v1`, apiKey: 'MOCK_SERVE_KEY', contextWindow: 200 }
   ]));
   const git = (args: string[]) => spawnSync('git', args, { cwd: work, encoding: 'utf8' });
-  git(['init', '-q']); git(['config', 'user.email', 't@t']); git(['config', 'user.name', 't']);
+  git(['init', '-q', '-b', 'main']); git(['config', 'user.email', 't@t']); git(['config', 'user.name', 't']);
   await writeFile(join(work, 'seed.txt'), 'seed\n'); git(['add', '.']); git(['commit', '-q', '-m', 'init']);
 
   let turnNo = 0;
@@ -779,7 +779,7 @@ test('time-travel fixes: user files between turns survive undo; undo/fork see th
     { id: 'mock/mock', provider: 'mock', model: 'mock-model', api: 'openai-completions', baseUrl: `http://127.0.0.1:${(mock.server.address() as AddressInfo).port}/v1`, apiKey: 'MOCK_SERVE_KEY', contextWindow: 200 }
   ]));
   const git = (args: string[]) => spawnSync('git', args, { cwd: work, encoding: 'utf8' });
-  git(['init', '-q']); git(['config', 'user.email', 't@t']); git(['config', 'user.name', 't']);
+  git(['init', '-q', '-b', 'main']); git(['config', 'user.email', 't@t']); git(['config', 'user.name', 't']);
   await writeFile(join(work, 'seed.txt'), 'seed\n'); git(['add', '.']); git(['commit', '-q', '-m', 'init']);
 
   // request-indexed script: 1 write v1, 2 plain, 3 write v2+junk, 4 plain, 5+ plain
@@ -862,7 +862,7 @@ test('M2+M3: timeline hasSnapshot is per-turn and abandoned turns are marked', a
     { id: 'mock/mock', provider: 'mock', model: 'mock-model', api: 'openai-completions', baseUrl: `http://127.0.0.1:${(mock.server.address() as AddressInfo).port}/v1`, apiKey: 'MOCK_SERVE_KEY', contextWindow: 200 }
   ]));
   const git = (args: string[]) => spawnSync('git', args, { cwd: work, encoding: 'utf8' });
-  git(['init', '-q']); git(['config', 'user.email', 't@t']); git(['config', 'user.name', 't']);
+  git(['init', '-q', '-b', 'main']); git(['config', 'user.email', 't@t']); git(['config', 'user.name', 't']);
   await writeFile(join(work, 'seed.txt'), 'seed\n'); git(['add', '.']); git(['commit', '-q', '-m', 'init']);
 
   // request-indexed: 1 write, 2 plain, 3 plain (turn2 writes, turn3 plain)
@@ -1539,7 +1539,7 @@ test('review/security-review inline the working diff into the prompt', async () 
     { id: 'mock/mock', provider: 'mock', model: 'm', api: 'openai-completions', baseUrl: `http://127.0.0.1:${(mock.server.address() as AddressInfo).port}/v1`, apiKey: 'MOCK_SERVE_KEY', contextWindow: 8000 }
   ]));
   const git = (args: string[]) => spawnSync('git', args, { cwd: work, encoding: 'utf8' });
-  git(['init', '-q']); git(['config', 'user.email', 't@t']); git(['config', 'user.name', 't']);
+  git(['init', '-q', '-b', 'main']); git(['config', 'user.email', 't@t']); git(['config', 'user.name', 't']);
   await writeFile(join(work, 'seed.txt'), 'seed\n'); git(['add', '.']); git(['commit', '-q', '-m', 'i']);
   await writeFile(join(work, 'seed.txt'), 'seed\nREVIEWMARK CHANGE\n');
   mock.setScript(() => SSE({ choices: [{ delta: { content: 'review done' } }] }) + SSE({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 5, completion_tokens: 2 } }) + 'data: [DONE]\n\n');
@@ -1926,7 +1926,7 @@ test('I1: review sees staged changes too', async () => {
     { id: 'mock/mock', provider: 'mock', model: 'm', api: 'openai-completions', baseUrl: `http://127.0.0.1:${(mock.server.address() as AddressInfo).port}/v1`, apiKey: 'MOCK_SERVE_KEY', contextWindow: 8000 }
   ]));
   const git = (args: string[]) => spawnSync('git', args, { cwd: work, encoding: 'utf8' });
-  git(['init', '-q']); git(['config', 'user.email', 't@t']); git(['config', 'user.name', 't']);
+  git(['init', '-q', '-b', 'main']); git(['config', 'user.email', 't@t']); git(['config', 'user.name', 't']);
   await writeFile(join(work, 'seed.txt'), 'seed\n'); git(['add', '.']); git(['commit', '-q', '-m', 'i']);
   await writeFile(join(work, 'seed.txt'), 'seed\nSTAGEDREVIEW\n'); git(['add', 'seed.txt']); // staged only, worktree clean
   mock.setScript(() => SSE({ choices: [{ delta: { content: 'reviewed' } }] }) + SSE({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 5, completion_tokens: 2 } }) + 'data: [DONE]\n\n');
@@ -1954,7 +1954,7 @@ test('worktree: create/list/merge/remove with safety gates', async () => {
   ]));
   mock.setScript(() => SSE({ choices: [{ delta: { content: 'ok' } }] }) + SSE({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1 } }) + 'data: [DONE]\n\n');
   const git = (args: string[]) => spawnSync('git', args, { cwd: work, encoding: 'utf8' });
-  git(['init', '-q']); git(['config', 'user.email', 't@t']); git(['config', 'user.name', 't']);
+  git(['init', '-q', '-b', 'main']); git(['config', 'user.email', 't@t']); git(['config', 'user.name', 't']);
   await writeFile(join(work, 'seed.txt'), 'seed\n'); git(['add', '.']); git(['commit', '-q', '-m', 'i']);
 
   const s = await startServe(home, work, 0);
@@ -2012,7 +2012,7 @@ test('bg/tasks/stop: real child runs in a worktree, session resumable', async ()
   ]));
   mock.setScript(() => SSE({ choices: [{ delta: { content: 'BGDONE-' + Date.now() } }] }) + SSE({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 10, completion_tokens: 5 } }) + 'data: [DONE]\n\n');
   const git = (args: string[]) => spawnSync('git', args, { cwd: work, encoding: 'utf8' });
-  git(['init', '-q']); git(['config', 'user.email', 't@t']); git(['config', 'user.name', 't']);
+  git(['init', '-q', '-b', 'main']); git(['config', 'user.email', 't@t']); git(['config', 'user.name', 't']);
   await writeFile(join(work, 'seed.txt'), 'seed\n'); git(['add', '.']); git(['commit', '-q', '-m', 'i']);
 
   const s = await startServe(home, work, 0);
@@ -2055,7 +2055,7 @@ test('roles: /agents set routes bg tasks to the subagent model', async () => {
   ]));
   mock.setScript(() => SSE({ choices: [{ delta: { content: 'ok' } }] }) + SSE({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1 } }) + 'data: [DONE]\n\n');
   const git = (args: string[]) => spawnSync('git', args, { cwd: work, encoding: 'utf8' });
-  git(['init', '-q']); git(['config', 'user.email', 't@t']); git(['config', 'user.name', 't']);
+  git(['init', '-q', '-b', 'main']); git(['config', 'user.email', 't@t']); git(['config', 'user.name', 't']);
   await writeFile(join(work, 'seed.txt'), 'seed\n'); git(['add', '.']); git(['commit', '-q', '-m', 'i']);
 
   const s = await startServe(home, work, 0);
@@ -2100,7 +2100,7 @@ test('subtask: runs in a worktree and writes its summary back to the main sessio
   ]));
   mock.setScript(() => SSE({ choices: [{ delta: { content: '子任务完成：实现了 X 和 Y。SUBTASKMARK' } }] }) + SSE({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 5, completion_tokens: 5 } }) + 'data: [DONE]\n\n');
   const git = (args: string[]) => spawnSync('git', args, { cwd: work, encoding: 'utf8' });
-  git(['init', '-q']); git(['config', 'user.email', 't@t']); git(['config', 'user.name', 't']);
+  git(['init', '-q', '-b', 'main']); git(['config', 'user.email', 't@t']); git(['config', 'user.name', 't']);
   await writeFile(join(work, 'seed.txt'), 'seed\n'); git(['add', '.']); git(['commit', '-q', '-m', 'i']);
 
   const s = await startServe(home, work, 0);
@@ -2142,7 +2142,7 @@ test('subagent: finishing mid-turn shows the notice at once, writes the session 
   // the subagent's request answers at once; the main session's prompt is held for 8s
   mock.setScript(() => (mock.requests.at(-1)?.messages?.some((m: any) => JSON.stringify(m).includes('慢回合')) ? 'DELAY:8000:' + reply('主回合结束') : reply('MIDTURNMARK')));
   const git = (args: string[]) => spawnSync('git', args, { cwd: work, encoding: 'utf8' });
-  git(['init', '-q']); git(['config', 'user.email', 't@t']); git(['config', 'user.name', 't']);
+  git(['init', '-q', '-b', 'main']); git(['config', 'user.email', 't@t']); git(['config', 'user.name', 't']);
   await writeFile(join(work, 'seed.txt'), 'seed\n'); git(['add', '.']); git(['commit', '-q', '-m', 'i']);
 
   const s = await startServe(home, work, 0);
@@ -2287,7 +2287,7 @@ test('T4: conflicted worktree merge aborts cleanly; /stop keeps done status', as
   ]));
   mock.setScript(() => SSE({ choices: [{ delta: { content: 'ok' } }] }) + SSE({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1 } }) + 'data: [DONE]\n\n');
   const git = (args: string[]) => spawnSync('git', args, { cwd: work, encoding: 'utf8' });
-  git(['init', '-q']); git(['config', 'user.email', 't@t']); git(['config', 'user.name', 't']);
+  git(['init', '-q', '-b', 'main']); git(['config', 'user.email', 't@t']); git(['config', 'user.name', 't']);
   await writeFile(join(work, 'f.txt'), 'base\n'); git(['add', '.']); git(['commit', '-q', '-m', 'i']);
 
   const s = await startServe(home, work, 0);
@@ -2434,7 +2434,7 @@ test('A: a user file created BETWEEN two dropped turns survives the rewind', asy
     return SSE({ choices: [{ delta: { content: 'done' } }] }) + SSE({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 5, completion_tokens: 2 } }) + 'data: [DONE]\n\n';
   });
   const git = (args: string[]) => spawnSync('git', args, { cwd: work, encoding: 'utf8' });
-  git(['init', '-q']); git(['config', 'user.email', 't@t']); git(['config', 'user.name', 't']);
+  git(['init', '-q', '-b', 'main']); git(['config', 'user.email', 't@t']); git(['config', 'user.name', 't']);
   await writeFile(join(work, 'seed.txt'), 'seed\n'); git(['add', '.']); git(['commit', '-q', '-m', 'i']);
 
   const s = await startServe(home, work, 0);
@@ -2845,7 +2845,7 @@ test('project config: plain keys apply at once, a project hook waits for trust, 
     { id: 'mock/mock', provider: 'mock', model: 'm', api: 'openai-completions', baseUrl: `http://127.0.0.1:${(mock.server.address() as AddressInfo).port}/v1`, apiKey: 'MOCK_SERVE_KEY', contextWindow: 200 }
   ]));
   mock.setScript(() => SSE({ choices: [{ delta: { content: 'ok' } }] }) + SSE({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1 } }) + 'data: [DONE]\n\n');
-  spawnSync('git', ['init', '-q'], { cwd: work });
+  spawnSync('git', ['init', '-q', '-b', 'main'], { cwd: work });
   await mkdir(join(work, '.tango'));
   await writeFile(join(work, '.tango', 'config.json'), JSON.stringify({
     statusline: 'proj {model}',
@@ -2927,7 +2927,7 @@ test('serve hooks: /bg and /subtask fire TaskCreated/SubagentStart (exit 2 refus
   }));
   mock.setScript(() => SSE({ choices: [{ delta: { content: 'ok' } }] }) + SSE({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1 } }) + 'data: [DONE]\n\n');
   const git = (args: string[]) => spawnSync('git', args, { cwd: work, encoding: 'utf8' });
-  git(['init', '-q']); git(['config', 'user.email', 't@t']); git(['config', 'user.name', 't']);
+  git(['init', '-q', '-b', 'main']); git(['config', 'user.email', 't@t']); git(['config', 'user.name', 't']);
   await writeFile(join(work, 'seed.txt'), 'seed\n'); git(['add', '.']); git(['commit', '-q', '-m', 'i']);
   const events = async () => (existsSync(log) ? (await readFile(log, 'utf8')).split('\n').filter((l) => l.trim()).map((l) => JSON.parse(l)) : []);
 

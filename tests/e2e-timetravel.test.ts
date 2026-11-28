@@ -68,7 +68,7 @@ async function startServe(home: string, cwd: string) {
 async function freshRepo(): Promise<string> {
   const repo = await mkdtemp(join(tmpdir(), 'tango-e2e-'));
   const g = (args: string[]) => spawnSync('git', args, { cwd: repo, encoding: 'utf8' });
-  g(['init', '-q']); g(['config', 'user.email', 't@t']); g(['config', 'user.name', 't']);
+  g(['init', '-q', '-b', 'main']); g(['config', 'user.email', 't@t']); g(['config', 'user.name', 't']);
   await writeFile(join(repo, 'seed.txt'), 'seed\n'); g(['add', '.']); g(['commit', '-q', '-m', 'init']);
   return repo;
 }

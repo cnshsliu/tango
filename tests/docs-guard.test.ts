@@ -42,7 +42,7 @@ test('docs guard end to end: the turn baseline separates this turn from earlier 
   const hook = (ev: object) =>
     spawnSync(process.execPath, [GUARD], { cwd: repo, input: JSON.stringify(ev), encoding: 'utf8', env: { ...process.env, TANGO_PROJECT_DIR: repo } });
   try {
-    sh('init', '-q');
+    sh('init', '-q', '-b', 'main');
     sh('config', 'user.email', 't@t');
     sh('config', 'user.name', 't');
     await mkdir(join(repo, 'scripts'));

@@ -17,7 +17,7 @@ const { sessionsDir } = await import('../src/core/config.js');
 
 const sh = (cwd: string, ...args: string[]) => spawnSync('git', args, { cwd, encoding: 'utf8' });
 const repo = await mkdtemp(join(tmpdir(), 'tango-repo-'));
-sh(repo, 'init', '-q');
+sh(repo, 'init', '-q', '-b', 'main');
 sh(repo, 'config', 'user.email', 'tango@test');
 sh(repo, 'config', 'user.name', 'tango');
 await writeFile(join(repo, 'a.txt'), 'a\n');

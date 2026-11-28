@@ -59,7 +59,7 @@ test('hook-guard PostToolUse: unrelated files and covered events pass', async ()
 test('hook-guard Stop: dirty hook code that lacks coverage sends the model back', async () => {
   const root = await fakeRepo(['Stop'], []);
   try {
-    spawnSync('git', ['init', '-q'], { cwd: root });
+    spawnSync('git', ['init', '-q', '-b', 'main'], { cwd: root });
     const r = guard(root, { hook_event_name: 'Stop', cwd: root, stop_hook_active: false });
     assert.equal(r.status, 2);
     assert.match(r.stderr, /without an end-to-end test: Stop/);

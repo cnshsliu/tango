@@ -13,7 +13,7 @@ const sh = (cwd: string, ...args: string[]) => spawnSync('git', args, { cwd, enc
 async function world(files: { global?: object; project?: object; local?: object } = {}) {
   const home = realpathSync(await mkdtemp(join(tmpdir(), 'tango-pc-home-')));
   const repo = realpathSync(await mkdtemp(join(tmpdir(), 'tango-pc-repo-')));
-  sh(repo, 'init', '-q');
+  sh(repo, 'init', '-q', '-b', 'main');
   const prev = process.env.TANGO_HOME;
   process.env.TANGO_HOME = home;
   if (files.global) await writeFile(join(home, 'config.json'), JSON.stringify(files.global));

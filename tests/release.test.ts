@@ -32,7 +32,7 @@ test('the install script reads a tag_name from the releases/latest JSON and tole
   // the sed that pulls the tag out of the API's JSON, taken from install.sh itself
   const line = readFileSync(join(REPO, 'install.sh'), 'utf8').split('\n').find((l) => l.includes("sed -n 's/.*\"tag_name\""))!;
   const sed = line.slice(line.indexOf('sed -n')).replace(/ \| head.*$/, '').trim();
-  const extract = (json: string) => spawnSync('sh', ['-c', `sed | ${sed}`], { input: json, encoding: 'utf8' }).stdout.trim();
+  const extract = (json: string) => spawnSync('sh', ['-c', sed], { input: json, encoding: 'utf8' }).stdout.trim();
   assert.equal(extract('{"tag_name":"v0.2.0","name":"tango 0.2.0"}'), 'v0.2.0');
   assert.equal(extract('{\n  "tag_name": "v1.2.3",\n  "assets": []\n}'), 'v1.2.3', 'pretty-printed JSON too');
   assert.equal(extract('{"tag_name":"0.4.0"}'), 'v0.4.0', 'a tag without the v still yields one');

@@ -11,7 +11,7 @@ import { takeSnapshot, snapshotFileList, restoreSnapshot } from '../src/core/git
 async function freshRepo(): Promise<string> {
   const repo = await mkdtemp(join(tmpdir(), 'tango-snap-'));
   const git = (args: string[]) => spawnSync('git', args, { cwd: repo, encoding: 'utf8' });
-  git(['init', '-q']);
+  git(['init', '-q', '-b', 'main']);
   git(['config', 'user.email', 't@tango.dev']);
   git(['config', 'user.name', 'tango test']);
   await writeFile(join(repo, 'tracked.txt'), 'v1\n');

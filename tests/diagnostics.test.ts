@@ -69,7 +69,7 @@ test('no checker installed → silent, no nagging', async () => {
 test('diff tool: summary, per-file hunks, clean repo', async () => {
   const repo = await mkdtemp(join(tmpdir(), 'tango-git-'));
   const git = (...a: string[]) => spawnSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...a], { cwd: repo, encoding: 'utf8' });
-  git('init', '-q');
+  git('init', '-q', '-b', 'main');
   await writeFile(join(repo, 'a.ts'), 'one\n');
   git('add', '-A');
   git('commit', '-qm', 'x');
