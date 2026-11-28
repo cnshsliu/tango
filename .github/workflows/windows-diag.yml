@@ -17,6 +17,10 @@ on:
         description: Per-test timeout in milliseconds
         required: false
         default: '20000'
+      name:
+        description: 'Only tests whose name matches this pattern; empty runs the whole file'
+        required: false
+        default: ''
       ps:
         description: PowerShell executable to force (e.g. powershell.exe for 5.1; empty picks pwsh when installed)
         required: false
@@ -38,4 +42,12 @@ jobs:
       - name: run
         env:
           TANGO_POWERSHELL: ${{ inputs.ps }}
-        run: node --import tsx --test --test-timeout=${{ inputs.timeout }} ${{ inputs.file == '' && '"tests/*.test.ts"' || format('"tests/{0}.test.ts"', inputs.file) }}
+          DIAG_FILE: ${{ inputs.file }}
+          DIAG_NAME: ${{ inputs.name }}
+          DIAG_TIMEOUT: ${{ inputs.timeout }}
+        shell: pwsh
+        run: |
+          $a = @('--import', 'tsx', '--test', "--test-timeout=$env:DIAG_TIMEOUT")
+          if ($env:DIAG_NAME) { $a += "--test-name-pattern=`"$($env:DIAG_NAME)`"" }
+          $a += if ($env:DIAG_FILE) { "tests/$($env:DIAG_FILE).test.ts" } else { "tests/*.test.ts" }
+          node @a

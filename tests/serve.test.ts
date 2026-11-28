@@ -2035,7 +2035,7 @@ test('bg/tasks/stop: real child runs in a worktree, session resumable', async ()
     }
     if (!done) {
       // the child's own log says why it stopped: keep the tail with the failure
-      const logs = join(home, 'logs');
+      const logs = join(home, 'bg-logs');
       const tail = existsSync(logs)
         ? readdirSync(logs).map((f) => readFileSync(join(logs, f), 'utf8')).join('').slice(-800)
         : '(no logs dir)';
