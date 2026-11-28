@@ -391,13 +391,14 @@ mod tests {
     #[test]
     fn kitty_keys_push_disambiguate_and_pop_only_when_supported() {
         let mut out = Vec::new();
-        if kitty_keys(&mut out, true, true).is_ok() {
-            kitty_keys(&mut out, true, false).unwrap();
-            assert_eq!(String::from_utf8(out).unwrap(), "\x1b[>1u\x1b[<1u");
-        } else {
-            // without a VT console (the test harness on Windows) the sequence cannot be written
-            assert!(out.is_empty() && cfg!(windows));
+        kitty_keys(&mut out, true, true).unwrap();
+        kitty_keys(&mut out, true, false).unwrap();
+        // without a VT console (the test harness on Windows) the legacy backend cannot write
+        // the sequences: that is the "goes without" case, not a failure
+        if cfg!(windows) && out.is_empty() {
+            return;
         }
+        assert_eq!(String::from_utf8(out).unwrap(), "\x1b[>1u\x1b[<1u");
         let mut none = Vec::new();
         kitty_keys(&mut none, false, true).unwrap();
         kitty_keys(&mut none, false, false).unwrap();
