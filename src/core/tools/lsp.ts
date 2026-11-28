@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import type { Tool } from '../types.js';
 import { spawn } from 'node:child_process';
 import { clientFor, forgetProbes, installCommand, searchDirs, serverFor, type LspClient } from '../lsp.js';
-import { PATH_SEP, killProcessTree, shellInvocation } from '../shell.js';
+import { DETACHED, PATH_SEP, killProcessTree, shellInvocation } from '../shell.js';
 import { error, text, truncate } from './registry.js';
 
 const OPS = ['install', 'definition', 'references', 'hover', 'symbols', 'workspace_symbols', 'implementation', 'incoming_calls', 'outgoing_calls'] as const;
@@ -173,7 +173,7 @@ async function install(file: string, signal: AbortSignal) {
     // the installer itself may live in a toolchain dir that PATH lacks (rustup in ~/.cargo/bin)
     const env = { ...process.env, PATH: searchDirs().join(PATH_SEP) };
     const shell = shellInvocation(cmd);
-    const child = spawn(shell.file, shell.args, { stdio: ['ignore', 'pipe', 'pipe'], detached: true, windowsHide: true, env });
+    const child = spawn(shell.file, shell.args, { stdio: ['ignore', 'pipe', 'pipe'], detached: DETACHED, windowsHide: true, env });
     let out = '';
     child.stdout.on('data', (b: Buffer) => (out = (out + b.toString()).slice(-6000)));
     child.stderr.on('data', (b: Buffer) => (out = (out + b.toString()).slice(-6000)));

@@ -12,7 +12,7 @@ import { join, resolve } from 'node:path';
 import { tangoDir } from './config.js';
 import { worktreeCreate, worktreeRemove, type WorktreeEntry } from './worktrees.js';
 import { processCommandLine } from './liveness.js';
-import { killProcessTree } from './shell.js';
+import { DETACHED, killProcessTree } from './shell.js';
 
 export interface BgTask {
   id: string;
@@ -160,7 +160,7 @@ export async function startBgTask(args: {
   const childCommand = `${process.execPath} serve --cwd ${entry.path}`; // identity for kill validation
   const child = spawn(process.execPath, [...interp, cliEntry, 'serve', '-m', model, '--cwd', entry.path], {
     cwd: args.mainCwd,
-    detached: true, // survives the parent serve; reaped via pid checks
+    detached: DETACHED, // survives the parent serve; reaped via pid checks
     windowsHide: true,
     stdio: ['pipe', 'pipe', 'pipe'],
     env

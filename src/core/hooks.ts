@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { hookStdin, killProcessTree, shellInvocation } from './shell.js';
+import { DETACHED, hookStdin, killProcessTree, shellInvocation } from './shell.js';
 /**
  * Lifecycle hooks (Claude Code / grok-cli style). Config:
  *   "hooks": { "PreToolUse": [{ "matcher": "bash|edit", "command": "./check.sh", "timeout": 10 }] }
@@ -125,7 +125,7 @@ function runOne(cmd: HookCommand, payload: unknown, cwd: string, env: NodeJS.Pro
     // would hold the stderr pipe open and stall the turn until it exits on its own)
     const sh = shellInvocation(cmd.command, { sh: true, stdin: true }); // the payload JSON is the command's stdin
     const stdin = hookStdin(JSON.stringify(payload));
-    const child = spawn(sh.file, sh.args, { cwd, env: { ...env, ...stdin.env }, stdio: ['pipe', 'pipe', 'pipe'], detached: true, windowsHide: true });
+    const child = spawn(sh.file, sh.args, { cwd, env: { ...env, ...stdin.env }, stdio: ['pipe', 'pipe', 'pipe'], detached: DETACHED, windowsHide: true });
     let stderr = '';
     let stdout = '';
     let settled = false;

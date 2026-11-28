@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import type { Tool } from '../types.js';
 import { describe, startProcess, startup, tail } from '../processes.js';
-import { IS_WINDOWS, killProcessTree, shellInvocation } from '../shell.js';
+import { DETACHED, IS_WINDOWS, killProcessTree, shellInvocation } from '../shell.js';
 
 /** What the model writes commands for: PowerShell on Windows, a login bash elsewhere. */
 const SHELL_NAME = IS_WINDOWS ? 'PowerShell' : 'bash, a login shell';
@@ -50,7 +50,7 @@ export const bashTool: Tool<{ command: string; timeout?: number; background?: bo
         cwd: ctx.cwd,
         env: process.env,
         stdio: ['ignore', 'pipe', 'pipe'],
-        detached: true,
+        detached: DETACHED,
         windowsHide: true
       });
       const killGroup = () => killProcessTree(child.pid);

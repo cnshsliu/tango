@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import { killProcessTree, shellInvocation } from './shell.js';
+import { DETACHED, killProcessTree, shellInvocation } from './shell.js';
 
 /**
  * Background shell processes started by `bash` with background: true.
@@ -69,7 +69,7 @@ export function startProcess(command: string, cwd: string): BgProcess {
     cwd,
     env: process.env,
     stdio: ['ignore', 'pipe', 'pipe'],
-    detached: true,
+    detached: DETACHED,
     windowsHide: true
   });
   const id = `p${++seq}`;

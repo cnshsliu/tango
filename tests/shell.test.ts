@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { IS_WINDOWS, PATH_SEP, hookStdin, killProcessTree, shellInvocation } from '../src/core/shell.js';
+import { DETACHED, IS_WINDOWS, PATH_SEP, hookStdin, killProcessTree, shellInvocation } from '../src/core/shell.js';
 import { processCommandLine, processStarts } from '../src/core/liveness.js';
 import { decide, suggestRules } from '../src/core/permissions.js';
 import { grepTool } from '../src/core/tools/search.js';
@@ -18,7 +18,7 @@ function runShell(command: string, opts: { stdin?: string; sh?: boolean; detache
     const child = spawn(sh.file, sh.args, {
       stdio: [opts.stdin !== undefined ? 'pipe' : 'ignore', 'pipe', 'pipe'],
       windowsHide: true,
-      detached: opts.detached ?? false,
+      detached: opts.detached ? DETACHED : false,
       env: stdin ? { ...process.env, ...stdin.env } : process.env
     });
     let out = '';
@@ -74,7 +74,7 @@ test('a stdin-reading command gets its input in every shell (how hooks receive t
 test('killProcessTree ends a shell command and what it started', { timeout: 60_000 }, async () => {
   // the shell, node, and a child node that would run for a minute
   const sh = shellInvocation(`node -e "require('child_process').spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], { stdio: 'inherit'}); setTimeout(() => {}, 60000)"`);
-  const child = spawn(sh.file, sh.args, { stdio: ['ignore', 'pipe', 'pipe'], detached: true, windowsHide: true });
+  const child = spawn(sh.file, sh.args, { stdio: ['ignore', 'pipe', 'pipe'], detached: DETACHED, windowsHide: true });
   // listened for before the kill: the exit may be reported while taskkill still runs
   const exited = new Promise<number | null>((done) => child.once('close', done));
   child.on('error', (e) => assert.fail(String(e.message)));

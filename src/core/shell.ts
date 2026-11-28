@@ -23,6 +23,13 @@ import type { Writable } from 'node:stream';
 
 export const IS_WINDOWS = process.platform === 'win32';
 
+/**
+ * Whether a shell child is spawned detached — a process group leader on macOS and Linux, so a
+ * kill reaches its grandchildren. Windows has no process groups, and there a detached process
+ * has no console: PowerShell, a console program, exits at once with status 0 and runs nothing.
+ */
+export const DETACHED = !IS_WINDOWS;
+
 /** The PATH list separator: `:` on macOS and Linux, `;` on Windows. */
 export const PATH_SEP = IS_WINDOWS ? ';' : ':';
 
