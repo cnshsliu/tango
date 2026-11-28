@@ -221,7 +221,7 @@ mod tests {
     fn everything_else_goes_to_the_node_cli() {
         assert_eq!(p(&[], false), None, "pipes / launchd");
         assert_eq!(p(&["list", "files"], true), None, "one-shot prompt");
-        for sub in ["task", "serve", "repl"] {
+        for sub in ["task", "serve", "repl", "doctor"] {
             assert_eq!(p(&[sub], true), None, "{sub}");
         }
         for flag in ["-h", "--help", "-V", "--version", "--models", "--sessions"] {

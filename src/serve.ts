@@ -38,7 +38,7 @@ import { stillHolds } from './core/liveness.js';
 import { costUsd, displayPlatform, groupModels } from './core/models/registry.js';
 import { retryText } from './core/models/util.js';
 import { effortsFor } from './core/models/reasoning.js';
-import { proxyStatus } from './core/env-proxy.js';
+import { runDoctor } from './core/doctor.js';
 import type { AskFn, PermissionMode } from './core/permissions.js';
 import type { ToolResult } from './core/types.js';
 import { describeSources, localFile, projectFile, projectRoots, readLayerJson, resolveConfig, setTrust, updateLocalConfig, type Resolved } from './core/project-config.js';
@@ -914,52 +914,7 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
         return;
       }
       case 'doctor': {
-        const { accessSync, constants } = await import('node:fs');
-        const checks: { name: string; ok: boolean; detail: string }[] = [];
-        const add = (name: string, ok: boolean, detail = '') => checks.push({ name, ok, detail });
-        const gitOkDoctor = (() => {
-          try {
-            accessSync(join(cwd, '.git'), constants.F_OK);
-            return true;
-          } catch { return false; }
-        })();
-        add('git', gitOkDoctor, gitOkDoctor ? 'repo detected — time travel checkpoints active' : 'not a git repo — tar fallback snapshots');
-        let homeWritable = false;
-        try {
-          const { mkdtemp: mk } = await import('node:fs/promises');
-          const d = await mk(join(sessionsDir(), 'doctor-'));
-          const { rm: rmx } = await import('node:fs/promises');
-          await rmx(d, { recursive: true, force: true });
-          homeWritable = true;
-        } catch {}
-        add('TANGO_HOME writable', homeWritable);
-        add('sessions dir', homeWritable, sessionsDir());
-        const hasKey = !keyProblem(agent.model);
-        add('model key', hasKey, hasKey ? `${agent.model.id} ready` : `${agent.model.id}: no api key configured`);
-        // how http(s)_proxy is being handled in this process (never the credentials in a proxy URL)
-        add('proxy', true, proxyStatus());
-        const nodeV = process.version;
-        add('node', true, nodeV);
-        // tool-output secret redaction: whether it is on, and how many values it watches (never the values)
-        const { knownSecrets } = await import('./core/redact.js');
-        const watched = await knownSecrets().catch(() => []);
-        add(
-          'secret redaction',
-          config.redactSecrets !== false,
-          config.redactSecrets === false ? 'off (redactSecrets: false)' : `${watched.length} value${watched.length === 1 ? '' : 's'} watched`
-        );
-        // language servers for the lsp tool: what runs, and how to get what doesn't
-        const { SERVERS, resolveCommand, installCommand } = await import('./core/lsp.js');
-        add(
-          'lsp diagnostics',
-          config.lspDiagnostics !== false,
-          config.lspDiagnostics === false ? 'off (lspDiagnostics: false)' : 'on · after each edit of a file whose server is installed'
-        );
-        for (const def of SERVERS) {
-          const found = resolveCommand(def, cwd);
-          const how = installCommand(def);
-          add(`lsp ${def.language}`, !!found, found ? found[0] : how ? `not installed · ${how}` : `not installed · needs ${def.install.map((r) => r.needs).join(' or ')}`);
-        }
+        const checks = await runDoctor({ cwd, model: agent.model, config });
         reply(cmd, true, { checks });
         return;
       }

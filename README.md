@@ -97,6 +97,7 @@ tango [prompt...]      run one prompt and exit (also when stdin is a pipe)
 tango --format json [prompt...]   same, but JSON lines on stdout for scripts and CI
 tango --models         list models   tango --sessions   list sessions   --cwd <dir>
 tango repl             line-mode REPL — dev fallback, not the product
+tango doctor           the /doctor checks in the shell (git, home, key, proxy, servers); no session
 tango tui              start the Rust TUI from node (dev; TANGO_TUI=<path> picks the binary)
 tango serve            JSONL protocol on stdin/stdout for UIs (see "Serve protocol")
 tango task list        scheduled tasks (also `tango task` alone)
@@ -110,6 +111,12 @@ or `-c` —, its file is removed when the tango that opened it exits without a p
 ones a killed start left behind are swept on the next start (files under 10 minutes old and sessions
 another live tango holds open stay). "Said in" includes a `/send` message or a handoff that reached
 it. An id you name yourself still resolves.
+
+`tango doctor` prints what `/doctor` shows in the TUI — git, whether the tango home is writable, the
+model's key (whether one resolves, never the key), the proxy handling, node, secret redaction and the
+language servers, with the install command for a missing one — then returns to the shell. It opens no
+session and exits 0 whatever the checks say: read the ✓ and ✗. `-m <id>` checks another model's key,
+`--cwd <dir>` another directory.
 
 | flag | short | meaning |
 | --- | --- | --- |

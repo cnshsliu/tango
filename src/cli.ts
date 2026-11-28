@@ -23,6 +23,7 @@ import { groupModels } from './core/models/registry.js';
 import { effortsFor } from './core/models/reasoning.js';
 import { SessionStore, shortId, type SessionSummary } from './core/session.js';
 import { resolveConfig, updateLocalConfig, type Resolved } from './core/project-config.js';
+import { runDoctor } from './core/doctor.js';
 import { suggestRules, type AskFn, type PermissionMode } from './core/permissions.js';
 import { addTask, daemonLoop, feishuWebhook, lastRunAt, loadTasks, parseInterval, removeTask, runDueOnce, sendFeishu, summarizeOutput } from './core/scheduler.js';
 import type { Message, ModelSpec, ToolCallBlock } from './core/types.js';
@@ -52,6 +53,7 @@ usage:
   tango task run [--loop]  run due tasks once, or keep running as a daemon
   tango serve            JSONL protocol on stdin/stdout for external UIs (TUI, web)
   tango repl             line-mode REPL (dev fallback when the TUI isn't built)
+  tango doctor           the /doctor checks in the shell (git, keys, proxy, servers); no session
 options:
   --cwd <dir>            work in <dir> (default: current directory)
   -y / --yes             run risky commands without asking
@@ -103,6 +105,8 @@ interface Args {
   serve?: boolean;
   tui?: boolean;
   repl?: boolean;
+  /** `tango doctor`: the /doctor checks in the shell, no session opened */
+  doctor?: boolean;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -193,6 +197,10 @@ function parseArgs(argv: string[]): Args {
   }
   if (rest[0] === 'repl') {
     a.repl = true;
+    return a;
+  }
+  if (rest[0] === 'doctor') {
+    a.doctor = true;
     return a;
   }
   if (rest.length) a.input = rest.join(' ');
@@ -566,6 +574,17 @@ async function runTask(t: Task, args: Args): Promise<{ ok: boolean; output: stri
   return { ok: msg.stopReason !== 'error' && msg.stopReason !== 'aborted', output };
 }
 
+/** `tango doctor`: the same checks as /doctor, printed, then back to the shell. Opens no
+ *  session: only the config layers and the model list are read. */
+async function printDoctor(args: Args): Promise<void> {
+  const cwd = args.cwd ?? process.cwd();
+  const { config } = await resolveConfig(cwd);
+  const model = pickModel(await loadModels(), config, args.model);
+  for (const c of await runDoctor({ cwd, model, config })) {
+    console.log(`${c.ok ? cyan('✓') : red('✗')} ${c.name}${c.detail ? `  ${dim(c.detail)}` : ''}`);
+  }
+}
+
 /** `node bin/tango.js tui` (dev / TANGO_TUI): hand the terminal to the Rust client. The installed
  *  `tango` command is the Rust binary itself and never comes through here. */
 async function launchTui(args: Args): Promise<void> {
@@ -617,6 +636,7 @@ async function main(): Promise<void> {
 
   if (args.listModels) return printModels(await loadModels(), (await loadConfig()).model);
   if (args.listSessions) return printSessions((await SessionStore.list(sessionsDir())).filter((x) => !x.parent));
+  if (args.doctor) return printDoctor(args);
 
   if (args.yes && args.readonly) throw new Error('--yes and --readonly cannot be combined');
   if (args.serve) return serveStdio(args);

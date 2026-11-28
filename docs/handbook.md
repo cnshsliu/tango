@@ -107,6 +107,7 @@ are swept on the next start.
 | Task | Command |
 | --- | --- |
 | Continue the latest session | `tango -c` |
+| Check the environment from the shell | `tango doctor`: the `/doctor` checks — git, tango home writable, the model's key (never the key itself), proxy, node, secret redaction, language servers and how to install a missing one — printed, then back to the shell; no session is opened. `-m <id>` checks another model, `--cwd <dir>` another directory |
 | Pick a session from a list, then resume it | `tango -r` with no id: the TUI opens with the session picker; pick one and it resumes that session, Esc leaves you in a new session. `tango --sessions` lists them in the shell instead (id, date, messages, directory, name or first prompt) |
 | Open a specific session | `tango -r <id or prefix>` (the id's last `-` part also works, e.g. `tango -r 0ad2040a8182`), or `/resume` inside the TUI for a picker. If the session's directory no longer exists, it runs in the directory you start tango from, for that run, and says so |
 | Start fresh, same model and mode | `/new` |
@@ -550,7 +551,7 @@ while a turn is running unless noted. `/help` prints a short list inside the TUI
 | `/import claude-code\|grok\|codex [path]` | Copy another agent's allow list into tango's rules |
 | `/config` | View the merged config and the files it came from |
 | `/trust [yes\|no]` | Whether this project's hooks, rules and MCP servers apply. Bare: show state and ask |
-| `/doctor` | Check the environment: git, API keys, directories, versions |
+| `/doctor` | Check the environment: git, API keys, directories, versions. `tango doctor` prints the same checks in the shell |
 | `/problems` | What the language servers report for the files tango edited in this session: `file:line:col  ✗ message`, files by name, errors first. ↑↓/wheel scroll, Enter puts a fix request for the row in the input (`请修复 @file#12：message`, nothing is sent), `y` copies the list, `x` clears it. While there are errors or warnings the status bar shows ` ✗2 ⚠1 /problems ` — click it to open the list. An empty report drops its file. Needs the file's language server (see "Code navigation"); `"lspDiagnostics": false` turns it off |
 | `/debug-zip` (`/feedback`) | Write a diagnostics zip (webhook redacted) to the working directory |
 
