@@ -1,7 +1,9 @@
 # Run one TypeScript test file on Windows with a short per-test timeout, everything printed:
 # the fast loop of the Windows port (the full `ci` run is a quarter of an hour).
 #   gh workflow run windows-diag.yml -f file=processes
-#   (file: the name under tests/ without .test.ts; empty runs them all)
+#   gh workflow run windows-diag.yml -f file=agent -f ps=powershell.exe
+#   (file: the name under tests/ without .test.ts, empty runs them all; ps forces a PowerShell
+#   executable — powershell.exe is the 5.1 every Windows has, the runner also has pwsh 7)
 name: windows-diag
 
 on:
@@ -15,6 +17,10 @@ on:
         description: Per-test timeout in milliseconds
         required: false
         default: '20000'
+      ps:
+        description: PowerShell executable to force (e.g. powershell.exe for 5.1; empty picks pwsh when installed)
+        required: false
+        default: ''
 
 jobs:
   diag:
@@ -30,4 +36,6 @@ jobs:
           cache: npm
       - run: npm ci
       - name: run
+        env:
+          TANGO_POWERSHELL: ${{ inputs.ps }}
         run: node --import tsx --test --test-timeout=${{ inputs.timeout }} ${{ inputs.file == '' && '"tests/*.test.ts"' || format('"tests/{0}.test.ts"', inputs.file) }}

@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { DETACHED, IS_WINDOWS, PATH_SEP, hookStdin, killProcessTree, shellInvocation } from '../src/core/shell.js';
+import { DETACHED, IS_WINDOWS, PATH_SEP, hookStdin, killProcessTree, powerShell, shellInvocation, translateChainOperators } from '../src/core/shell.js';
 import { processCommandLine, processStarts } from '../src/core/liveness.js';
 import { decide, suggestRules } from '../src/core/permissions.js';
 import { grepTool } from '../src/core/tools/search.js';
@@ -39,10 +39,11 @@ test('shellInvocation: bash on macOS and Linux, PowerShell on Windows', () => {
   const cmd = shellInvocation('git status');
   const hook = shellInvocation('jq .type', { sh: true, stdin: true });
   if (IS_WINDOWS) {
-    assert.equal(cmd.file, 'powershell.exe');
+    assert.equal(cmd.file, powerShell());
     assert.equal(PATH_SEP, ';');
     const script = cmd.args.at(-1)!;
     assert.match(script, /chcp\.com 65001/);
+    assert.match(script, /Out-File:Encoding"\] = \$utf8/);
     assert.match(script, /OutputEncoding = \[Text\.Encoding\]::UTF8/);
     assert.match(script, /^git status$/m);
     assert.match(script, /exit \$LASTEXITCODE/);
@@ -92,6 +93,15 @@ test('the way the bash tool spawns a command (detached, hidden) still gives its 
   const r = await runShell(`node -e "process.stdout.write('detached ok'); process.exit(4)"`, { detached: true });
   assert.equal(r.code, 4, `out=${JSON.stringify(r.out)} err=${JSON.stringify(r.err)}`);
   assert.ok(r.out.includes('detached ok'), `out=${JSON.stringify(r.out)} err=${JSON.stringify(r.err)}`);
+});
+
+test('translateChainOperators: 5.1 has no && or ||; quotes are left alone', () => {
+  assert.equal(translateChainOperators('cd a && npm test'), 'cd a ; if ($?) {  npm test }');
+  assert.equal(translateChainOperators('a && b && c'), 'a ; if ($?) {  b ; if ($?) {  c } }');
+  assert.equal(translateChainOperators('x || y'), 'x ; if (-not $?) {  y }');
+  assert.equal(translateChainOperators('git commit -m "a && b"'), 'git commit -m "a && b"');
+  assert.equal(translateChainOperators("echo 'p || q' && echo ok"), "echo 'p || q' ; if ($?) {  echo ok }");
+  assert.equal(translateChainOperators('a | b'), 'a | b');
 });
 
 test('liveness: this process has a command line and a start time on every platform', { timeout: 60_000 }, () => {

@@ -4,12 +4,16 @@
  * macOS and Linux: `bash -lc` — a login shell, so PATH carries the toolchains the user installed
  * (rustup, cargo, homebrew). Hooks keep the plain `sh -c` they always had.
  *
- * Windows: PowerShell, the shell every Windows has. The command is wrapped so that the console
- * speaks UTF-8 (a Chinese Windows console is GBK, and the model reads UTF-8), a failing cmdlet
- * ends the command with exit 1 instead of passing unnoticed, and a native command's exit code
- * is the command's own. A command that reads stdin gets it from a file instead: PowerShell
- * reads a redirected stdin itself and hands nothing to the native commands inside, so a hook's
- * payload is written to a temp file (hookStdin) and piped into the command by the script.
+ * Windows: PowerShell — PowerShell 7 (`pwsh`) where it is installed, Windows PowerShell 5.1
+ * everywhere else. The command is wrapped so that the console speaks UTF-8 (a Chinese Windows
+ * console is GBK, and the model reads UTF-8) and so do `>`, Set-Content and Add-Content (5.1
+ * writes UTF-16 otherwise, which nothing else can read); a failing cmdlet ends the command
+ * with exit 1 instead of passing unnoticed, and a native command's exit code is the command's
+ * own. 5.1 has no `&&`/`||`: outside quotes they become `; if ($?) { … }` / `; if (-not $?) { … }`.
+ * A command that reads stdin gets it from a file instead: PowerShell reads a redirected stdin
+ * itself and hands nothing to the native commands inside, so a hook's payload is written to a
+ * temp file (hookStdin) and piped into the command by the script. TANGO_POWERSHELL names the
+ * executable to use (a test can force 5.1 on a machine that has 7).
  *
  * Killing is per platform too: macOS and Linux signal the detached child's process group, so
  * grandchildren die with it; Windows has no process groups, and `taskkill /T /F` ends the tree.
@@ -38,14 +42,71 @@ export interface ShellInvocation {
   args: string[];
 }
 
+let psProbed: string | null | undefined; // undefined: not looked yet, null: no pwsh on this machine
+
+/** The PowerShell to run: `pwsh` (7) where installed, `powershell.exe` (5.1) otherwise;
+ *  TANGO_POWERSHELL names it outright. Probed once. */
+export function powerShell(): string {
+  const forced = process.env.TANGO_POWERSHELL?.trim();
+  if (forced) return forced;
+  if (psProbed === undefined) {
+    const r = spawnSync('where.exe', ['pwsh.exe'], { stdio: 'ignore', timeout: 5000 });
+    psProbed = r.status === 0 ? 'pwsh.exe' : null;
+  }
+  return psProbed ?? 'powershell.exe';
+}
+
+/**
+ * Windows PowerShell 5.1 has no `&&` and `||`: outside quotes they become `; if ($?) { … }` and
+ * `; if (-not $?) { … }`, the braces closed at the end, so `a && b && c` nests as it chains.
+ */
+export function translateChainOperators(command: string): string {
+  let out = '';
+  let quote: string | null = null;
+  let depth = 0;
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i];
+    if (quote) {
+      out += c;
+      if (c === quote) quote = null; // PowerShell has no backslash escapes inside quotes (backtick is its own)
+      continue;
+    }
+    if (c === '`') {
+      out += c + (command[++i] ?? '');
+      continue;
+    }
+    if (c === "'" || c === '"') {
+      quote = c;
+      out += c;
+      continue;
+    }
+    if (c === '&' && command[i + 1] === '&') {
+      out += '; if ($?) { ';
+      depth++;
+      i++;
+      continue;
+    }
+    if (c === '|' && command[i + 1] === '|') {
+      out += '; if (-not $?) { ';
+      depth++;
+      i++;
+      continue;
+    }
+    out += c;
+  }
+  return depth ? out + ' }'.repeat(depth) : out;
+}
+
 /** What to spawn to run `command` as a shell command. `sh`: the POSIX hook shell, not a login
  *  bash. `stdin`: the command reads stdin (a hook's JSON payload). */
 export function shellInvocation(command: string, opts: { sh?: boolean; stdin?: boolean } = {}): ShellInvocation {
   if (!IS_WINDOWS) {
     return opts.sh ? { file: 'sh', args: ['-c', command] } : { file: '/bin/bash', args: ['-lc', command] };
   }
+  const ps = powerShell();
+  const legacy = !/pwsh/i.test(ps);
   return {
-    file: 'powershell.exe',
+    file: ps,
     args: [
       '-NoProfile',
       '-NonInteractive',
@@ -55,13 +116,18 @@ export function shellInvocation(command: string, opts: { sh?: boolean; stdin?: b
       [
         // a process without a console (a hidden one) cannot switch its code page: not fatal
         'try { chcp.com 65001 > $null; [Console]::OutputEncoding = [Text.Encoding]::UTF8; $OutputEncoding = [Text.Encoding]::UTF8 } catch {}',
+        // 5.1 writes UTF-16 through `>`, Set-Content and Add-Content: UTF-8 without a BOM instead
+        '$utf8 = New-Object System.Text.UTF8Encoding($false)',
+        '$PSDefaultParameterValues["Out-File:Encoding"] = $utf8',
+        '$PSDefaultParameterValues["Set-Content:Encoding"] = $utf8',
+        '$PSDefaultParameterValues["Add-Content:Encoding"] = $utf8',
         '$ErrorActionPreference = "Stop"',
         '$failed = $false',
         'try {',
         opts.stdin
           ? // the payload file the caller wrote (hookStdin) is piped into the command
-            `if ($env:TANGO_HOOK_STDIN) { Get-Content -Raw -LiteralPath $env:TANGO_HOOK_STDIN | ${command} } else { ${command} }\n`
-          : `${command}\n`,
+            `if ($env:TANGO_HOOK_STDIN) { Get-Content -Raw -LiteralPath $env:TANGO_HOOK_STDIN | ${legacy ? translateChainOperators(command) : command} } else { ${legacy ? translateChainOperators(command) : command} }\n`
+          : `${legacy ? translateChainOperators(command) : command}\n`,
         '} catch { [Console]::Error.WriteLine($_); $failed = $true }',
         'if ($failed) { exit 1 }',
         'if ($null -ne $LASTEXITCODE) { exit $LASTEXITCODE }',
