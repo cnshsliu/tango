@@ -89,7 +89,7 @@ fn leading_path(text: &str) -> Option<(String, bool, String)> {
         return None;
     }
     let unquoted = t.trim_start_matches(['\'', '"']);
-    if !(unquoted.starts_with('/') || unquoted.starts_with("~/")) {
+    if !starts_path(unquoted) {
         return None;
     }
     let line = &t[..t.find('\n').unwrap_or(t.len())];
@@ -102,11 +102,15 @@ fn leading_path(text: &str) -> Option<(String, bool, String)> {
         let mut path = String::new();
         let mut chars = raw.chars();
         while let Some(c) = chars.next() {
-            // drag and drop escapes spaces and shell characters: `My\ File.md`
+            // drag and drop escapes spaces and shell characters: `My\ File.md` — but a
+            // backslash is a separator on Windows, never an escape there
+            #[cfg(not(windows))]
             path.push(if c == '\\' { chars.next().unwrap_or('\\') } else { c });
+            #[cfg(windows)]
+            path.push(c);
         }
         if let Some(rest) = path.strip_prefix("~/") {
-            path = format!("{}/{rest}", std::env::var("HOME").ok()?);
+            path = format!("{}/{rest}", home_dir()?);
         }
         let p = Path::new(&path);
         (path.len() > 1 && p.exists()).then_some(path)
@@ -124,6 +128,25 @@ fn leading_path(text: &str) -> Option<(String, bool, String)> {
         }
     }
     None
+}
+
+/// Whether `s` begins an absolute path as people write them: `/…` and `~/…` everywhere, and
+/// `C:\…`, `C:/…`, `\\server\…` too (recognized on every platform, so a path pasted from
+/// another machine still works).
+fn starts_path(s: &str) -> bool {
+    if s.starts_with('/') || s.starts_with("~/") || s.starts_with("\\") {
+        return true;
+    }
+    let b = s.as_bytes();
+    b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/')
+}
+
+/// The user's home directory: `HOME`, or `USERPROFILE` where that is not set (Windows).
+fn home_dir() -> Option<String> {
+    std::env::var("HOME")
+        .ok()
+        .filter(|h| !h.is_empty())
+        .or_else(|| std::env::var("USERPROFILE").ok())
 }
 
 /// The prompt for a submission that leads with a path: name it as a file (or directory),
@@ -643,9 +666,7 @@ impl Picker {
     fn filtered_items(&self) -> Vec<&PickItem> {
         // a typed path is not a filter: keep every remembered directory visible
         let raw = self.query.trim();
-        if self.kind == PickerKind::Cwd
-            && (raw.starts_with('/') || raw.starts_with('~') || raw.starts_with('.'))
-        {
+        if self.kind == PickerKind::Cwd && (starts_path(raw) || raw.starts_with('~') || raw.starts_with('.')) {
             return self.items.iter().collect();
         }
         let query = raw.to_lowercase();
@@ -1152,17 +1173,19 @@ fn ime_should_switch(current: &str) -> bool {
 /// elsewhere in the line is not a click target.
 fn find_existing_file_path(text: &str, click_idx: usize) -> Option<String> {
     let bytes: Vec<char> = text.chars().collect();
-    let starts: Vec<&[char]> = vec![&['/'], &['.', '/'], &['.', '.', '/'], &['~', '/']];
+    let starts: Vec<&[char]> = vec![&['/'], &['.', '/'], &['.', '.', '/'], &['~', '/'], &['\\', '\\']];
+    // a drive letter: `C:\…` or `C:/…`
+    let drive = |cs: &[char]| cs.len() >= 3 && cs[0].is_ascii_alphabetic() && cs[1] == ':' && (cs[2] == '\\' || cs[2] == '/');
     let mut best: Option<String> = None;
     let mut i = 0;
     while i < bytes.len() {
-        let matched = starts.iter().any(|s| bytes[i..].starts_with(s));
+        let matched = starts.iter().any(|s| bytes[i..].starts_with(s)) || drive(&bytes[i..]);
         if !matched {
             i += 1;
             continue;
         }
         let mut j = i;
-        while j < bytes.len() && (bytes[j].is_alphanumeric() || "._-/@+=~".contains(bytes[j])) {
+        while j < bytes.len() && (bytes[j].is_alphanumeric() || "._-/@+=~\\:".contains(bytes[j])) {
             j += 1;
         }
         if click_idx >= i && click_idx < j {
@@ -1172,8 +1195,7 @@ fn find_existing_file_path(text: &str, click_idx: usize) -> Option<String> {
                 .to_string();
             let no_line = cleaned.trim_end_matches(|c: char| c.is_ascii_digit() || c == ':');
             let expanded = if let Some(rest) = no_line.strip_prefix('~') {
-                let home = std::env::var("HOME").unwrap_or_default();
-                format!("{home}{rest}")
+                format!("{}{rest}", home_dir().unwrap_or_default())
             } else {
                 no_line.to_string()
             };
@@ -3023,7 +3045,7 @@ impl App {
         }
         match std::env::var_os("TANGO_HOME") {
             Some(d) => Some(std::path::PathBuf::from(d)),
-            None => Some(std::path::PathBuf::from(std::env::var_os("HOME")?).join(".tango")),
+            None => Some(std::path::PathBuf::from(home_dir()?).join(".tango")),
         }
     }
 
@@ -6675,9 +6697,7 @@ impl App {
             .and_then(|item| self.picker.as_ref().and_then(|p| p.effort_pick.get(&item.id).cloned()));
         self.picker = None;
         // a path typed in the cwd picker is the directory, not a filter
-        if cwd_pick
-            && (query.starts_with('/') || query.starts_with('~') || query.starts_with('.'))
-        {
+        if cwd_pick && (starts_path(&query) || query.starts_with('~') || query.starts_with('.')) {
             self.cd_to(&query, serve);
             return;
         }
@@ -16020,6 +16040,7 @@ mod tests {
         assert_eq!(file_prompt(&format!("{f}  总结一下")).unwrap(), format!("文件：{f}\n总结一下"));
         // quoted and backslash-escaped (drag and drop) forms, and a directory
         assert_eq!(leading_path(&format!("'{f}' 看看")).unwrap().0, f);
+        #[cfg(not(windows))] // drag and drop escapes spaces on macOS; Windows Terminal quotes the path instead
         assert_eq!(leading_path(&f.replace(' ', "\\ ")).unwrap().0, f);
         assert!(file_prompt(&d).unwrap().starts_with(&format!("目录：{d}\n")));
         // real commands, missing paths and plain text are left alone
