@@ -48,6 +48,6 @@ jobs:
         shell: pwsh
         run: |
           $a = @('--import', 'tsx', '--test', "--test-timeout=$env:DIAG_TIMEOUT")
-          if ($env:DIAG_NAME) { $a += "--test-name-pattern=`"$($env:DIAG_NAME)`"" }
+          if ($env:DIAG_NAME) { $a += "--test-name-pattern=$($env:DIAG_NAME)" }
           $a += if ($env:DIAG_FILE) { "tests/$($env:DIAG_FILE).test.ts" } else { "tests/*.test.ts" }
           node @a
