@@ -1233,5 +1233,6 @@ project hooks. They apply once you trust the tango checkout (the TUI asks on fir
 
 After an edit to hook code, `PostToolUse` tells the model which events still lack a test. At the
 end of a turn with unpushed hook changes, `Stop` runs the coverage check and all hook tests and
-sends the model back while either fails. A passing run is cached by content hash in
-`.git/hook-guard-ok`, so unchanged code is not retested.
+sends the model back while either fails. A passing run is cached by content hash in a
+`hook-guard-ok` file inside the checkout's git directory (`git rev-parse --git-dir`: `.git/`, or
+`.git/worktrees/<name>/` in a worktree, whose `.git` is a file), so unchanged code is not retested.

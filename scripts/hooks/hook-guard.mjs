@@ -78,9 +78,20 @@ function hookHash() {
   HOOK_PATHS.forEach(walk);
   return h.digest('hex');
 }
-const STAMP = join(ROOT, '.git', 'hook-guard-ok');
-const verified = () => existsSync(STAMP) && readFileSync(STAMP, 'utf8') === hookHash();
-const markVerified = () => existsSync(join(ROOT, '.git')) && writeFileSync(STAMP, hookHash());
+/**
+ * Where git keeps this checkout's metadata: `.git` in a plain clone, the `.git/worktrees/<name>`
+ * directory `git worktree` made (its `.git` is a file, so nothing can be written under it), or
+ * null outside a repository.
+ */
+export function gitDir(cwd = process.cwd()) {
+  const r = spawnSync('git', ['rev-parse', '--git-dir'], { cwd, encoding: 'utf8' });
+  if (r.status !== 0) return null;
+  const dir = resolve(cwd, r.stdout.trim());
+  return existsSync(dir) && statSync(dir).isDirectory() ? dir : null;
+}
+const STAMP = gitDir() && join(gitDir(), 'hook-guard-ok');
+const verified = () => !!STAMP && existsSync(STAMP) && readFileSync(STAMP, 'utf8') === hookHash();
+const markVerified = () => !!STAMP && writeFileSync(STAMP, hookHash());
 
 const isHookPath = (p) => HOOK_PATHS.some((h) => p === h || p.startsWith(h + '/'));
 

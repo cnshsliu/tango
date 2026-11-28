@@ -4,10 +4,14 @@ const test = process.platform === 'win32' ? nodeTest.skip : nodeTest;
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { readFileSync, statSync, writeFileSync } from 'node:fs';
+import { realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 // @ts-expect-error plain .mjs script, no types
 import { uncoveredEvents } from '../scripts/hooks/hook-guard.mjs';
+// @ts-expect-error plain .mjs script, no types
+import { gitDir } from '../scripts/hooks/hook-guard.mjs';
 
 const GUARD = join(import.meta.dirname, '..', 'scripts', 'hooks', 'hook-guard.mjs');
 
@@ -17,6 +21,29 @@ test('hook-guard: finds HOOK_EVENTS entries without a "<Event>: …" e2e test', 
   assert.deepEqual(uncoveredEvents(src, e2e), ['SessionStart'], 'the title must start with the event name');
   assert.deepEqual(uncoveredEvents(src, e2e + `\ntest(\`SessionStart: fires\`, …)`), []);
   assert.equal(uncoveredEvents('nothing here', '').length, 1, 'a missing HOOK_EVENTS is reported, not ignored');
+});
+
+test('hook-guard: the stamp goes into the real git directory, also in a worktree', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'tango-guard-git-'));
+  try {
+    assert.equal(gitDir(root), null, 'not a repository: no stamp, nothing to write');
+    const git = (...args: string[]) => spawnSync('git', args, { cwd: root, encoding: 'utf8' });
+    git('init', '-q');
+    await mkdir(join(root, 'src/core'), { recursive: true });
+    writeFileSync(join(root, 'src/core/hooks.ts'), '');
+    git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'init');
+    const plain = gitDir(root);
+    assert.equal(realpathSync(plain!), realpathSync(join(root, '.git')), 'a plain clone: .git is a directory');
+    const wt = join(root, 'wt');
+    assert.equal(git('worktree', 'add', '-q', '-b', 'wt', 'wt').status, 0);
+    // a worktree's .git is a file: the stamp belongs in .git/worktrees/wt, where writing works
+    assert.equal(statSync(join(wt, '.git')).isFile(), true);
+    assert.equal(realpathSync(gitDir(wt)!), realpathSync(join(root, '.git', 'worktrees', 'wt')), 'an absolute answer is taken as is');
+    writeFileSync(join(gitDir(wt)!, 'hook-guard-ok'), 'x');
+    assert.equal(readFileSync(join(root, '.git', 'worktrees', 'wt', 'hook-guard-ok'), 'utf8'), 'x');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 /** A throwaway repo shaped like tango: src/core/hooks.ts + tests/hooks-e2e.test.ts. */
