@@ -995,7 +995,10 @@ A killed command takes everything it started with it: the process group here, th
 Windows. `grep` and `find` need ripgrep there — Windows has no POSIX `grep`, and its `find` searches
 strings. Commands npm installed (`tsc`, pyright, the language servers) are run through their package's
 entry script on Windows, a global one from `%APPDATA%\npm`, since Node cannot spawn npm's `.cmd` shims
-without a shell.
+without a shell. PowerShell 7 (`pwsh`) is preferred where it is installed; `TANGO_POWERSHELL` names
+the executable outright (Windows PowerShell 5.1 is the fallback every Windows has: there `&&` and
+`||` are translated into `if ($?) { … }` chains, and `>`, `Set-Content` and `Add-Content` are made
+to write UTF-8 without a BOM).
 
 ## Background processes
 
