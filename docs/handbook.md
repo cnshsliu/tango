@@ -16,8 +16,10 @@ the [README](../README.md).
 ## Get started
 
 0. Install: `curl -fsSL https://raw.githubusercontent.com/cnshsliu/tango/main/install.sh | sh`
-   (macOS or Linux, Node 20 or newer; it links `tango` into `~/.local/bin`). Building from
-   source and other options are in the README's Quick start.
+   (macOS or Linux, Node 20 or newer; it links `tango` into `~/.local/bin`), or on Windows in
+   PowerShell `irm https://raw.githubusercontent.com/cnshsliu/tango/main/install.ps1 | iex` (it puts
+   `tango` into `%LOCALAPPDATA%\tango\bin` and the user PATH). Building from source and other
+   options are in the README's Quick start.
 1. Set one API key, for example `export TKNET_API_KEY=...` or `export DEEPSEEK_API_KEY=...`.
    `tango --models` shows every preset and which variable it reads.
 2. Open a project directory and run `tango`. The fullscreen TUI starts a new session there.
