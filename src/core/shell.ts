@@ -126,6 +126,8 @@ export function shellInvocation(command: string, opts: { sh?: boolean; stdin?: b
         // commands people (and models) write on every system, as PowerShell takes them: `rm -f`
         // is ambiguous there (-Filter or -Force?), touch and which do not exist, mkdir has no -p
         [
+          // an alias outranks a function in PowerShell: rm is Remove-Item's built-in alias, so it goes first
+          'Remove-Item Alias:rm -ErrorAction SilentlyContinue',
           'function rm {',
           '  [CmdletBinding()] param(',
           '    [Alias("f", "F", "force")] [switch] $Force,',

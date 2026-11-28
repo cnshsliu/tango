@@ -125,7 +125,7 @@ test('roots: worktrees share the main checkout for trust and the personal file',
     sh(w.repo, 'worktree', 'add', '-q', wt);
     try {
       const r = projectRoots(join(wt));
-      assert.equal(r?.root, realpathSync(wt), 'shared file: the worktree itself');
+      assert.equal(r?.root, realpathSync.native(wt), 'shared file: the worktree itself'); // the long name on Windows too
       assert.equal(r?.localRoot, w.repo, 'personal file + trust: the main checkout');
       const sub = join(w.repo, 'src', 'deep');
       await mkdir(sub, { recursive: true });

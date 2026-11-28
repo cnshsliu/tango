@@ -51,7 +51,8 @@ test('shellInvocation: bash on macOS and Linux, PowerShell on Windows', () => {
     assert.match(script, /Out-File:Encoding"\] = \$utf8/);
     assert.match(script, /UTF8Encoding\(\$false\)/, 'no BOM: a hook\'s JSON came back with one');
     assert.match(script, /function rm \{/);
-    assert.match(script, /OutputEncoding = \[Text\.Encoding\]::UTF8/);
+    assert.match(script, /\[Console\]::OutputEncoding = \$utf8/);
+    assert.match(script, /Remove-Item Alias:rm/, 'the built-in alias outranks the rm function');
     assert.match(script, /^git status$/m);
     assert.match(script, /exit \$LASTEXITCODE/);
     const hookScript = hook.args.at(-1)!;
