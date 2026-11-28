@@ -3181,6 +3181,25 @@ test('serve: /effort offers what the current model takes, refuses the rest, and 
     assert.match(String(r.error), /mock\/flat takes high \| off/);
     r = await call({ cmd: 'set_effort', level: 'off' });
     assert.deepEqual([r.ok, r.data.effort], [true, 'off']);
+    // the model picker sends the level with the model: one switch, both applied
+    r = await call({ cmd: 'set_model', modelId: 'mock/mock', effort: 'medium' });
+    assert.deepEqual([r.ok, r.data.effort, r.data.efforts, r.data.effortDropped], [true, 'medium', ['low', 'medium', 'high'], undefined]);
+    // "off" with the model: the level in use is dropped, silently (it was asked for)
+    r = await call({ cmd: 'set_model', modelId: 'mock/glm-x', effort: 'off' });
+    assert.deepEqual([r.ok, r.data.effort, r.data.effortDropped], [true, 'off', undefined]);
+    r = await call({ cmd: 'set_model', modelId: 'mock/glm-x', effort: 'high' });
+    assert.equal(r.data.effort, 'high');
+    // a level the model does not take is refused before anything changes
+    r = await call({ cmd: 'set_model', modelId: 'mock/flat', effort: 'max' });
+    assert.deepEqual([r.ok, r.data?.effort], [false, undefined]);
+    assert.match(String(r.error), /effort "max": mock\/flat takes high \| off/);
+    r = await call({ cmd: 'status' });
+    assert.deepEqual([r.data.model, r.data.effort], ['mock/glm-x', 'high']);
+    // the model list carries each model's levels, for the picker
+    r = await call({ cmd: 'models' });
+    const byId = Object.fromEntries(r.data.models.map((m: any) => [m.id, m.efforts]));
+    assert.deepEqual(byId['mock/glm-x'], ['low', 'high', 'max']);
+    assert.deepEqual(byId['mock/mock'], ['low', 'medium', 'high']);
   } finally {
     s.child.kill();
     mock.server.close();

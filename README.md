@@ -284,7 +284,9 @@ isolation), MCP server→client capabilities (sampling/roots), plugin marketplac
   — and refuses the rest (`/effort medium` on GLM-5.4 answers with the list). Tab completes the
   levels; bare `/effort` shows the one in use and the choices; `tango --models` lists them per model.
   `off` sends nothing (the endpoint's default). Switching to a model without the level in use turns
-  it off and says so. The lists come from models.dev, read provider by provider (the same model behind
+  it off and says so. Tab lists the current model's levels, and Enter runs the highlighted one,
+  typed in full or not (`/effort h` ⏎ sets high; `/mode re` ⏎ sets readonly). The model picker
+  (under TUI) sets a level together with the model. The lists come from models.dev, read provider by provider (the same model behind
   another provider can take other levels) and checked against the live endpoints where a key was at
   hand. A model described in `models.json` sets its own with `efforts: ["low", "high", "max"]` (empty:
   nothing to choose); a model nobody has described is read from its name (`reasoning.ts`). How a level
@@ -648,8 +650,9 @@ a summary, or full hunks per file.
 stdin line, one JSON frame per stdout line. Human logs go to stderr; stdout is protocol-only.
 Commands: `prompt`, `btw` (ephemeral, tool-free side question), `interrupt`, `shutdown` (`reason`:
 abort any turn, run SessionEnd hooks, reply, exit — sent by the TUI before it closes a session), `permission`
-(answers a `permission_request` frame by request id), `models` (list presets with key availability),
-`set_model` (also saved as the default; → `model`, `warning`, `contextWindow`, `effort`, `efforts`, and `effortDropped` when the level in use is not one of the new model's, in which case it is off),
+(answers a `permission_request` frame by request id), `models` (list presets with key availability and,
+per model, `efforts` — the levels `/effort` takes on it, for the picker),
+`set_model` (`modelId`, and optionally `effort`: one of the new model's levels or `off`, applied with the switch — one it does not take is an error and nothing changes; also saved as the default; → `model`, `warning`, `contextWindow`, `effort`, `efforts`, and `effortDropped` when the level in use is not one of the new model's, in which case it is off),
  `set_mode`, `set_nvim_viewer` (persist `ask`/`readonly`),
 `set_theme`, `set_mouse`, `diff` (read-only working-tree/staged patch), `timeline` (turn list with
 snapshot flags), `rewind`/`undo`/`redo` (time travel; refused while a turn runs), `fork`/`branch`/
@@ -723,7 +726,8 @@ one blank row below the content and above the bottom border, and it is clickable
 what pressing the key does; words that aren't keys (`输入`, `滚轮`) stay plain. The input block has a tinted background (its own
 shade in the light theme) with a left bar colored by risk — plan orange, auto red, readonly gray,
 ask blue (plan wins) — the draft, and an info row `mode · model provider` (e.g.
-`ask · claude-opus-5-5 apikeyfan`; a narrow screen drops the provider, then clips the model).
+`ask · claude-opus-5-5 apikeyfan`; with a level set the row reads `ask · glm-5.4 zhipu-plan ·
+effort max`; a narrow screen drops the level, then the provider, then clips the model).
 Clicking the model there opens the model picker (same as `/model`) with the current model selected;
 clicking the mode label opens the mode picker (same as `/mode`) on the current mode. Clicking the
 same label again closes its picker, clicking the other one swaps to that picker, and a click on a
@@ -820,6 +824,12 @@ forward history; kept in the TUI process only), so `/resume`-ing a subagent's se
 `/restart` quits and re-execs the TUI (and with it a fresh serve), so a rebuilt `tango-tui` or
 `dist/` takes effect; it resumes the current session with the same permission mode. It refuses
 while a turn is running.
+The model picker shows each model's reasoning level on the right (`200k · effort max`, `effort off`
+for a model without a level chosen, nothing on a model that has none — grok's design): `←`/`→` step
+it on the highlighted row (off → low → … → max and back, in that model's own list), Enter switches
+to the model *and* that level in one `set_model { modelId, effort }` (`off` sends none). The TUI
+remembers the level per model for as long as it runs, so switching back restores it; it is not
+saved, and a restart is `off` again.
 The `/` completion list runs its highlighted row on Enter — `/mo` ⏎ runs `/model`, the first match; ↑↓ picks
 another row first, Tab only completes the word, and a click on a row runs it. Shift+Tab steps through the modes
 (ask → plan → confirm → readonly). Ctrl+P opens a filterable command palette; model/session pickers use the same filtering and mouse
