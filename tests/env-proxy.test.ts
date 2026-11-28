@@ -215,7 +215,10 @@ test("serve: started the way the TUI starts it (pipes, proxy variables set), the
     assert.ok(existsSync(lock), 'the serve holds its session lock');
     assert.equal(JSON.parse(readFileSync(lock, 'utf8')).pid, r_childPid(lock), 'the lock names the serve, not its launcher');
     // what the TUI does on /quit and /restart: SIGTERM to the process it started
-    child.kill('SIGTERM');
+    // the launcher relays a signal on macOS and Linux; Windows has none to send — there the TUI's
+    // own way is the shutdown command over the pipes, which the copy reads through the inherited stdio
+    if (process.platform === 'win32') child.stdin.write(JSON.stringify({ cmd: 'shutdown', reason: 'test' }) + '\n');
+    else child.kill('SIGTERM');
     const code = await new Promise<number | null>((r) => child.on('exit', (c) => r(c)));
     assert.equal(code, 0, `clean stop (stderr: ${err})`);
     for (let i = 0; i < 100 && existsSync(lock); i++) await new Promise((ok) => setTimeout(ok, 20));

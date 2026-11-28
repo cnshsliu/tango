@@ -41,6 +41,9 @@ test('docs guard end to end: the turn baseline separates this turn from earlier 
   const sh = (...a: string[]) => spawnSync('git', a, { cwd: repo, encoding: 'utf8' });
   const hook = (ev: object) =>
     spawnSync(process.execPath, [GUARD], { cwd: repo, input: JSON.stringify(ev), encoding: 'utf8', env: { ...process.env, TANGO_PROJECT_DIR: repo } });
+  // the hook's own output travels with a failed status: what it thought changed is in there
+  const assertStatus = (r: { status: number | null; stdout: string; stderr: string }, expected: number, msg?: string) =>
+    assert.equal(r.status, expected, `${msg ?? ''}\n${r.stdout}${r.stderr}`);
   try {
     sh('init', '-q', '-b', 'main');
     sh('config', 'user.email', 't@t');
@@ -54,8 +57,8 @@ test('docs guard end to end: the turn baseline separates this turn from earlier 
     sh('commit', '-qm', 'init');
     // an edit left over from before this turn does not count against it
     await writeFile(join(repo, 'src', 'a.ts'), 'export const a = 2;\n');
-    assert.equal(hook({ hook_event_name: 'UserPromptSubmit', prompt: 'x' }).status, 0);
-    assert.equal(hook({ hook_event_name: 'Stop', stop_hook_active: false }).status, 0, 'nothing changed this turn');
+    assertStatus(hook({ hook_event_name: 'UserPromptSubmit', prompt: 'x' }), 0);
+    assertStatus(hook({ hook_event_name: 'Stop', stop_hook_active: false }), 0, 'nothing changed this turn');
 
     // this turn edits code and commits it, without docs → sent back once
     await writeFile(join(repo, 'src', 'b.ts'), 'export const b = 1;\n');
@@ -65,11 +68,11 @@ test('docs guard end to end: the turn baseline separates this turn from earlier 
     assert.equal(r.status, 2);
     assert.match(r.stderr, /src\/b\.ts/);
     assert.doesNotMatch(r.stderr, /src\/a\.ts/, 'the earlier edit is not blamed on this turn');
-    assert.equal(hook({ hook_event_name: 'Stop', stop_hook_active: true }).status, 0);
+    assertStatus(hook({ hook_event_name: 'Stop', stop_hook_active: true }), 0);
 
     // a doc edit in the same turn satisfies it
     await writeFile(join(repo, 'README.md'), '# r\n\nb exists\n');
-    assert.equal(hook({ hook_event_name: 'Stop', stop_hook_active: false }).status, 0);
+    assertStatus(hook({ hook_event_name: 'Stop', stop_hook_active: false }), 0);
   } finally {
     await rm(repo, { recursive: true, force: true });
   }
