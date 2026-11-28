@@ -13,6 +13,8 @@ pub struct Opts {
     pub readonly: bool,
     pub cont: bool,
     pub resume: Option<String>,
+    /// a bare `-r`: the TUI opens the session picker first
+    pub pick: bool,
     pub model: Option<String>,
     pub cwd: Option<String>,
 }
@@ -28,7 +30,11 @@ pub fn parse(args: &[String], tty: bool) -> Option<Opts> {
             "-y" | "--yes" => o.yes = true,
             "--readonly" => o.readonly = true,
             "-c" | "--continue" => o.cont = true,
-            "-r" | "--resume" => o.resume = Some(it.next()?.clone()),
+            "-r" | "--resume" => match it.clone().next() {
+                // an id follows: resume it; nothing (or another flag) does: pick first
+                Some(v) if !v.starts_with('-') => o.resume = Some(it.next().cloned().unwrap()),
+                _ => o.pick = true,
+            },
             "-m" | "--model" => o.model = Some(it.next()?.clone()),
             "--cwd" => o.cwd = Some(it.next()?.clone()),
             "-h" | "--help" | "-V" | "--version" | "--models" | "--sessions" => return None,
@@ -67,6 +73,8 @@ fn tango_dir() -> PathBuf {
 
 /// `tango -c`: the newest session by its meta createdAt (SessionStore.list order).
 /// The meta entry is always a session file's first line, and renames keep createdAt.
+/// A file without a content entry — a start that was never prompted, see
+/// SessionStore.sweepEmpty — is not a session and is skipped.
 pub fn latest_session(dir: &Path) -> Option<String> {
     use std::io::BufRead;
     let mut best: Option<(String, String)> = None;
@@ -78,14 +86,28 @@ pub fn latest_session(dir: &Path) -> Option<String> {
         let Ok(file) = std::fs::File::open(&path) else {
             continue;
         };
-        let mut first = String::new();
-        if std::io::BufReader::new(file).read_line(&mut first).is_err() {
+        let mut lines = std::io::BufReader::new(file).lines();
+        let Some(Ok(first)) = lines.next() else {
             continue;
-        }
+        };
         let Ok(meta) = serde_json::from_str::<serde_json::Value>(&first) else {
             continue;
         };
         if meta["kind"] != "meta" {
+            continue;
+        }
+        // what was said in, sent to, handed over to or summarized in it (sessionHoldsContent)
+        let holds = lines.map_while(Result::ok).any(|l| {
+            [
+                "\"kind\":\"message\"",
+                "\"kind\":\"mail\"",
+                "\"kind\":\"handoff\"",
+                "\"kind\":\"compaction\"",
+            ]
+            .iter()
+            .any(|k| l.contains(k))
+        });
+        if !holds {
             continue;
         }
         let Some(created) = meta["createdAt"].as_str() else {
@@ -125,6 +147,9 @@ pub fn apply(o: &Opts, root: Option<&Path>) -> Result<(), String> {
     unsafe {
         if let Some(id) = resume {
             std::env::set_var("TANGO_RESUME", id);
+        }
+        if o.pick {
+            std::env::set_var("TANGO_PICK_SESSION", "1");
         }
         if let Some(m) = &o.model {
             std::env::set_var("TANGO_MODEL", m);
@@ -181,6 +206,12 @@ mod tests {
             p(&["-r", "ab12"], true).unwrap().resume.as_deref(),
             Some("ab12")
         );
+        // a bare -r picks from the list first; a following flag is not taken for an id
+        let bare = p(&["-r"], true).unwrap();
+        assert!(bare.pick && bare.resume.is_none());
+        let then_flag = p(&["-r", "-m", "x/y"], true).unwrap();
+        assert!(then_flag.pick && then_flag.model.as_deref() == Some("x/y"));
+        assert!(!p(&["-c"], true).unwrap().pick);
         assert!(p(&["--readonly"], true).unwrap().readonly);
         // explicit `tui` opens it even without a terminal check
         assert!(p(&["tui"], false).is_some());
@@ -218,16 +249,34 @@ mod tests {
             "old.jsonl",
             "{\"kind\":\"meta\",\"id\":\"old\",\"createdAt\":\"2026-01-01T00:00:00Z\"}\n",
         );
+        // meta and junk only: a start that was never prompted is not a session
+        w(
+            "unused.jsonl",
+            "{\"kind\":\"meta\",\"id\":\"unused\",\"createdAt\":\"2026-03-01T00:00:00Z\"}\n{}\n{\"kind\":\"model\",\"ts\":\"2026-03-01T00:00:01Z\",\"modelId\":\"x/y\"}\n",
+        );
         w(
             "new.jsonl",
-            "{\"kind\":\"meta\",\"id\":\"new\",\"createdAt\":\"2026-02-01T00:00:00Z\"}\n{}\n",
+            "{\"kind\":\"meta\",\"id\":\"new\",\"createdAt\":\"2026-02-01T00:00:00Z\"}\n{\"kind\":\"message\",\"ts\":\"2026-02-01T00:00:01Z\",\"message\":{\"role\":\"user\",\"content\":[]}}\n",
         );
         w("junk.jsonl", "not json\n");
         w(
             "note.txt",
             "{\"kind\":\"meta\",\"id\":\"txt\",\"createdAt\":\"2027-01-01T00:00:00Z\"}\n",
         );
-        assert_eq!(latest_session(&dir).as_deref(), Some("new"));
+        assert_eq!(
+            latest_session(&dir).as_deref(),
+            Some("new"),
+            "the newest one that holds something"
+        );
+        w(
+            "onlymail.jsonl",
+            "{\"kind\":\"meta\",\"id\":\"onlymail\",\"createdAt\":\"2026-04-01T00:00:00Z\"}\n{\"kind\":\"mail\",\"ts\":\"2026-04-01T00:00:01Z\",\"from\":\"x\",\"text\":\"hi\"}\n",
+        );
+        assert_eq!(
+            latest_session(&dir).as_deref(),
+            Some("onlymail"),
+            "a message sent to it counts"
+        );
         std::fs::remove_dir_all(&dir).unwrap();
         assert_eq!(latest_session(&dir), None);
     }

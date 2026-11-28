@@ -41,6 +41,7 @@ usage:
   tango                  fullscreen TUI (new session)
   tango -c               TUI, continue the most recent session
   tango -r <id>          TUI, resume a session by id or prefix
+  tango -r               TUI, pick the session from a list first, then resume it
   tango -m <model>       pick a model (see --models)
   tango [prompt...]      run one prompt and exit (scripts, pipes)
   tango --models         list models and which have keys
@@ -87,6 +88,8 @@ interface Args {
   listSessions: boolean;
   continue: boolean;
   resume?: string;
+  /** -r with no id: the TUI opens the session picker first */
+  pick?: boolean;
   model?: string;
   cwd?: string;
   input?: string;
@@ -154,9 +157,17 @@ function parseArgs(argv: string[]): Args {
         a.continue = true;
         break;
       case '-r':
-      case '--resume':
-        a.resume = argv[++i];
+      case '--resume': {
+        // a bare -r picks from the session list first
+        const value = argv[i + 1];
+        if (value !== undefined && !value.startsWith('-')) {
+          a.resume = value;
+          i++;
+        } else {
+          a.pick = true;
+        }
         break;
+      }
       case '-m':
       case '--model':
         a.model = argv[++i];
@@ -242,7 +253,11 @@ function printModels(models: ModelSpec[], current?: string): void {
 function printSessions(sessions: SessionSummary[]): void {
   if (!sessions.length) return console.log(dim('no sessions yet'));
   for (const s of sessions) {
-    console.log(`${shortId(s.id).padEnd(12)}  ${s.createdAt.slice(0, 16)}  ${String(s.messages).padStart(4)} msgs  ${s.cwd}  ${s.name ?? ''}`);
+    // a name, else the first prompt: what tells two sessions apart when picking an id
+    const what = s.name ?? (s.topic ? s.topic.slice(0, 60) : '');
+    console.log(
+      `${shortId(s.id).padEnd(12)}  ${s.createdAt.slice(0, 16)}  ${String(s.messages).padStart(4)} msgs  ${s.cwd}  ${what}`
+    );
   }
 }
 
@@ -562,6 +577,7 @@ async function launchTui(args: Args): Promise<void> {
   const env: NodeJS.ProcessEnv = { ...process.env };
   env.TANGO_BIN ??= `${process.execPath} ${join(root, 'bin', 'tango.js')}`;
   if (args.resume) env.TANGO_RESUME = args.resume;
+  else if (args.pick) env.TANGO_PICK_SESSION = '1'; // the TUI opens /resume once serve says hello
   else if (args.continue) {
     const [latest] = (await SessionStore.list(sessionsDir())).filter((x) => !x.parent);
     if (!latest) throw new Error('no sessions to continue yet');

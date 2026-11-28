@@ -91,6 +91,7 @@ launcher process stays around.
 ```
 tango                  fullscreen TUI (the interactive interface)
 tango -c / -r <id>     TUI on the most recent / a given session
+tango -r               TUI with the session picker open: pick one and it resumes that session
 tango -m <model> -y    TUI options: model, auto mode (or --readonly)
 tango [prompt...]      run one prompt and exit (also when stdin is a pipe)
 tango --format json [prompt...]   same, but JSON lines on stdout for scripts and CI
@@ -104,10 +105,16 @@ tango task rm <name>   delete a task
 tango task run [--loop]  run due tasks once, or keep running as a daemon
 ```
 
+A session nothing was said in is not kept. It is not listed — not in `/sessions`, `tango --sessions`
+or `-c` —, its file is removed when the tango that opened it exits without a prompt in it, and the
+ones a killed start left behind are swept on the next start (files under 10 minutes old and sessions
+another live tango holds open stay). "Said in" includes a `/send` message or a handoff that reached
+it. An id you name yourself still resolves.
+
 | flag | short | meaning |
 | --- | --- | --- |
-| `--continue` | `-c` | continue the most recent session |
-| `--resume <id>` | `-r` | continue a given session (id, id prefix, or the id's last `-` part, e.g. `0ad2040a8182`) |
+| `--continue` | `-c` | continue the most recent session (one nothing was said in does not count) |
+| `--resume [id]` | `-r` | continue a given session (id, id prefix, or the id's last `-` part, e.g. `0ad2040a8182`). Without an id the TUI opens with the session picker: pick one and it resumes that session; Esc leaves you in a new session (the launcher sets `TANGO_PICK_SESSION` for the TUI) |
 | `--model <id>` | `-m` | model for this run (fuzzy: `glm54` finds `zhipu-plan/glm-5.4`) |
 | `--yes` | `-y` | auto mode: tools run without asking |
 | `--readonly` | | no writes, no bash |
@@ -607,7 +614,8 @@ snapshot flags), `rewind`/`undo`/`redo` (time travel; refused while a turn runs)
 `compact`, `status`. Prompts run one at a time; `interrupt`, `permission`, `set_mode` and `status`
 skip that queue so they land mid-turn. A client switches sessions by respawning the child with
 `TANGO_RESUME=<id or prefix>` (and optionally `TANGO_MODE`, `TANGO_MODEL`) in the environment —
-serve takes them from there, no flags. Frames: `hello` (session/model/tools/context, and with them `effort` and the `efforts` the model takes) → `stream`
+serve takes them from there, no flags. `TANGO_PICK_SESSION` (set by a bare `tango -r`) is for the
+TUI: it opens the session picker once serve says hello. Frames: `hello` (session/model/tools/context, and with them `effort` and the `efforts` the model takes) → `stream`
 (token deltas) → `tool_result` / `permission_request` (a running `task` call also sends
 `task_progress`: `callId`, `agent`, `step`, `tool`, `detail` per sub-agent tool) → `message` → `turn_end` (usage, context
 window/tokens + running cost) → `result` (per command). Side questions use request-id-tagged

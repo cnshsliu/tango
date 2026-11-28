@@ -1,7 +1,9 @@
-import { appendFile, mkdir, readFile, readdir } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { appendFile, mkdir, readFile, readdir, stat, unlink } from 'node:fs/promises';
+import { createReadStream, existsSync } from 'node:fs';
+import { createInterface } from 'node:readline';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { sessionHolder } from './session-lock.js';
 import type { Message, SessionEntry } from './types.js';
 
 export interface SessionMeta {
@@ -22,6 +24,13 @@ export interface SessionSummary extends SessionMeta {
   topic: string;
 }
 
+/** An entry that makes a session worth keeping: what was said in it, sent to it, handed over
+ *  to it, or summarized. A session with none of these was opened and never used (see
+ *  SessionStore.removeIfEmpty and sweepEmpty). */
+export function sessionHoldsContent(kind: string): boolean {
+  return kind === 'message' || kind === 'mail' || kind === 'handoff' || kind === 'compaction';
+}
+
 /** A session id as people type it: a uuid's last '-' part (12 hex digits, which every
  * id-taking command resolves); any other id (e.g. `task-…`) stays whole. */
 export function shortId(id: string): string {
@@ -40,6 +49,30 @@ export function relativeTime(iso: string, now: Date = new Date()): string {
   if (s < 172800) return '昨天';
   if (s < 604800) return `${Math.floor(s / 86400)} 天前`;
   return iso.slice(5, 10).replace('-', '/');
+}
+
+/**
+ * Whether the session file holds a content entry; reads line by line and stops at the first.
+ * A line that does not parse (a write cut short) counts as content: a file tango cannot read
+ * in full is never judged empty.
+ */
+async function fileHoldsContent(file: string): Promise<boolean> {
+  const lines = createInterface({ input: createReadStream(file, { encoding: 'utf8' }), crlfDelay: Infinity });
+  try {
+    for await (const line of lines) {
+      if (!line.trim()) continue;
+      let kind: string | undefined;
+      try {
+        kind = (JSON.parse(line) as SessionEntry).kind;
+      } catch {
+        return true;
+      }
+      if (sessionHoldsContent(kind)) return true;
+    }
+    return false;
+  } finally {
+    lines.close();
+  }
 }
 
 /**
@@ -112,8 +145,12 @@ export class SessionStore {
     return store;
   }
 
-  /** All sessions, newest first. Skips files without a valid meta line. */
-  static async list(dir: string): Promise<SessionSummary[]> {
+  /**
+   * All sessions, newest first. Skips files without a valid meta line, and sessions that hold
+   * no content (opened and never used): they are not listed or continued. `includeEmpty` adds
+   * them back — for resolving an id the user named, not for picking.
+   */
+  static async list(dir: string, opts: { includeEmpty?: boolean } = {}): Promise<SessionSummary[]> {
     if (!existsSync(dir)) return [];
     const out: SessionSummary[] = [];
     for (const f of await readdir(dir)) {
@@ -121,11 +158,13 @@ export class SessionStore {
       let meta: SessionMeta | undefined;
       let messages = 0;
       let topic = '';
+      let content = false;
       for (const line of (await readFile(join(dir, f), 'utf8')).split('\n')) {
         if (!line.trim()) continue;
         try {
           const e: SessionEntry = JSON.parse(line);
           if (e.kind === 'meta') meta = e;
+          if (sessionHoldsContent(e.kind)) content = true;
           if (e.kind === 'message') {
             messages++;
             // the topic is the first user *text* prompt — tool results also come
@@ -138,7 +177,7 @@ export class SessionStore {
           }
         } catch {}
       }
-      if (meta)
+      if (meta && (content || opts.includeEmpty))
         out.push({ ...meta, id: meta.id ?? f.slice(0, -'.jsonl'.length), messages, topic });
     }
     return out.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
@@ -146,7 +185,60 @@ export class SessionStore {
 
   async append(entry: SessionEntry): Promise<void> {
     this.entries.push(entry);
+    // a sweep may have removed this file while the session sat unused: the log starts
+    // over with its meta line, or the session would be invisible to every list
+    if (!existsSync(this.file) && entry.kind !== 'meta') {
+      const meta = this.meta();
+      if (meta) await appendFile(this.file, JSON.stringify({ ...meta, kind: 'meta' } satisfies SessionEntry) + '\n', 'utf8');
+    }
     await appendFile(this.file, JSON.stringify(entry) + '\n', 'utf8');
+  }
+
+  /** Whether anything was ever said in, sent to or handed over to this session. */
+  holdsContent(): boolean {
+    return this.entries.some((e) => sessionHoldsContent(e.kind));
+  }
+
+  /**
+   * Delete the session file when the session holds no content: one that was opened (or
+   * created) and never used is not kept. Resolves to whether a file was removed.
+   */
+  async removeIfEmpty(): Promise<boolean> {
+    if (this.holdsContent()) return false;
+    try {
+      await unlink(this.file);
+      return true;
+    } catch (e: any) {
+      if (e?.code === 'ENOENT') return false;
+      throw e;
+    }
+  }
+
+  /**
+   * Remove the files of sessions that hold no content — left by a start without a prompt that
+   * was killed before it could clean up, or by a run that failed before anything was said.
+   * A session another live tango holds open stays (its lock in locks/sessions), and so do
+   * files changed within `keepAgeMs`: one may have been opened a moment ago and simply not
+   * prompted yet. Returns how many files were removed.
+   */
+  static async sweepEmpty(dir: string, opts: { keep?: string; keepAgeMs?: number } = {}): Promise<number> {
+    const keepAgeMs = opts.keepAgeMs ?? 10 * 60_000;
+    if (!existsSync(dir)) return 0;
+    let removed = 0;
+    for (const f of await readdir(dir)) {
+      if (!f.endsWith('.jsonl') || (opts.keep && f === `${opts.keep}.jsonl`)) continue;
+      const file = join(dir, f);
+      try {
+        if (Date.now() - (await stat(file)).mtimeMs < keepAgeMs) continue;
+        if (await sessionHolder(f.slice(0, -'.jsonl'.length)).catch(() => null)) continue;
+        if (await fileHoldsContent(file)) continue;
+        await unlink(file);
+        removed++;
+      } catch {
+        // vanished, unreadable or torn: not this sweep's business
+      }
+    }
+    return removed;
   }
 
   appendMessage(message: Message): Promise<void> {

@@ -197,6 +197,8 @@ test('rename() appends a meta the list picks up; create() records the branch', a
   try {
     const store = await SessionStore.create(dir, '/work', undefined, undefined, undefined, 'feature-x');
     assert.equal(store.meta()?.branch, 'feature-x', 'branch recorded at creation');
+    // a session nothing was said in is not listed (session-empty.test.ts): say something first
+    await store.appendMessage({ role: 'user', content: [{ type: 'text', text: 'hello' }] });
     const [listed] = await SessionStore.list(dir);
     assert.equal(listed.branch, 'feature-x');
 
@@ -233,8 +235,9 @@ test('list() extracts the first user prompt as the topic', async () => {
     await store.appendMessage({ role: 'user', content: [{ type: 'text', text: '帮我修复选区漂移的问题，现象是……' }] });
     const [listed] = await SessionStore.list(dir);
     assert.equal(listed.topic, '帮我修复选区漂移的问题，现象是……');
-    // a session with no user text yet has an empty topic
+    // a session with no user text yet has an empty topic (it holds an answer, so it is listed)
     const empty = await SessionStore.create(dir, '/work2', 'empty');
+    await empty.appendMessage({ role: 'assistant', content: [{ type: 'text', text: 'sure' }] });
     const all = await SessionStore.list(dir);
     assert.equal(all.find((s) => s.id === empty.id)?.topic, '');
   } finally {
@@ -248,6 +251,7 @@ test('meta() reflects the latest rename (list/meta/fork all agree)', async () =>
     const store = await SessionStore.create(dir, '/work', 'old-name');
     await store.append({ kind: 'meta', id: store.id, createdAt: new Date().toISOString(), cwd: '/work', name: 'new-name' });
     assert.equal(store.meta()?.name, 'new-name', 'M1: meta() returns the last meta entry');
+    await store.appendMessage({ role: 'user', content: [{ type: 'text', text: 'hello' }] }); // listed only once it holds something
     const [listed] = await SessionStore.list(dir);
     assert.equal(listed.name, 'new-name');
     const fork = await store.forkTo(dir, 'fork-x', store.indexedEntries().length - 1);

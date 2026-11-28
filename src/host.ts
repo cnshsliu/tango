@@ -456,7 +456,9 @@ function taskDeps(parent: Agent, store: SessionStore, perm: PermState, cfg: Agen
 }
 
 export async function resolveSessionId(prefix: string): Promise<string> {
-  const sessions = await SessionStore.list(sessionsDir());
+  // an id the user named is resolved even when its session holds nothing yet (a window that
+  // was just opened, a /send target): only lists and -c leave those out
+  const sessions = await SessionStore.list(sessionsDir(), { includeEmpty: true });
   const hits = sessions.filter(
     // an id prefix, or the id's last '-' part (a uuid's final 12 hex digits, as the TUI shows it)
     (s) => s.id.startsWith(prefix) || (!!prefix && !prefix.includes('-') && s.id.endsWith(`-${prefix}`))
@@ -504,6 +506,8 @@ export async function openAgent(args: HostArgs, perm: PermState): Promise<Opened
     ).trim();
     store = await SessionStore.create(sessionsDir(), args.cwd ?? process.cwd(), undefined, undefined, undefined, branch || undefined);
   }
+  // sessions a killed start left behind without a prompt in them are not kept either
+  await SessionStore.sweepEmpty(sessionsDir(), { keep: store.id }).catch(() => {});
 
   // A resumed session keeps its recorded directory — unless that is gone (the worktree was
   // removed): then it runs where tango was started (after the launch rescue: the home directory

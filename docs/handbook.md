@@ -99,11 +99,15 @@ not saved to config.
 ### Sessions
 
 Every conversation is a session, stored as an append-only JSONL file in
-`~/.tango/sessions/`. Sessions are tied to the directory you started them in.
+`~/.tango/sessions/`. Sessions are tied to the directory you started them in. A session nothing
+was said in is not kept: it is not listed (`/sessions`, `tango --sessions`, `-c`), its file goes away
+when the tango that opened it exits without a prompt in it, and the ones a killed start left behind
+are swept on the next start.
 
 | Task | Command |
 | --- | --- |
 | Continue the latest session | `tango -c` |
+| Pick a session from a list, then resume it | `tango -r` with no id: the TUI opens with the session picker; pick one and it resumes that session, Esc leaves you in a new session. `tango --sessions` lists them in the shell instead (id, date, messages, directory, name or first prompt) |
 | Open a specific session | `tango -r <id or prefix>` (the id's last `-` part also works, e.g. `tango -r 0ad2040a8182`), or `/resume` inside the TUI for a picker. If the session's directory no longer exists, it runs in the directory you start tango from, for that run, and says so |
 | Start fresh, same model and mode | `/new` |
 | Go back to the previous session (e.g. from a subagent's session to its parent) | `/back`; `/forward` undoes it |

@@ -189,8 +189,14 @@ export class Agent {
    * sessions that ran at least one prompt. Awaited, so SessionEnd hooks finish before exit.
    */
   async end(reason: string): Promise<void> {
-    if (this.ended || !this.prompted) return;
+    if (this.ended) return;
     this.ended = true;
+    // this process never prompted: unless something was sent to the session, it holds
+    // nothing and its file is not kept (every exit path comes through here)
+    if (!this.prompted) {
+      await this.store.removeIfEmpty().catch(() => {});
+      return;
+    }
     await this.events.emit('session_end', { reason });
   }
 

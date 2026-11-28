@@ -1899,6 +1899,8 @@ pub struct App {
     /// the history emoji at the left end of the status bar, rebuilt every draw (a click
     /// opens /history)
     history_area: Rect,
+    /// `tango -r` with no id (TANGO_PICK_SESSION): open the session picker once serve says hello
+    start_picker: bool,
     /// when the running turn started — drives the elapsed readout and tip rotation
     turn_started: Option<std::time::Instant>,
     /// chars received this turn (text + thinking deltas) — the ↓ readout
@@ -2085,6 +2087,7 @@ impl App {
             problems_rows: Vec::new(),
             problems_area: Rect::default(),
             history_area: Rect::default(),
+            start_picker: std::env::var_os("TANGO_PICK_SESSION").is_some(),
             turn_started: None,
             turn_chars: 0,
             last_output: None,
@@ -7895,6 +7898,12 @@ impl App {
                 if let Some(prev) = self.nav_back.last() {
                     let short = short_session(prev).to_string();
                     self.push(format!("← /back 返回会话 {short}"), Tone::Muted);
+                }
+                // `tango -r` with no id: pick the session first (Esc in the picker leaves
+                // you in the new session that just opened)
+                if self.start_picker {
+                    self.start_picker = false;
+                    self.run_slash("/resume", serve);
                 }
             }
             "stream" => {
@@ -16724,6 +16733,53 @@ mod tests {
             .collect();
         assert!(!row0.contains("old"));
         assert!(app.toast.is_none());
+    }
+
+    #[test]
+    fn a_bare_resume_launch_opens_the_session_picker_once_hello_arrives() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.start_picker = true;
+        let hello = json!({"type": "hello", "session": "abc", "model": "m/m", "mode": "ask"});
+        app.frame(hello.clone(), &mut serve);
+        let asked: Vec<String> = serve
+            .sent
+            .iter()
+            .filter(|l| l.contains("\"sessions\""))
+            .cloned()
+            .collect();
+        assert_eq!(asked.len(), 1, "hello asked serve for the session list");
+        assert!(!app.start_picker, "and only once");
+        app.frame(hello, &mut serve);
+        assert_eq!(
+            serve
+                .sent
+                .iter()
+                .filter(|l| l.contains("\"sessions\""))
+                .count(),
+            1
+        );
+        // the list's reply opens the picker, as /resume does
+        let req: Value = serde_json::from_str(&asked[0]).unwrap();
+        app.frame(
+            json!({"type": "result", "id": req["id"], "ok": true, "data": {"sessions": [
+                {"id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "createdAt": "2026-11-01T10:00", "ago": "昨天",
+                 "branch": "", "messages": 4, "cwd": "/w", "name": "", "topic": "earlier", "current": false},
+                {"id": "11111111-2222-3333-4444-555555555555", "createdAt": "2026-11-27T10:00", "ago": "刚刚",
+                 "branch": "", "messages": 0, "cwd": "/w", "name": "", "topic": "", "current": true}
+            ]}}),
+            &mut serve,
+        );
+        assert!(app.picker.is_some(), "the session picker is open");
+        // without the launch flag a hello opens nothing
+        let mut plain = App::new();
+        let mut serve2 = Serve::mock();
+        plain.frame(
+            json!({"type": "hello", "session": "abc", "model": "m/m", "mode": "ask"}),
+            &mut serve2,
+        );
+        assert!(plain.picker.is_none());
+        assert!(!serve2.sent.iter().any(|l| l.contains("\"sessions\"")));
     }
 
     #[test]
