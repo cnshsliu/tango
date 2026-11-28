@@ -24,12 +24,13 @@ test('bash background returns an id at once; logs, list and stop work on it', as
   assert.match(out(await processLogsTool.execute({ id }, ctx())), /ready/);
 
   const stopped = await processStopTool.execute({ id }, ctx());
-  assert.match(out(stopped), /stopped: .*killed \(SIGTERM\)/);
+  // the process group gets SIGTERM here; Windows ends the tree with taskkill, which reads as exit 1
+  assert.match(out(stopped), process.platform === 'win32' ? /stopped: .*exited 1/ : /stopped: .*killed \(SIGTERM\)/);
   assert.equal(getProcess(id)!.done, true);
   assert.match(out(await processStopTool.execute({ id }, ctx())), /already finished/);
 });
 
-test('stop escalates to SIGKILL when SIGTERM is ignored, and reaches grandchildren', async () => {
+test('stop escalates to SIGKILL when SIGTERM is ignored, and reaches grandchildren', { skip: process.platform === 'win32' && 'Windows has no SIGTERM to ignore: taskkill /F ends the tree at once' }, async () => {
   const p = startProcess("trap '' TERM; echo armed; sleep 30 & wait", tmpdir());
   // under load the shell may not have set its trap yet; wait until it says so
   while (!p.output.includes('armed')) await new Promise((r) => setTimeout(r, 20));
@@ -46,7 +47,8 @@ test('a command that fails right away reports the error', async () => {
   startup.graceMs = 30_000;
   let r;
   try {
-    r = await bashTool.execute({ command: 'echo boom >&2; exit 3', background: true }, ctx());
+    // node writes the error and the exit code the same way in every shell
+    r = await bashTool.execute({ command: `node -e "process.stderr.write('boom'); process.exit(3)"`, background: true }, ctx());
   } finally {
     startup.graceMs = grace;
   }
