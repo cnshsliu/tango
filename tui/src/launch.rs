@@ -54,9 +54,23 @@ pub fn parse(args: &[String], tty: bool) -> Option<Opts> {
 /// The repo root: this binary lives at <root>/tui/target/{release,debug}/,
 /// reached through the npm-link symlink, so resolve that first.
 pub fn repo_root() -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?.canonicalize().ok()?;
+    let exe = plain_path(std::env::current_exe().ok()?.canonicalize().ok()?);
     let root = exe.parent()?.parent()?.parent()?.parent()?.to_path_buf();
     root.join("bin").join("tango.js").exists().then_some(root)
+}
+
+/// canonicalize() on Windows answers with a verbatim path, `\\?\D:\…`, which node cannot take
+/// as a module path (it read `\\?\D:` as a UNC host and looked for a directory called `D:`):
+/// the plain path, with the prefix removed (a UNC share keeps its leading `\\`).
+fn plain_path(p: PathBuf) -> PathBuf {
+    let s = p.to_string_lossy();
+    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+        PathBuf::from(format!(r"\\{rest}"))
+    } else if let Some(rest) = s.strip_prefix(r"\\?\") {
+        PathBuf::from(rest)
+    } else {
+        p
+    }
 }
 
 /// `node <root>/bin/tango.js` — the Node CLI, run with the node on PATH.
@@ -252,6 +266,13 @@ mod tests {
             None,
             "unknown flags are prompt text in Node"
         );
+    }
+
+    #[test]
+    fn a_verbatim_path_becomes_a_plain_one() {
+        assert_eq!(plain_path(PathBuf::from(r"\\?\D:\a\tango\tui\target\release\tango-tui.exe")), PathBuf::from(r"D:\a\tango\tui\target\release\tango-tui.exe"));
+        assert_eq!(plain_path(PathBuf::from(r"\\?\UNC\server\share\tango\x.exe")), PathBuf::from(r"\\server\share\tango\x.exe"));
+        assert_eq!(plain_path(PathBuf::from("/opt/t/tui/target/release/tango-tui")), PathBuf::from("/opt/t/tui/target/release/tango-tui"));
     }
 
     #[test]
