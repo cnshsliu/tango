@@ -37,7 +37,7 @@ test('hooks in any shell: the payload reaches the command, exit 2 blocks with it
     assert.deepEqual(skipped, {}, 'non-matching hooks never run');
 
     const context = await runHooks(
-      { PostToolUse: [{ command: `node -e "process.stdout.write(JSON.stringify({ hookSpecificOutput: { additionalContext: 'from the hook' } }))"` }] },
+      { PostToolUse: [{ command: `node -e "process.stdout.write(JSON.stringify({ additionalContext: 'from the hook' }))"` }] },
       'PostToolUse',
       {},
       { cwd: dir, tool: 'bash' }

@@ -52,8 +52,9 @@ test('an edit hands the file to its language server; what it publishes is emitte
   installLspDiagnostics(events, proj);
   try {
     await edit(events, 'edit', bad);
-    await until(() => frames.length > 0);
-    const first = frames[0];
+    // the server may publish an empty list before it has loaded the project: wait for the real one
+    await until(() => frames.some((f) => f.problems.length > 0));
+    const first = frames.find((f) => f.problems.length > 0)!;
     assert.equal(first.file, 'bad.ts', 'the path is relative to the working directory');
     assert.equal(first.problems.length, 1);
     assert.equal(first.problems[0].severity, 'error');

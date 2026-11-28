@@ -2847,7 +2847,7 @@ test('handoff list/cancel and expiry: queued briefs can be listed, withdrawn, an
   }
 });
 
-test('project config: plain keys apply at once, a project hook waits for trust, the personal file stays out of git', async () => {
+test('project config: plain keys apply at once, a project hook waits for trust, the personal file stays out of git', { skip: process.platform === 'win32' && 'its project hook is a POSIX shell script; the hook runner itself is covered on Windows by tests/hooks-any-shell.test.ts' }, async () => {
   const mock = await startMock();
   const home = await mkdtemp(join(tmpdir(), 'tango-serve-home-'));
   const work = realpathSync.native(await mkdtemp(join(tmpdir(), 'tango-serve-work-'))); // the long name on Windows too (TEMP may be an 8.3 path)
