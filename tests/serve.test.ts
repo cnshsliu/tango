@@ -2024,14 +2024,23 @@ test('bg/tasks/stop: real child runs in a worktree, session resumable', async ()
     assert.ok(existsSync(bg.data.task.worktree), 'worktree created');
     // the child takes a moment; poll tasks until done
     let done: any = null;
+    let last: any = null;
     for (let i = 0; i < 40 && !done; i++) {
       await sleep(500);
       s.send({ id: 201, cmd: 'tasks' });
       const t = await s.until((f: any) => f.type === 'result' && f.id === 201, 'tasks');
       const found = t.data.tasks.find((x: any) => x.id === bg.data.task.id);
+      if (found) last = found;
       if (found?.status === 'done') done = found;
     }
-    assert.ok(done, 'background task finished');
+    if (!done) {
+      // the child's own log says why it stopped: keep the tail with the failure
+      const logs = join(home, 'logs');
+      const tail = existsSync(logs)
+        ? readdirSync(logs).map((f) => readFileSync(join(logs, f), 'utf8')).join('').slice(-800)
+        : '(no logs dir)';
+      assert.fail(`background task finished; last state ${JSON.stringify(last)}; log tail:\n${tail}`);
+    }
     assert.ok(done.sessionId, 'session id captured');
     const store = await SessionStore.open(join(home, 'sessions'), done.sessionId);
     assert.ok(store.allMessages().some((m: any) => JSON.stringify(m).includes('后台任务')), 'prompt landed in its session');
