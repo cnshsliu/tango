@@ -1,0 +1,3 @@
+# shell scripts keep LF everywhere: a CRLF package.sh read its `windows-*` pattern with a trailing on the Windows runner and
+# never matched — and anyone who clones on Windows and runs install.sh from Git Bash would hit the same
+*.sh text eol=lf
