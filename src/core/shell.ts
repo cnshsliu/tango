@@ -114,13 +114,42 @@ export function shellInvocation(command: string, opts: { sh?: boolean; stdin?: b
       'Bypass',
       '-Command',
       [
-        // a process without a console (a hidden one) cannot switch its code page: not fatal
-        'try { chcp.com 65001 > $null; [Console]::OutputEncoding = [Text.Encoding]::UTF8; $OutputEncoding = [Text.Encoding]::UTF8 } catch {}',
-        // 5.1 writes UTF-16 through `>`, Set-Content and Add-Content: UTF-8 without a BOM instead
+        // UTF-8 without a BOM everywhere: a console switched to [Text.Encoding]::UTF8 writes a BOM
+        // ahead of the first output, which broke a hook's JSON; 5.1 writes UTF-16 through `>`,
+        // Set-Content and Add-Content unless told otherwise. A process without a console (a hidden
+        // one) cannot switch its code page at all: not fatal.
         '$utf8 = New-Object System.Text.UTF8Encoding($false)',
+        'try { chcp.com 65001 > $null; [Console]::OutputEncoding = $utf8; $OutputEncoding = $utf8 } catch {}',
         '$PSDefaultParameterValues["Out-File:Encoding"] = $utf8',
         '$PSDefaultParameterValues["Set-Content:Encoding"] = $utf8',
         '$PSDefaultParameterValues["Add-Content:Encoding"] = $utf8',
+        // commands people (and models) write on every system, as PowerShell takes them: `rm -f`
+        // is ambiguous there (-Filter or -Force?), touch and which do not exist, mkdir has no -p
+        [
+          'function rm {',
+          '  [CmdletBinding()] param(',
+          '    [Alias("f", "F", "force")] [switch] $Force,',
+          '    [Alias("r", "R", "recurse", "recursive")] [switch] $Recurse,',
+          '    [switch] $rf, [switch] $fr,',
+          '    [Parameter(ValueFromRemainingArguments = $true)] [string[]] $Path)',
+          '  Remove-Item -Path $Path -Force:($Force -or $rf -or $fr) -Recurse:($Recurse -or $rf -or $fr) -ErrorAction SilentlyContinue',
+          '}',
+          'function touch {',
+          '  param([Parameter(ValueFromRemainingArguments = $true)] [string[]] $Path)',
+          '  foreach ($p in $Path) {',
+          '    if (Test-Path -LiteralPath $p) { (Get-Item -LiteralPath $p).LastWriteTime = Get-Date }',
+          '    else { New-Item -ItemType File -Path $p | Out-Null }',
+          '  }',
+          '}',
+          'function mkdir {',
+          '  param([Alias("p")] [switch] $Parents, [Parameter(ValueFromRemainingArguments = $true)] [string[]] $Path)',
+          '  foreach ($p in $Path) { New-Item -ItemType Directory -Path $p -Force:$Parents | Out-Null }',
+          '}',
+          'function which {',
+          '  param([Parameter(Mandatory = $true)] [string] $Name)',
+          '  (Get-Command $Name -ErrorAction SilentlyContinue).Source',
+          '}',
+        ].join('\n'),
         '$ErrorActionPreference = "Stop"',
         '$failed = $false',
         'try {',

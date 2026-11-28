@@ -9,6 +9,8 @@ import { stopAllLsp } from '../src/core/lsp.js';
 import type { LspProblem, ToolCallBlock, ToolResult } from '../src/core/types.js';
 
 const REPO = process.cwd();
+/** Windows keeps a directory busy while a process that ran in it is still leaving. */
+const settle = () => new Promise<void>((r) => setTimeout(r, process.platform === 'win32' ? 1000 : 0));
 after(() => stopAllLsp());
 
 /** A project whose node_modules/.bin is this repo's, so typescript-language-server is "installed". */
@@ -71,6 +73,7 @@ test('an edit hands the file to its language server; what it publishes is emitte
     assert.equal(frames.at(-1)!.file, 'bad.ts', 'a clean file is announced as clean');
   } finally {
     stopAllLsp();
+    await settle(); // the server lets go of the project directory a moment after it is told to stop
     await rm(proj, { recursive: true, force: true });
   }
 });
@@ -112,6 +115,7 @@ test('a file outside the working directory is not forwarded', { timeout: 120_000
     assert.equal(frames.length, 0);
   } finally {
     stopAllLsp();
+    await settle(); // the server lets go of the project directory a moment after it is told to stop
     await rm(proj, { recursive: true, force: true });
     await rm(elsewhere, { recursive: true, force: true });
   }

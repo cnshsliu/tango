@@ -116,8 +116,10 @@ the launcher finds `bin/tango.js` three levels up from itself.
 
 **Builds and releases.** GitHub Actions (`.github/workflows/ci.yml`) runs the checks on every
 push to main and every pull request — typecheck, docs and hook coverage, the TypeScript and
-Rust tests — and then packages the four targets (`darwin-arm64`, `darwin-x64`, `linux-x64`,
-`linux-arm64`), each smoke-tested by running its own `tango --version` and `tango doctor`.
+Rust tests — and then packages the six targets (`darwin-arm64`, `darwin-x64`, `linux-x64`,
+`linux-arm64`, `windows-x64`, `windows-arm64`; the Windows ones as zips), each smoke-tested by
+running its own `tango --version` and `tango doctor`. A separate `check-windows` job runs the
+TypeScript and Rust tests on Windows while the port settles; it does not fail the run yet.
 The packages are kept as workflow artifacts for two weeks, named `dev.<commit>`. A release is
 a decision, not a push: tag `vX.Y.Z` and the same packages become a GitHub Release with
 `SHA256SUMS` and generated notes — what `install.sh` downloads. The version lives in three

@@ -108,8 +108,15 @@ export function searchDirs(): string[] {
   return dirs.filter((d, i) => dirs.indexOf(d) === i);
 }
 
+/** On Windows a program is `name.exe` or `name.cmd`: looked for under those too. */
+const EXECUTABLE_SUFFIXES = IS_WINDOWS ? ['.exe', '.cmd', '.bat', ''] : [''];
+
 export const onPath = (name: string): string | undefined => {
-  for (const p of searchDirs()) if (existsSync(join(p, name))) return join(p, name);
+  for (const p of searchDirs()) {
+    for (const suffix of EXECUTABLE_SUFFIXES) {
+      if (existsSync(join(p, name + suffix))) return join(p, name + suffix);
+    }
+  }
   return undefined;
 };
 

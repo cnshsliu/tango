@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, isAbsolute } from 'node:path';
 import { tangoDir } from './config.js';
 import type { Message } from './types.js';
 
@@ -112,7 +112,8 @@ export interface PromotedSkill {
  * `description:` line — the only thing the model sees before it reads the skill.
  */
 export async function promoteDraft(draftFile: string, root: string): Promise<PromotedSkill> {
-  const src = draftFile.includes('/') ? draftFile : join(draftsDir(), draftFile);
+  // a path, not a bare name: `/` or `\` in it, or absolute (C:\…)
+  const src = draftFile.includes('/') || draftFile.includes('\\') || isAbsolute(draftFile) ? draftFile : join(draftsDir(), draftFile);
   if (!existsSync(src)) throw new Error(`draft not found: ${draftFile} (see ${draftsDir()})`);
   const body = await readFile(src, 'utf8');
   const fm = /^---\r?\n([\s\S]*?)\r?\n---/.exec(body);

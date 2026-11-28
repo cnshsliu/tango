@@ -1,6 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { DETACHED, IS_WINDOWS, PATH_SEP, hookStdin, killProcessTree, powerShell, shellInvocation, translateChainOperators } from '../src/core/shell.js';
 import { processCommandLine, processStarts } from '../src/core/liveness.js';
 import { decide, suggestRules } from '../src/core/permissions.js';
@@ -11,11 +15,12 @@ type ShellRun = { out: string; err: string; code: number | null };
 
 /** Run `command` through the platform's shell, as the bash tool and hooks do: plain, or the
  *  way the bash tool spawns it (detached, hidden). A stdin payload goes the way hooks send one. */
-function runShell(command: string, opts: { stdin?: string; sh?: boolean; detached?: boolean } = {}): Promise<ShellRun> {
+function runShell(command: string, opts: { stdin?: string; sh?: boolean; detached?: boolean; cwd?: string } = {}): Promise<ShellRun> {
   const sh = shellInvocation(command, { sh: opts.sh, stdin: opts.stdin !== undefined });
   const stdin = opts.stdin !== undefined ? hookStdin(opts.stdin) : undefined;
   return new Promise((done) => {
     const child = spawn(sh.file, sh.args, {
+      cwd: opts.cwd,
       stdio: [opts.stdin !== undefined ? 'pipe' : 'ignore', 'pipe', 'pipe'],
       windowsHide: true,
       detached: opts.detached ? DETACHED : false,
@@ -44,6 +49,8 @@ test('shellInvocation: bash on macOS and Linux, PowerShell on Windows', () => {
     const script = cmd.args.at(-1)!;
     assert.match(script, /chcp\.com 65001/);
     assert.match(script, /Out-File:Encoding"\] = \$utf8/);
+    assert.match(script, /UTF8Encoding\(\$false\)/, 'no BOM: a hook\'s JSON came back with one');
+    assert.match(script, /function rm \{/);
     assert.match(script, /OutputEncoding = \[Text\.Encoding\]::UTF8/);
     assert.match(script, /^git status$/m);
     assert.match(script, /exit \$LASTEXITCODE/);
@@ -102,6 +109,24 @@ test('translateChainOperators: 5.1 has no && or ||; quotes are left alone', () =
   assert.equal(translateChainOperators('git commit -m "a && b"'), 'git commit -m "a && b"');
   assert.equal(translateChainOperators("echo 'p || q' && echo ok"), "echo 'p || q' ; if ($?) {  echo ok }");
   assert.equal(translateChainOperators('a | b'), 'a | b');
+});
+
+test('the Windows shell takes the commands people write on every system: rm -f, touch, mkdir -p, which', { skip: !IS_WINDOWS && 'the PowerShell shims', timeout: 60_000 }, async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'tango-shims-'));
+  try {
+    await writeFile(join(dir, 'marker'), 'x');
+    const rm = await runShell('rm -f marker', { cwd: dir });
+    assert.equal(rm.code, 0, `rm -f: out=${JSON.stringify(rm.out)} err=${JSON.stringify(rm.err)}`);
+    assert.ok(!existsSync(join(dir, 'marker')), 'rm -f removed the file');
+    const again = await runShell('rm -f marker', { cwd: dir });
+    assert.equal(again.code, 0, `rm -f of a missing file succeeds, as on POSIX: ${JSON.stringify(again.err)}`);
+    const mk = await runShell('touch a.txt; mkdir -p deep/er; which node', { cwd: dir });
+    assert.equal(mk.code, 0, JSON.stringify(mk.err));
+    assert.ok(existsSync(join(dir, 'a.txt')) && existsSync(join(dir, 'deep', 'er')), 'touch and mkdir -p');
+    assert.match(mk.out, /node/i);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test('liveness: this process has a command line and a start time on every platform', { timeout: 60_000 }, () => {

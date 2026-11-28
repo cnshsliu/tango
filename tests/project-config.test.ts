@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, realpathSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join, resolve } from 'node:path';
 import { describeSources, mergeLayer, projectRoots, resolveConfig, setTrust, trustOf, updateLocalConfig } from '../src/core/project-config.js';
 
 const sh = (cwd: string, ...args: string[]) => spawnSync('git', args, { cwd, encoding: 'utf8' });
@@ -41,14 +41,15 @@ test('merge: nearer scalars win, lists add up, maps merge by key', () => {
 });
 
 test('merge: hook events concatenate; project extraDirs resolve against the project', () => {
+  const repo = join(resolve('/'), 'repo'); // /repo, or the drive's on Windows
   const m = mergeLayer(
     { hooks: { Stop: [{ command: 'g' }] }, extraDirs: ['/abs'] },
     { hooks: { Stop: [{ command: 'p' }], PreToolUse: [{ command: 'q' }] }, extraDirs: ['vendor', '/abs'] },
-    '/repo'
+    repo
   );
   assert.deepEqual((m.hooks as any).Stop.map((h: any) => h.command), ['g', 'p']);
   assert.equal((m.hooks as any).PreToolUse.length, 1);
-  assert.deepEqual(m.extraDirs, ['/abs', '/repo/vendor']);
+  assert.deepEqual(m.extraDirs, ['/abs', join(repo, 'vendor')]);
 });
 
 test('resolve: three layers in order; global-only keys never come from a project', async () => {
@@ -120,7 +121,7 @@ test('roots: worktrees share the main checkout for trust and the personal file',
   const w = await world();
   try {
     sh(w.repo, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'x');
-    const wt = join(w.repo, '..', `${w.repo.split('/').pop()}-wt`);
+    const wt = join(w.repo, '..', `${basename(w.repo)}-wt`);
     sh(w.repo, 'worktree', 'add', '-q', wt);
     try {
       const r = projectRoots(join(wt));

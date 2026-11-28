@@ -171,7 +171,7 @@ test('restoreSnapshot throws on a missing snapshot hash instead of silent no-op'
   }
 });
 
-test('M4: tar fallback honors .gitignore, keeps exec bits, prunes old snapshots', async () => {
+test('M4: tar fallback honors .gitignore, keeps exec bits, prunes old snapshots', { skip: process.platform === 'win32' && 'an executable bit is a POSIX thing' }, async () => {
   const tangoHome = await mkdtemp(join(tmpdir(), 'tango-tar3-home-'));
   const prevHome = process.env.TANGO_HOME;
   process.env.TANGO_HOME = tangoHome;

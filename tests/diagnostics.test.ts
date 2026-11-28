@@ -44,7 +44,7 @@ test('typescript diagnostics reach the tool result after an edit', async () => {
   await rm(proj, { recursive: true, force: true });
 });
 
-test('python diagnostics via the project venv pyright', async () => {
+test('python diagnostics via the project venv pyright', { skip: process.platform === 'win32' && 'a venv\'s bin/ layout is POSIX' }, async () => {
   const proj = await mkdtemp(join(tmpdir(), 'tango-py-'));
   await writeFile(join(proj, 'pyproject.toml'), '[project]\nname = "x"\nversion = "0"\n');
   await mkdir(join(proj, '.venv/bin'), { recursive: true });

@@ -91,15 +91,27 @@ jobs:
           - os: macos-15
             target: aarch64-apple-darwin
             platform: darwin-arm64
+            binary: tui/target/aarch64-apple-darwin/release/tango-tui
           - os: macos-15-intel
             target: x86_64-apple-darwin
             platform: darwin-x64
+            binary: tui/target/x86_64-apple-darwin/release/tango-tui
           - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             platform: linux-x64
+            binary: tui/target/x86_64-unknown-linux-gnu/release/tango-tui
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             platform: linux-arm64
+            binary: tui/target/aarch64-unknown-linux-gnu/release/tango-tui
+          - os: windows-2025
+            target: x86_64-pc-windows-msvc
+            platform: windows-x64
+            binary: tui/target/x86_64-pc-windows-msvc/release/tango-tui.exe
+          - os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            platform: windows-arm64
+            binary: tui/target/aarch64-pc-windows-msvc/release/tango-tui.exe
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -127,19 +139,28 @@ jobs:
             echo "version=dev.$(git rev-parse --short HEAD)" >> "$GITHUB_ENV"
           fi
       - name: package
-        run: scripts/package.sh "$version" "${{ matrix.platform }}" out "tui/target/${{ matrix.target }}/release/tango-tui"
+        shell: bash # on Windows too: package.sh runs under Git Bash and makes a zip there
+        run: scripts/package.sh "$version" "${{ matrix.platform }}" out "${{ matrix.binary }}"
       - name: smoke test the package
         shell: bash
         run: |
           set -euo pipefail
-          tar -xzf "out/tango-$version-${{ matrix.platform }}.tar.gz" -C "$RUNNER_TEMP"
+          exe=tango-tui
+          case "${{ matrix.platform }}" in windows-*) exe=tango-tui.exe ;; esac
           pkg="$RUNNER_TEMP/tango-$version-${{ matrix.platform }}"
-          "$pkg/tui/target/release/tango-tui" --version
-          TANGO_HOME="$(mktemp -d)" "$pkg/tui/target/release/tango-tui" doctor | head -n 3
+          mkdir -p "$pkg"
+          case "${{ matrix.platform }}" in
+            windows-*) /c/Windows/System32/tar.exe -xf "$(cygpath -w "$PWD/out/tango-$version-${{ matrix.platform }}.zip")" -C "$(cygpath -w "$RUNNER_TEMP")" ;;
+            *) tar -xzf "out/tango-$version-${{ matrix.platform }}.tar.gz" -C "$RUNNER_TEMP" ;;
+          esac
+          "$pkg/tui/target/release/$exe" --version
+          TANGO_HOME="$(mktemp -d)" "$pkg/tui/target/release/$exe" doctor | head -n 3
       - uses: actions/upload-artifact@v7
         with:
           name: tango-${{ matrix.platform }}
-          path: out/*.tar.gz
+          path: |
+            out/*.tar.gz
+            out/*.zip
           retention-days: 14
 
   release:
