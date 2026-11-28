@@ -779,7 +779,9 @@ forward history; kept in the TUI process only), so `/resume`-ing a subagent's se
 `/restart` quits and re-execs the TUI (and with it a fresh serve), so a rebuilt `tango-tui` or
 `dist/` takes effect; it resumes the current session with the same permission mode. It refuses
 while a turn is running.
-Shift+Tab steps through the modes (ask → plan → confirm → readonly). Ctrl+P opens a filterable command palette; model/session pickers use the same filtering and mouse
+The `/` completion list runs its highlighted row on Enter — `/mo` ⏎ runs `/model`, the first match; ↑↓ picks
+another row first, Tab only completes the word, and a click on a row runs it. Shift+Tab steps through the modes
+(ask → plan → confirm → readonly). Ctrl+P opens a filterable command palette; model/session pickers use the same filtering and mouse
 routing. `/history` — or the 🕘 at the left end of the status bar (`H` in ASCII mode) — lists this
 conversation's prompts, one per line, in the popup where slash completion appears: oldest at the
 top, the newest selected. ↑↓ (wheel, click) picks one, Enter scrolls the chat to that prompt and

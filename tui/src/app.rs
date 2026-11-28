@@ -4330,6 +4330,29 @@ impl App {
     }
 
     /// replace the current token (or the whole input for slash) with the selected item
+    /// Enter (or a click) on a row of the command completion: run that row's command as if
+    /// typed in full — "/mo" ⏎ runs /model, the first match; ↑↓ picks another row first.
+    /// Tab still only completes the word into the input. Other popups accept as before.
+    fn run_popup_row(&mut self, serve: &mut Serve) {
+        let Some(word) = self
+            .popup
+            .as_ref()
+            .filter(|p| p.kind == PopKind::Slash)
+            .and_then(|p| p.items.get(p.sel))
+            .and_then(|item| item.split(' ').next())
+            .map(str::to_string)
+        else {
+            self.accept_popup();
+            return;
+        };
+        self.popup = None;
+        // the same sequence as a submitted slash command: the draft survives
+        let draft = self.take_history_draft();
+        self.clear_input();
+        self.run_slash(&word, serve);
+        self.restore_draft(draft);
+    }
+
     fn accept_popup(&mut self) {
         let Some(p) = &self.popup else { return };
         let Some(item) = p.items.get(p.sel).cloned() else {
@@ -6361,7 +6384,16 @@ impl App {
                             // only the 6 drawn rows pick; the blank and hint rows below do not
                             if shown < 6 && row < self.popup.as_ref().unwrap().items.len() {
                                 self.popup.as_mut().unwrap().sel = row;
-                                self.accept_popup();
+                                // a command row runs on click, as it does on Enter
+                                if self
+                                    .popup
+                                    .as_ref()
+                                    .is_some_and(|p| p.kind == PopKind::Slash)
+                                {
+                                    self.run_popup_row(serve);
+                                } else {
+                                    self.accept_popup();
+                                }
                             }
                         }
                         _ => {}
@@ -7390,6 +7422,12 @@ impl App {
                 }
                 KeyCode::BackTab if p.kind == PopKind::Arg => {
                     self.cycle_arg(-1);
+                    return;
+                }
+                // Enter runs the highlighted command, typed in full or not: "/mo" ⏎ runs
+                // /model, the first match (↑↓ picks another row first); Tab only completes
+                KeyCode::Enter if p.kind == PopKind::Slash => {
+                    self.run_popup_row(serve);
                     return;
                 }
                 // Enter runs what is typed, as with command completion (serve fuzzy-
@@ -10841,7 +10879,8 @@ impl App {
             let hint = match p.kind {
                 PopKind::Arg => "tab 下一个 · shift+tab 上一个 · enter 执行 · esc 关闭",
                 PopKind::History => "↑↓ 选择 · enter 跳到该处 · esc 关闭",
-                PopKind::Slash | PopKind::File => "tab/enter 选择 · esc 关闭",
+                PopKind::Slash => "tab 补全 · enter 执行 · esc 关闭",
+                PopKind::File => "tab/enter 选择 · esc 关闭",
             };
             let inner = dialog_frame(&mut self.hint_buttons, f, pop, title, hint, self.theme);
             // keep the selection in view: 6 rows show, a long list (models) scrolls
@@ -16733,6 +16772,118 @@ mod tests {
             .collect();
         assert!(!row0.contains("old"));
         assert!(app.toast.is_none());
+    }
+
+    #[test]
+    fn enter_runs_the_highlighted_command_of_the_completion() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        let key = |app: &mut App, serve: &mut Serve, c: KeyCode| app.key(c.into(), serve);
+        // "/mo" matches /model, /mode and /mouse; Enter runs the first, as typed in full
+        app.input = "/mo".chars().collect();
+        app.cursor = app.input.len();
+        app.refresh_popup();
+        let p = app.popup.as_ref().unwrap();
+        assert!(p.kind == PopKind::Slash);
+        assert_eq!(p.sel, 0);
+        assert_eq!(p.items[0].split(' ').next(), Some("/model"));
+        key(&mut app, &mut serve, KeyCode::Enter);
+        assert!(app.popup.is_none(), "the menu closes");
+        assert!(app.input.is_empty(), "and the partial word went with it");
+        assert!(
+            serve.sent.iter().any(|l| l.contains("\"models\"")),
+            "/model asked serve for the model list: {:?}",
+            serve.sent
+        );
+        assert!(
+            !serve.sent.iter().any(|l| l.contains("\"prompt\"")),
+            "nothing was sent as a prompt"
+        );
+        assert!(
+            !app.lines.iter().any(|l| l.text.contains("unknown command")),
+            "/mo never ran as typed"
+        );
+
+        // ↓ first: Enter runs that row instead (bare /mode opens the mode picker)
+        app.input = "/mo".chars().collect();
+        app.cursor = app.input.len();
+        app.refresh_popup();
+        key(&mut app, &mut serve, KeyCode::Down);
+        assert_eq!(app.popup.as_ref().unwrap().sel, 1);
+        assert_eq!(
+            app.popup.as_ref().unwrap().items[1].split(' ').next(),
+            Some("/mode")
+        );
+        key(&mut app, &mut serve, KeyCode::Enter);
+        assert!(
+            app.picker
+                .as_ref()
+                .is_some_and(|p| p.kind == PickerKind::Mode),
+            "the second row ran"
+        );
+        assert!(app.popup.is_none() && app.input.is_empty());
+
+        // Tab still only completes: the input holds the whole word, nothing runs yet
+        app.picker = None;
+        app.input = "/mo".chars().collect();
+        app.cursor = app.input.len();
+        app.refresh_popup();
+        key(&mut app, &mut serve, KeyCode::Tab);
+        assert_eq!(app.input.iter().collect::<String>(), "/model ");
+        assert!(app.popup.is_none());
+
+        // an exact command runs as typed: the menu is not even open then
+        app.clear_input();
+        app.input = "/help".chars().collect();
+        app.cursor = app.input.len();
+        app.refresh_popup();
+        assert!(app.popup.is_none());
+        key(&mut app, &mut serve, KeyCode::Enter);
+        assert!(
+            app.lines.iter().any(|l| l.text.contains("/model")),
+            "/help printed the command list"
+        );
+
+        // Esc still only closes
+        app.input = "/mo".chars().collect();
+        app.cursor = app.input.len();
+        app.refresh_popup();
+        key(&mut app, &mut serve, KeyCode::Esc);
+        assert!(app.popup.is_none());
+        assert_eq!(
+            app.input.iter().collect::<String>(),
+            "/mo",
+            "the partial word stays to be edited"
+        );
+    }
+
+    #[test]
+    fn clicking_a_command_row_of_the_completion_runs_it() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.input = "/mo".chars().collect();
+        app.cursor = app.input.len();
+        app.refresh_popup();
+        let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        term.draw(|f| app.draw(f)).unwrap();
+        // the second drawn row is /mode: a click on it runs that one
+        let row_y = app.popup_area.y + 1 + 1;
+        app.handle(
+            Event::Mouse(crossterm::event::MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 3,
+                row: row_y,
+                modifiers: KeyModifiers::NONE,
+            }),
+            &mut serve,
+        );
+        assert!(
+            app.picker
+                .as_ref()
+                .is_some_and(|p| p.kind == PickerKind::Mode)
+        );
+        assert!(app.popup.is_none() && app.input.is_empty());
     }
 
     #[test]
