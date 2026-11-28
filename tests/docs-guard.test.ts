@@ -1,4 +1,5 @@
 import { test } from 'node:test';
+import { readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
@@ -65,7 +66,7 @@ test('docs guard end to end: the turn baseline separates this turn from earlier 
     sh('add', 'src/b.ts');
     sh('commit', '-qm', 'b');
     const r = hook({ hook_event_name: 'Stop', stop_hook_active: false });
-    assert.equal(r.status, 2);
+    assert.equal(r.status, 2, `stdout: ${r.stdout}\nstderr: ${r.stderr}\nstatus now: ${sh('status', '--porcelain', '--untracked-files=all').stdout}\nlog: ${sh('log', '--oneline').stdout}\nbase: ${sh('rev-parse', '--absolute-git-dir').stdout.trim()}\n${readFileSync(join(sh('rev-parse', '--absolute-git-dir').stdout.trim(), 'docs-guard-base.json'), 'utf8')}`);
     assert.match(r.stderr, /src\/b\.ts/);
     assert.doesNotMatch(r.stderr, /src\/a\.ts/, 'the earlier edit is not blamed on this turn');
     assertStatus(hook({ hook_event_name: 'Stop', stop_hook_active: true }), 0);
