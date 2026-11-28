@@ -282,7 +282,12 @@ isolation), MCP server→client capabilities (sampling/roots), plugin marketplac
   `none | low | medium | high | xhigh | max` on `openai/gpt-6.1-terra`, `medium | high | xhigh` on
   `opencode/gpt-5.5-pro`, nothing on a switch-only model such as `openrouter/google/gemma-4-31b-it:free`
   — and refuses the rest (`/effort medium` on GLM-5.4 answers with the list). Tab completes the
-  levels; bare `/effort` shows the one in use and the choices; `tango --models` lists them per model.
+  levels: completing `/effort` itself with Tab leaves `/effort ` with the level menu open, and each
+  further Tab is the next level (`low` → `high` → `max` → `off` → `low`), Shift+Tab the previous one;
+  after Esc, Tab on the same input opens the menu again, with what is typed highlighted. Enter runs
+  the highlighted row once the argument is started or a row was moved to (`/effort h` ⏎ sets high);
+  Enter right after completing the command is the bare command. Bare `/effort` shows the one in use
+  and the choices; `tango --models` lists them per model.
   `off` sends nothing (the endpoint's default). Switching to a model without the level in use turns
   it off and says so. Tab lists the current model's levels, and Enter runs the highlighted one,
   typed in full or not (`/effort h` ⏎ sets high; `/mode re` ⏎ sets readonly). The model picker
@@ -831,7 +836,10 @@ to the model *and* that level in one `set_model { modelId, effort }` (`off` send
 remembers the level per model for as long as it runs, so switching back restores it; it is not
 saved, and a restart is `off` again.
 The `/` completion list runs its highlighted row on Enter — `/mo` ⏎ runs `/model`, the first match; ↑↓ picks
-another row first, Tab only completes the word, and a click on a row runs it. Shift+Tab steps through the modes
+another row first, Tab completes the word — and when the command takes an argument menu
+(`/effort`, `/mode`, `/model`, `/send`, `/resume`), opens that menu at once, so the next Tab cycles
+the argument — and a click on a row runs it. With the menu closed (Esc), Tab on `/effort `, `/model gl`
+and the like opens it again. Shift+Tab steps through the modes
 (ask → plan → confirm → readonly). Ctrl+P opens a filterable command palette; model/session pickers use the same filtering and mouse
 routing. `/history` — or the 🕘 at the left end of the status bar (`H` in ASCII mode) — lists this
 conversation's prompts, one per line, in the popup where slash completion appears: oldest at the

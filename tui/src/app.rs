@@ -4388,10 +4388,38 @@ impl App {
         self.restore_draft(draft);
     }
 
-    /// the argument menus whose Enter picks the highlighted row: one argument, nothing after
+    /// the argument menus whose Enter picks the highlighted row: /effort and /mode (one
+    /// argument, nothing after) — "/effort h" ⏎ sets high. On an empty argument the row must
+    /// have been chosen first (↑↓, Tab): "/effort " ⏎ right after completing the command is
+    /// the bare command, not "the first level"
     fn arg_row_runs(&self) -> bool {
         let text: String = self.input.iter().collect();
-        matches!(text.split(' ').next(), Some("/effort" | "/mode"))
+        let Some((cmd, arg)) = text.split_once(' ') else {
+            return false;
+        };
+        if !matches!(cmd, "/effort" | "/mode") {
+            return false;
+        }
+        !arg.trim().is_empty() || self.popup.as_ref().is_some_and(|p| p.sel != 0 || p.cycling)
+    }
+
+    /// Tab on "/effort " (or "/effort max") with no menu open — it was closed with Esc: open
+    /// the whole argument menu with the current argument highlighted, so the next Tab moves on
+    /// from it (the menu as it would show while typing narrows to what is typed)
+    fn open_arg_popup(&mut self) {
+        let text: String = self.input.iter().collect();
+        if self.pastes.is_empty()
+            && self.cursor == self.input.len()
+            && let Some((cmd, arg)) = text.split_once(' ')
+            && !arg.contains(char::is_whitespace)
+            && self.popup.is_none()
+            && let Some(mut pop) = self.arg_popup(cmd, "")
+        {
+            if let Some(at) = pop.inserts.iter().position(|ins| ins.trim_end() == arg) {
+                pop.sel = at;
+            }
+            self.popup = Some(pop);
+        }
     }
 
     /// Enter on a row of the /effort or /mode argument menu: insert that row, run the command
@@ -4414,6 +4442,7 @@ impl App {
         let Some(item) = p.items.get(p.sel).cloned() else {
             return;
         };
+        let kind = p.kind;
         match p.kind {
             PopKind::Slash => {
                 // never insert the "<id>"-style placeholder; commands with args get a trailing space
@@ -4450,6 +4479,12 @@ impl App {
             }
         }
         self.popup = None;
+        // completing a command word that takes an argument ("/effort" Tab → "/effort ") opens
+        // the argument menu at once: the next Tab cycles the levels, as after typing the
+        // space by hand
+        if kind == PopKind::Slash {
+            self.refresh_popup();
+        }
     }
 
     // ---------- slash commands ----------
@@ -7725,6 +7760,8 @@ impl App {
             KeyCode::Right => self.move_input_cursor(false),
             KeyCode::Home => self.cursor = 0,
             KeyCode::End => self.cursor = self.input.len(),
+            // the argument menu of the command being typed, when it is not open
+            KeyCode::Tab if self.picker.is_none() && self.viewer.is_none() => self.open_arg_popup(),
             _ => {}
         }
     }
@@ -16501,6 +16538,61 @@ mod tests {
         type_str(&mut app, &mut serve, "/effort o");
         app.key(KeyCode::Tab.into(), &mut serve);
         assert_eq!(typed(&app), "/effort off");
+    }
+
+    #[test]
+    fn effort_tab_after_the_space_cycles_the_levels() {
+        let mut app = App::new();
+        let mut serve = Serve::mock();
+        app.efforts = ["low", "high", "max"].iter().map(|s| s.to_string()).collect();
+        app.arg_models = vec!["a/m1".into(), "a/m2".into(), "a/m3".into()];
+        // the natural way: "/effort" Tab completes the command and opens its menu, each further
+        // Tab is the next level, Shift+Tab the previous one, round and round
+        type_str(&mut app, &mut serve, "/effort");
+        app.key(KeyCode::Tab.into(), &mut serve);
+        assert_eq!(typed(&app), "/effort ");
+        assert_eq!(app.popup.as_ref().map(|p| p.items.clone()), Some(vec!["low".to_string(), "high".to_string(), "max".to_string(), "off (当前)".to_string()]));
+        for want in ["low", "high", "max", "off", "low"] {
+            app.key(KeyCode::Tab.into(), &mut serve);
+            assert_eq!(typed(&app), format!("/effort {want}"));
+        }
+        app.key(KeyCode::BackTab.into(), &mut serve);
+        assert_eq!(typed(&app), "/effort off", "Shift+Tab goes back");
+        // the same for /model's argument
+        app.clear_input();
+        type_str(&mut app, &mut serve, "/model");
+        app.key(KeyCode::Tab.into(), &mut serve);
+        assert_eq!(typed(&app), "/model ");
+        app.key(KeyCode::Tab.into(), &mut serve);
+        app.key(KeyCode::Tab.into(), &mut serve);
+        assert_eq!(typed(&app), "/model a/m2");
+        // Esc closes the menu; Tab on the same input opens it again, and the next Tab cycles
+        app.key(KeyCode::Esc.into(), &mut serve);
+        assert!(app.popup.is_none());
+        app.key(KeyCode::Tab.into(), &mut serve);
+        assert_eq!(typed(&app), "/model a/m2", "opening the menu inserts nothing");
+        assert!(app.popup.as_ref().is_some_and(|p| p.items.len() == 3 && !p.cycling), "the whole menu, with what is typed highlighted");
+        // the next Tab keeps that row (it is the selected one), the one after moves on
+        app.key(KeyCode::Tab.into(), &mut serve);
+        assert_eq!(typed(&app), "/model a/m2");
+        app.key(KeyCode::Tab.into(), &mut serve);
+        assert_eq!(typed(&app), "/model a/m3");
+        // Enter right after completing "/effort" is the bare command: the menu's first row is
+        // only a suggestion until it is chosen
+        app.clear_input();
+        type_str(&mut app, &mut serve, "/effort");
+        app.key(KeyCode::Tab.into(), &mut serve);
+        app.key(KeyCode::Enter.into(), &mut serve);
+        let sent: Value = serde_json::from_str(serve.sent.last().unwrap()).unwrap();
+        assert_eq!(sent["cmd"], "status");
+        // …but once a row was moved to, Enter runs it
+        app.clear_input();
+        type_str(&mut app, &mut serve, "/effort ");
+        app.key(KeyCode::Down.into(), &mut serve);
+        app.key(KeyCode::Down.into(), &mut serve);
+        app.key(KeyCode::Enter.into(), &mut serve);
+        let sent: Value = serde_json::from_str(serve.sent.last().unwrap()).unwrap();
+        assert_eq!((sent["cmd"].as_str(), sent["level"].as_str()), (Some("set_effort"), Some("max")));
     }
 
     #[test]
