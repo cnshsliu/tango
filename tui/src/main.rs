@@ -115,13 +115,17 @@ fn kitty_keys<W: std::io::Write>(out: &mut W, enabled: bool, on: bool) -> std::i
     use crossterm::event::{
         KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
     };
+    // a terminal backend that cannot take the protocol (the legacy Windows console) is not an
+    // error: it simply goes without, like every terminal that did not answer the query
+    let unsupported = |e: &std::io::Error| e.kind() == std::io::ErrorKind::Unsupported;
     match (enabled, on) {
         (false, _) => Ok(()),
         (true, true) => execute!(
             out,
             PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
-        ),
-        (true, false) => execute!(out, PopKeyboardEnhancementFlags),
+        )
+        .or_else(|e| if unsupported(&e) { Ok(()) } else { Err(e) }),
+        (true, false) => execute!(out, PopKeyboardEnhancementFlags).or_else(|e| if unsupported(&e) { Ok(()) } else { Err(e) }),
     }
 }
 
@@ -387,9 +391,13 @@ mod tests {
     #[test]
     fn kitty_keys_push_disambiguate_and_pop_only_when_supported() {
         let mut out = Vec::new();
-        kitty_keys(&mut out, true, true).unwrap();
-        kitty_keys(&mut out, true, false).unwrap();
-        assert_eq!(String::from_utf8(out).unwrap(), "\x1b[>1u\x1b[<1u");
+        if kitty_keys(&mut out, true, true).is_ok() {
+            kitty_keys(&mut out, true, false).unwrap();
+            assert_eq!(String::from_utf8(out).unwrap(), "\x1b[>1u\x1b[<1u");
+        } else {
+            // without a VT console (the test harness on Windows) the sequence cannot be written
+            assert!(out.is_empty() && cfg!(windows));
+        }
         let mut none = Vec::new();
         kitty_keys(&mut none, false, true).unwrap();
         kitty_keys(&mut none, false, false).unwrap();

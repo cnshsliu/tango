@@ -89,7 +89,7 @@ fn leading_path(text: &str) -> Option<(String, bool, String)> {
         return None;
     }
     let unquoted = t.trim_start_matches(['\'', '"']);
-    if !(unquoted.starts_with('/') || unquoted.starts_with("~/")) {
+    if !starts_path(unquoted) {
         return None;
     }
     let line = &t[..t.find('\n').unwrap_or(t.len())];
@@ -102,11 +102,15 @@ fn leading_path(text: &str) -> Option<(String, bool, String)> {
         let mut path = String::new();
         let mut chars = raw.chars();
         while let Some(c) = chars.next() {
-            // drag and drop escapes spaces and shell characters: `My\ File.md`
+            // drag and drop escapes spaces and shell characters: `My\ File.md` — but a
+            // backslash is a separator on Windows, never an escape there
+            #[cfg(not(windows))]
             path.push(if c == '\\' { chars.next().unwrap_or('\\') } else { c });
+            #[cfg(windows)]
+            path.push(c);
         }
         if let Some(rest) = path.strip_prefix("~/") {
-            path = format!("{}/{rest}", std::env::var("HOME").ok()?);
+            path = format!("{}/{rest}", home_dir()?);
         }
         let p = Path::new(&path);
         (path.len() > 1 && p.exists()).then_some(path)
@@ -124,6 +128,25 @@ fn leading_path(text: &str) -> Option<(String, bool, String)> {
         }
     }
     None
+}
+
+/// Whether `s` begins an absolute path as people write them: `/…` and `~/…` everywhere, and
+/// `C:\…`, `C:/…`, `\\server\…` too (recognized on every platform, so a path pasted from
+/// another machine still works).
+fn starts_path(s: &str) -> bool {
+    if s.starts_with('/') || s.starts_with("~/") || s.starts_with("\\") {
+        return true;
+    }
+    let b = s.as_bytes();
+    b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/')
+}
+
+/// The user's home directory: `HOME`, or `USERPROFILE` where that is not set (Windows).
+fn home_dir() -> Option<String> {
+    std::env::var("HOME")
+        .ok()
+        .filter(|h| !h.is_empty())
+        .or_else(|| std::env::var("USERPROFILE").ok())
 }
 
 /// The prompt for a submission that leads with a path: name it as a file (or directory),
@@ -566,23 +589,54 @@ struct Picker {
     branch_only: bool,
     /// Ctrl+R in progress: the session id being renamed (query holds the name)
     renaming: Option<String>,
-}
-
-impl Picker {
+    /// model picker: the reasoning levels each model takes (id → levels, from serve), and the
+    /// level chosen for it with ←→ (id → level; absent = off, the endpoint's default). The
+    /// choice rides along with Enter: `set_model { modelId, effort }`.
+    efforts: std::collections::HashMap<String, Vec<String>>,
+    effort_pick: std::collections::HashMap<String, String>,
+    }
+    
+    impl Picker {
     fn new(kind: PickerKind, items: Vec<PickItem>) -> Self {
-        let sel = items.iter().position(|item| item.current).unwrap_or(0);
-        Self {
-            kind,
-            items,
-            sel,
-            query: String::new(),
-            scopes: Vec::new(),
-            cwd: String::new(),
-            branch: String::new(),
-            all_projects: false,
-            branch_only: false,
-            renaming: None,
-        }
+    let sel = items.iter().position(|item| item.current).unwrap_or(0);
+    Self {
+    kind,
+    items,
+    sel,
+    query: String::new(),
+    scopes: Vec::new(),
+    cwd: String::new(),
+    branch: String::new(),
+    all_projects: false,
+    branch_only: false,
+    renaming: None,
+    efforts: std::collections::HashMap::new(),
+    effort_pick: std::collections::HashMap::new(),
+    }
+    }
+    
+    /// `←`/`→` on a model row: off → its first level → … → its last (`→` stays there), and
+    /// `←` from the first goes back to off. A model without levels does nothing.
+    fn step_effort(&mut self, forward: bool) {
+    let Some(id) = self.selected_item().map(|item| item.id) else { return };
+    let Some(levels) = self.efforts.get(&id).filter(|l| !l.is_empty()).cloned() else { return };
+    let menu: Vec<String> = std::iter::once("off".to_string()).chain(levels).collect();
+    let cur = self.effort_pick.get(&id).cloned().unwrap_or_else(|| "off".to_string());
+    let at = menu.iter().position(|l| *l == cur).unwrap_or(0);
+    let next = if forward { (at + 1).min(menu.len() - 1) } else { at.saturating_sub(1) };
+    if next == 0 {
+    self.effort_pick.remove(&id);
+    } else {
+    self.effort_pick.insert(id, menu[next].clone());
+    }
+    }
+    
+    /// the level to show next to `id` in the model picker: the chosen one, else "off"
+    fn effort_shown(&self, id: &str) -> Option<&str> {
+    if !self.efforts.get(id).is_some_and(|l| !l.is_empty()) {
+    return None;
+    }
+    Some(self.effort_pick.get(id).map_or("off", String::as_str))
     }
 
     fn session_scoped(kind: PickerKind) -> bool {
@@ -612,9 +666,7 @@ impl Picker {
     fn filtered_items(&self) -> Vec<&PickItem> {
         // a typed path is not a filter: keep every remembered directory visible
         let raw = self.query.trim();
-        if self.kind == PickerKind::Cwd
-            && (raw.starts_with('/') || raw.starts_with('~') || raw.starts_with('.'))
-        {
+        if self.kind == PickerKind::Cwd && (starts_path(raw) || raw.starts_with('~') || raw.starts_with('.')) {
             return self.items.iter().collect();
         }
         let query = raw.to_lowercase();
@@ -1121,17 +1173,19 @@ fn ime_should_switch(current: &str) -> bool {
 /// elsewhere in the line is not a click target.
 fn find_existing_file_path(text: &str, click_idx: usize) -> Option<String> {
     let bytes: Vec<char> = text.chars().collect();
-    let starts: Vec<&[char]> = vec![&['/'], &['.', '/'], &['.', '.', '/'], &['~', '/']];
+    let starts: Vec<&[char]> = vec![&['/'], &['.', '/'], &['.', '.', '/'], &['~', '/'], &['\\', '\\']];
+    // a drive letter: `C:\…` or `C:/…`
+    let drive = |cs: &[char]| cs.len() >= 3 && cs[0].is_ascii_alphabetic() && cs[1] == ':' && (cs[2] == '\\' || cs[2] == '/');
     let mut best: Option<String> = None;
     let mut i = 0;
     while i < bytes.len() {
-        let matched = starts.iter().any(|s| bytes[i..].starts_with(s));
+        let matched = starts.iter().any(|s| bytes[i..].starts_with(s)) || drive(&bytes[i..]);
         if !matched {
             i += 1;
             continue;
         }
         let mut j = i;
-        while j < bytes.len() && (bytes[j].is_alphanumeric() || "._-/@+=~".contains(bytes[j])) {
+        while j < bytes.len() && (bytes[j].is_alphanumeric() || "._-/@+=~\\:".contains(bytes[j])) {
             j += 1;
         }
         if click_idx >= i && click_idx < j {
@@ -1141,8 +1195,7 @@ fn find_existing_file_path(text: &str, click_idx: usize) -> Option<String> {
                 .to_string();
             let no_line = cleaned.trim_end_matches(|c: char| c.is_ascii_digit() || c == ':');
             let expanded = if let Some(rest) = no_line.strip_prefix('~') {
-                let home = std::env::var("HOME").unwrap_or_default();
-                format!("{home}{rest}")
+                format!("{}{rest}", home_dir().unwrap_or_default())
             } else {
                 no_line.to_string()
             };
@@ -1982,6 +2035,9 @@ pub struct App {
     /// take for the current model (they differ per model; serve sends both with hello and /model)
     effort: String,
     efforts: Vec<String>,
+    /// the level chosen for a model, kept when the model is switched away from and back within
+    /// this run (model id → level): the model picker shows it beside the model and re-applies it
+    effort_memory: std::collections::HashMap<String, String>,
     mode: String,
     session: String,
     cost: f64,
@@ -2126,6 +2182,7 @@ impl App {
             effort: "off".into(),
             // until serve says what the model takes (hello): the commonest levels
             efforts: ["low", "medium", "high"].iter().map(|s| s.to_string()).collect(),
+            effort_memory: std::collections::HashMap::new(),
             mode: String::new(),
             session: String::new(),
             cost: 0.0,
@@ -2988,7 +3045,7 @@ impl App {
         }
         match std::env::var_os("TANGO_HOME") {
             Some(d) => Some(std::path::PathBuf::from(d)),
-            None => Some(std::path::PathBuf::from(std::env::var_os("HOME")?).join(".tango")),
+            None => Some(std::path::PathBuf::from(home_dir()?).join(".tango")),
         }
     }
 
@@ -4353,8 +4410,29 @@ impl App {
         self.restore_draft(draft);
     }
 
+    /// the argument menus whose Enter picks the highlighted row: one argument, nothing after
+    fn arg_row_runs(&self) -> bool {
+    let text: String = self.input.iter().collect();
+    matches!(text.split(' ').next(), Some("/effort" | "/mode"))
+    }
+    
+    /// Enter on a row of the /effort or /mode argument menu: insert that row, run the command
+    fn run_arg_row(&mut self, serve: &mut Serve) {
+    if let Some(pp) = self.popup.as_mut() {
+    pp.cycling = false; // insert the row highlighted, don't step
+    }
+    self.cycle_arg(1);
+    self.popup = None;
+    let text: String = self.input.iter().collect();
+    // the same sequence as a submitted slash command: the draft survives
+    let draft = self.take_history_draft();
+    self.clear_input();
+    self.run_slash(&text, serve);
+    self.restore_draft(draft);
+    }
+    
     fn accept_popup(&mut self) {
-        let Some(p) = &self.popup else { return };
+    let Some(p) = &self.popup else { return };
         let Some(item) = p.items.get(p.sel).cloned() else {
             return;
         };
@@ -6572,14 +6650,19 @@ impl App {
             .unwrap_or_default();
         let cwd_pick = self.picker.as_ref().map(|p| p.kind) == Some(PickerKind::Cwd);
         let picked = self
-            .picker
-            .as_ref()
-            .and_then(|p| p.selected_item().map(|item| (p.kind, item)));
+        .picker
+        .as_ref()
+        .and_then(|p| p.selected_item().map(|item| (p.kind, item)));
+        // the model picker: the level set with ←→ on the row Enter lands on, if any
+        let model_effort = self
+        .picker
+        .as_ref()
+        .filter(|p| p.kind == PickerKind::Model)
+        .and_then(|p| p.selected_item())
+        .and_then(|item| self.picker.as_ref().and_then(|p| p.effort_pick.get(&item.id).cloned()));
         self.picker = None;
         // a path typed in the cwd picker is the directory, not a filter
-        if cwd_pick
-            && (query.starts_with('/') || query.starts_with('~') || query.starts_with('.'))
-        {
+        if cwd_pick && (starts_path(&query) || query.starts_with('~') || query.starts_with('.')) {
             self.cd_to(&query, serve);
             return;
         }
@@ -6592,7 +6675,18 @@ impl App {
                             Tone::Muted,
                         );
                     }
-                    self.run_slash(&format!("/model {}", item.id), serve);
+                    // with the level picked beside it: off sends none
+                    let id = serve.command(
+                    "set_model",
+                    match &model_effort {
+                    Some(level) => vec![
+                    ("modelId", Value::String(item.id.clone())),
+                    ("effort", Value::String(level.clone())),
+                    ],
+                    None => vec![("modelId", Value::String(item.id.clone()))],
+                    },
+                    );
+                    self.pending.push((id, Pending::Model));
                 }
                 // zcode's execution-authorization dropdown: one line per mode, the
                 // current one marked. Full access goes through its own acknowledgement.
@@ -7341,10 +7435,19 @@ impl App {
                     }
                     return;
                 }
+                // grok's model picker: ←→ step the reasoning level of the highlighted model
+                KeyCode::Left | KeyCode::Right
+                if self.picker.as_ref().is_some_and(|p| p.kind == PickerKind::Model) =>
+                {
+                if let Some(p) = self.picker.as_mut() {
+                p.step_effort(k.code == KeyCode::Right);
+                }
+                return;
+                }
                 KeyCode::Up => {
-                    if let Some(p) = self.picker.as_mut() {
-                        p.sel = p.sel.saturating_sub(1);
-                    }
+                if let Some(p) = self.picker.as_mut() {
+                p.sel = p.sel.saturating_sub(1);
+                }
                 }
                 KeyCode::Down => {
                     if let Some(p) = self.picker.as_mut() {
@@ -7404,9 +7507,10 @@ impl App {
             return;
         }
         // popup grabs navigation keys while it is open
+        let arg_runs = self.popup.as_ref().is_some_and(|p| p.kind == PopKind::Arg) && self.arg_row_runs();
         if let Some(p) = &mut self.popup {
-            match k.code {
-                KeyCode::Up if p.sel > 0 => {
+        match k.code {
+        KeyCode::Up if p.sel > 0 => {
                     p.sel -= 1;
                     p.cycling = false; // the next Tab inserts the row moved to
                     return;
@@ -7430,10 +7534,15 @@ impl App {
                     self.run_popup_row(serve);
                     return;
                 }
-                // Enter runs what is typed, as with command completion (serve fuzzy-
-                // matches /model itself); the menu just closes
+                // Enter runs the highlighted level/mode, typed in full or not: "/effort h" ⏎ sets
+                // high (what was typed, "h", is no level). /model, /send and /resume keep running
+                // what is typed (serve fuzzy-matches /model itself; a message follows /send's id)
+                KeyCode::Enter if p.kind == PopKind::Arg && arg_runs => {
+                self.run_arg_row(serve);
+                return;
+                }
                 KeyCode::Enter if p.kind == PopKind::Arg => {
-                    self.popup = None;
+                self.popup = None;
                 }
                 KeyCode::Tab | KeyCode::Right if p.kind != PopKind::History => {
                     self.accept_popup();
@@ -7908,6 +8017,7 @@ impl App {
                 self.mouse_capture = Some(self.mouse);
                 self.model = v["model"].as_str().unwrap_or("?").into();
                 self.effort = v["effort"].as_str().unwrap_or("off").into();
+                self.remember_effort();
                 self.efforts = Self::string_array(&v["efforts"]);
                 self.mode = v["mode"].as_str().unwrap_or("?").into();
                 self.serve_cwd = v["cwd"].as_str().map(Into::into);
@@ -8241,7 +8351,25 @@ impl App {
                                         .collect()
                                 })
                                 .unwrap_or_default();
-                            self.picker = Some(Picker::new(PickerKind::Model, items));
+                                // grok's model picker: each model shows its reasoning level, ←→ changes
+                                // it for the highlighted row, Enter switches to both
+                                let mut picker = Picker::new(PickerKind::Model, items);
+                                picker.efforts = d["models"]
+                                .as_array()
+                                .map(|a| {
+                                a.iter()
+                                .filter_map(|m| {
+                                Some((m["id"].as_str()?.to_string(), Self::string_array(&m["efforts"])))
+                                })
+                                .collect()
+                                })
+                                .unwrap_or_default();
+                                // what was chosen before: the level in use now, and the ones kept for other models
+                                picker.effort_pick = self.effort_memory.clone();
+                                if self.effort != "off" {
+                                picker.effort_pick.insert(self.model.clone(), self.effort.clone());
+                                }
+                                self.picker = Some(picker);
                         }
                         (Pending::Sessions, true) => {
                             let items: Vec<PickItem> = d["sessions"]
@@ -8412,6 +8540,7 @@ impl App {
                         (Pending::Model, true) => {
                             self.model = d["model"].as_str().unwrap_or("?").into();
                             self.effort = d["effort"].as_str().unwrap_or("off").into();
+                            self.remember_effort();
                             self.efforts = Self::string_array(&d["efforts"]);
                             self.push(
                                 format!("model → {} (saved as default)", self.model),
@@ -9241,6 +9370,7 @@ impl App {
                         }
                         (Pending::Effort, true) => {
                             self.effort = d["effort"].as_str().unwrap_or("off").into();
+                            self.remember_effort();
                             if d.get("efforts").is_some() {
                                 self.efforts = Self::string_array(&d["efforts"]);
                             }
@@ -11101,8 +11231,10 @@ impl App {
             };
             let hint = if p.kind == PickerKind::Cwd {
                 "输入 /路径 回车直接切换 · ↑↓ 选择用过的目录 · 末项自己输入 · esc 取消"
+            } else if p.kind == PickerKind::Model {
+            "输入 过滤 · ↑↓/滚轮 选模型 · ←→ 推理力度（随回车一起生效）· enter 确认 · esc 取消"
             } else if p.filterable() {
-                "输入 过滤 · ↑↓/滚轮 选择 · enter 确认 · esc 取消"
+            "输入 过滤 · ↑↓/滚轮 选择 · enter 确认 · esc 取消"
             } else {
                 match p.kind {
                     PickerKind::NvimBackend => "↑↓/滚轮 选择 · enter 确认 · esc 使用内置查看器",
@@ -11175,11 +11307,16 @@ impl App {
                                 ]
                             } else {
                                 let pad = label_w.saturating_sub(display_width(&it.label));
-                                let note: String = it
-                                    .note
-                                    .chars()
-                                    .take((inner.width as usize).saturating_sub(label_w + 9))
-                                    .collect();
+                                // the model picker names the reasoning level beside the context window
+                                let note = match p.effort_shown(&it.id) {
+                                Some(level) if it.note.is_empty() => format!("effort {level}"),
+                                Some(level) => format!("{} · effort {level}", it.note),
+                                None => it.note.clone(),
+                                };
+                                let note: String = note
+                                .chars()
+                                .take((inner.width as usize).saturating_sub(label_w + 9))
+                                .collect();
                                 vec![Line::from(Span::styled(
                                     format!(" {marks} {}{} {}", it.label, " ".repeat(pad), note),
                                     style,
@@ -11987,6 +12124,18 @@ impl App {
         if self.plan_mode { "plan".into() } else { self.mode.clone() }
     }
 
+    /// the level in use belongs to the current model: keep it for when the model comes back
+    fn remember_effort(&mut self) {
+    if self.model.is_empty() {
+    return;
+    }
+    if self.effort == "off" {
+    self.effort_memory.remove(&self.model);
+    } else {
+    self.effort_memory.insert(self.model.clone(), self.effort.clone());
+    }
+    }
+    
     /// `ask · claude-opus-5-5 apikeyfan` — mode in its accent, model bright, provider dim.
     /// Narrow widths drop the provider, then clip the model.
     fn input_info_line(&self, width: usize) -> Line<'static> {
@@ -12010,13 +12159,22 @@ impl App {
         let room = width.saturating_sub(used);
         let full = display_width(&name) + 1 + display_width(&provider);
         if !provider.is_empty() && full <= room {
-            spans.push(Span::styled(name, self.theme.style(Tone::Text)));
-            spans.push(Span::styled(format!(" {provider}"), self.theme.style(Tone::Muted)));
+        spans.push(Span::styled(name, self.theme.style(Tone::Text)));
+        spans.push(Span::styled(format!(" {provider}"), self.theme.style(Tone::Muted)));
         } else {
-            spans.push(Span::styled(clip_to_width(&name, room), self.theme.style(Tone::Text)));
+        spans.push(Span::styled(clip_to_width(&name, room), self.theme.style(Tone::Text)));
+        }
+        // the reasoning level in use, when one is set: ` · effort max`, bright as the model.
+        // It goes when the row is too narrow for it (the model keeps its place).
+        if self.effort != "off" {
+        let shown = format!(" · effort {}", self.effort);
+        let left = room.saturating_sub(full.min(room));
+        if !self.model.is_empty() && display_width(&shown) <= left {
+        spans.push(Span::styled(shown, self.theme.style(Tone::Text)));
+        }
         }
         Line::from(spans)
-    }
+        }
 
     /// Footer under the input block: `~/dir:branch` on the left (dim), key hints on the right.
     fn footer_line(&self, width: usize) -> Line<'static> {
@@ -16364,6 +16522,125 @@ mod tests {
         assert_eq!(typed(&app), "/effort off");
     }
 
+    #[test]
+    fn effort_enter_runs_the_highlighted_level() {
+    let mut app = App::new();
+    let mut serve = Serve::mock();
+    app.efforts = ["low", "high", "max"].iter().map(|s| s.to_string()).collect();
+    // "/effort h" + Enter: "h" is no level, the highlighted row (high) is what runs
+    type_str(&mut app, &mut serve, "/effort h");
+    app.key(KeyCode::Down.into(), &mut serve);
+    app.key(KeyCode::Enter.into(), &mut serve);
+    let sent: Value = serde_json::from_str(serve.sent.last().unwrap()).unwrap();
+    assert_eq!((sent["cmd"].as_str(), sent["level"].as_str()), (Some("set_effort"), Some("off")));
+    assert!(app.popup.is_none() && typed(&app).is_empty());
+    // ↓ from "high (当前)" lands on max? no: the menu is low, high (当前), max, off → max, then off
+    app.clear_input();
+    type_str(&mut app, &mut serve, "/effort ");
+    app.key(KeyCode::Down.into(), &mut serve);
+    app.key(KeyCode::Down.into(), &mut serve);
+    app.key(KeyCode::Enter.into(), &mut serve);
+    let sent: Value = serde_json::from_str(serve.sent.last().unwrap()).unwrap();
+    assert_eq!((sent["cmd"].as_str(), sent["level"].as_str()), (Some("set_effort"), Some("max")));
+    // a typed full level still runs as typed when the menu is closed
+    app.clear_input();
+    type_str(&mut app, &mut serve, "/effort low");
+    app.key(KeyCode::Enter.into(), &mut serve);
+    let sent: Value = serde_json::from_str(serve.sent.last().unwrap()).unwrap();
+    assert_eq!(sent["level"], "low");
+    }
+    
+    #[test]
+    fn model_picker_sets_the_reasoning_level_with_the_arrows() {
+    let mut app = App::new();
+    let mut serve = Serve::mock();
+    app.model = "zhipu-plan/glm-5.4".into();
+    app.effort = "high".into();
+    app.remember_effort();
+    let mut models = json!({"type": "result", "id": 1, "ok": true, "data": {"current": "zhipu-plan/glm-5.4", "models": [
+    {"id": "zhipu-plan/glm-5.4", "platform": "zhipu-plan", "keyed": true, "contextWindow": 200000,
+    "efforts": ["low", "high", "max"]},
+    {"id": "apikeyfan/claude-opus-5-5", "platform": "apikeyfan", "keyed": true, "contextWindow": 200000,
+    "efforts": ["low", "medium", "high", "xhigh", "max"]},
+    {"id": "x/gemma", "platform": "x", "keyed": true, "contextWindow": 0, "efforts": []}
+    ]}});
+    models["id"] = json!(serve.command("models", vec![]));
+    app.frame(models, &mut serve);
+    {
+    let p = app.picker.as_ref().unwrap();
+    // the level in use is shown beside the current model, off beside the others, nothing on a switch-only model
+    assert_eq!(p.effort_shown("zhipu-plan/glm-5.4"), Some("high"));
+    assert_eq!(p.effort_shown("apikeyfan/claude-opus-5-5"), Some("off"));
+    assert_eq!(p.effort_shown("x/gemma"), None);
+    assert!(p.selected_item().unwrap().id == "zhipu-plan/glm-5.4");
+    }
+    // → on the current row: high → max, stays at max; ← back down and ← again to off
+    app.key(KeyCode::Right.into(), &mut serve);
+    assert_eq!(app.picker.as_ref().unwrap().effort_shown("zhipu-plan/glm-5.4"), Some("max"));
+    app.key(KeyCode::Right.into(), &mut serve);
+    assert_eq!(app.picker.as_ref().unwrap().effort_shown("zhipu-plan/glm-5.4"), Some("max"));
+    app.key(KeyCode::Left.into(), &mut serve);
+    app.key(KeyCode::Left.into(), &mut serve);
+    app.key(KeyCode::Left.into(), &mut serve);
+    assert_eq!(app.picker.as_ref().unwrap().effort_shown("zhipu-plan/glm-5.4"), Some("off"));
+    // ↓ to Claude, → picks its first level (that model's own, not GLM's); ← → xhigh
+    app.key(KeyCode::Down.into(), &mut serve);
+    app.key(KeyCode::Right.into(), &mut serve);
+    app.key(KeyCode::Right.into(), &mut serve);
+    app.key(KeyCode::Right.into(), &mut serve);
+    assert_eq!(app.picker.as_ref().unwrap().effort_shown("apikeyfan/claude-opus-5-5"), Some("high"));
+    // ↓ to a model without levels: the arrows do nothing
+    app.key(KeyCode::Down.into(), &mut serve);
+    app.key(KeyCode::Right.into(), &mut serve);
+    assert_eq!(app.picker.as_ref().unwrap().effort_shown("x/gemma"), None);
+    app.key(KeyCode::Enter.into(), &mut serve);
+    let sent: Value = serde_json::from_str(serve.sent.last().unwrap()).unwrap();
+    assert_eq!(sent["cmd"], "set_model");
+    assert_eq!(sent["modelId"], "x/gemma");
+    assert!(sent.get("effort").is_none(), "nothing chosen: no effort field, the level in use is dropped");
+    }
+    
+    #[test]
+    fn model_picker_enter_switches_model_and_level_together_and_the_input_block_shows_it() {
+    let mut app = App::new();
+    let mut serve = Serve::mock();
+    app.model = "zhipu-plan/glm-5.4".into();
+    app.efforts = ["low", "high", "max"].iter().map(|s| s.to_string()).collect();
+    let mut models = json!({"type": "result", "id": 1, "ok": true, "data": {"current": "zhipu-plan/glm-5.4", "models": [
+    {"id": "zhipu-plan/glm-5.4", "platform": "zhipu-plan", "keyed": true, "contextWindow": 200000,
+    "efforts": ["low", "high", "max"]}
+    ]}});
+    models["id"] = json!(serve.command("models", vec![]));
+    app.frame(models, &mut serve);
+    app.key(KeyCode::Right.into(), &mut serve);
+    app.key(KeyCode::Right.into(), &mut serve);
+    app.key(KeyCode::Enter.into(), &mut serve);
+    let sent: Value = serde_json::from_str(serve.sent.last().unwrap()).unwrap();
+    assert_eq!((sent["cmd"].as_str(), sent["modelId"].as_str(), sent["effort"].as_str()),
+    (Some("set_model"), Some("zhipu-plan/glm-5.4"), Some("high")));
+    assert!(app.picker.is_none());
+    // serve's answer names the model with its level, as the model switch always did
+    let info = |app: &App| {
+    app.input_info_line(80).spans.iter().map(|s| s.content.to_string()).collect::<String>()
+    };
+    assert!(!info(&app).contains("effort"), "off: no effort in the input block: {}", info(&app));
+    app.frame(sent.with_id_data(json!({"model": "zhipu-plan/glm-5.4", "contextWindow": 200000,
+    "effort": "high", "efforts": ["low", "high", "max"]})), &mut serve);
+    assert_eq!(app.effort, "high");
+    assert!(info(&app).ends_with(" · effort high"), "{}", info(&app));
+    // kept for this model: the next picker opens with it, off for the rest
+    app.frame(models, &mut serve);
+    let p = app.picker.as_ref().unwrap();
+    assert_eq!(p.effort_shown("zhipu-plan/glm-5.4"), Some("high"));
+    // …and gone again once it is off
+    app.picker = None;
+    app.run_slash("/effort off", &mut serve);
+    let off: Value = serde_json::from_str(serve.sent.last().unwrap()).unwrap();
+    app.frame(json!({"type": "result", "id": off["id"], "ok": true, "data": {"effort": "off", "efforts": ["low", "high", "max"]}}), &mut serve);
+    assert!(app.effort_memory.is_empty());
+    assert!(!info(&app).contains("effort"));
+    }
+    
     #[test]
     fn effort_levels_follow_the_model_and_a_dropped_level_is_announced() {
         let mut app = App::new();

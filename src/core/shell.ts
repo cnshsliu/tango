@@ -7,14 +7,19 @@
  * Windows: PowerShell, the shell every Windows has. The command is wrapped so that the console
  * speaks UTF-8 (a Chinese Windows console is GBK, and the model reads UTF-8), a failing cmdlet
  * ends the command with exit 1 instead of passing unnoticed, and a native command's exit code
- * is the command's own. A command that reads stdin gets it forwarded: PowerShell reads a
- * redirected stdin itself and hands nothing to the native commands inside, which would leave
- * a hook's `jq` with no input.
+ * is the command's own. A command that reads stdin gets it from a file instead: PowerShell
+ * reads a redirected stdin itself and hands nothing to the native commands inside, so a hook's
+ * payload is written to a temp file (hookStdin) and piped into the command by the script.
  *
  * Killing is per platform too: macOS and Linux signal the detached child's process group, so
  * grandchildren die with it; Windows has no process groups, and `taskkill /T /F` ends the tree.
  */
 import { spawnSync } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
+import { writeFileSync, unlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import type { Writable } from 'node:stream';
 
 export const IS_WINDOWS = process.platform === 'win32';
 
@@ -46,7 +51,10 @@ export function shellInvocation(command: string, opts: { sh?: boolean; stdin?: b
         '$ErrorActionPreference = "Stop"',
         '$failed = $false',
         'try {',
-        opts.stdin ? `$input | & {\n${command}\n}\n` : `${command}\n`,
+        opts.stdin
+          ? // the payload file the caller wrote (hookStdin) is piped into the command
+            `if ($env:TANGO_HOOK_STDIN) { Get-Content -Raw -LiteralPath $env:TANGO_HOOK_STDIN | ${command} } else { ${command} }\n`
+          : `${command}\n`,
         '} catch { [Console]::Error.WriteLine($_); $failed = $true }',
         'if ($failed) { exit 1 }',
         'if ($null -ne $LASTEXITCODE) { exit $LASTEXITCODE }',
@@ -54,6 +62,25 @@ export function shellInvocation(command: string, opts: { sh?: boolean; stdin?: b
       ].join('\n')
     ]
   };
+}
+
+/**
+ * How a stdin-reading command (a hook) receives its payload. macOS and Linux: the caller writes
+ * it to the child's stdin (`write`). Windows: PowerShell would read that stdin itself, so the
+ * payload goes to a file named in `env` (TANGO_HOOK_STDIN, which the script pipes into the
+ * command); the caller merges `env` into the child's environment and calls `cleanup` after.
+ */
+export function hookStdin(payload: string): { env: Record<string, string>; write?: (stdin: Writable) => void; cleanup: () => void } {
+  if (!IS_WINDOWS) return { env: {}, write: (stdin) => stdin.end(payload), cleanup: () => {} };
+  const file = join(tmpdir(), `tango-hook-stdin-${process.pid}-${randomBytes(6).toString('hex')}`);
+  writeFileSync(file, payload, 'utf8');
+  return { env: { TANGO_HOOK_STDIN: file }, cleanup: () => void unlink(file) };
+}
+
+function unlink(file: string): void {
+  try {
+    unlinkSync(file);
+  } catch {}
 }
 
 /** The `TANGO_BIN` value the TUI spawns (program, then script), each double-quoted when it has

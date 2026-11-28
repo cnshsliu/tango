@@ -55,7 +55,7 @@ test('scripts/package.sh lays out what the launcher expects', async (t) => {
     await mkdir(unpack, { recursive: true });
     assert.equal(sh('tar', ['-xzf', tarball, '-C', unpack]).status, 0);
     const pkg = join(unpack, 'tango-9.9.9-darwin-arm64');
-    for (const f of ['bin/tango.js', 'dist/cli.js', 'package.json', 'install.sh', 'VERSION', 'tui/target/release/tango-tui']) {
+    for (const f of ['bin/tango.js', 'dist/cli.js', 'package.json', 'install.sh', 'install.ps1', 'VERSION', 'tui/target/release/tango-tui']) {
       assert.ok(existsSync(join(pkg, f)), `${f} is in the package`);
     }
     const version = readFileSync(join(pkg, 'VERSION'), 'utf8');

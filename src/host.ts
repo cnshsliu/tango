@@ -15,7 +15,7 @@ import { installLspDiagnostics } from './core/lsp-diagnostics.js';
 import { EventBus } from './core/events.js';
 import { mergeHookConfigs, runHooks, type HookConfig, type HookOutcome } from './core/hooks.js';
 import { resolveConfig, type Resolved } from './core/project-config.js';
-import { shellInvocation } from './core/shell.js';
+import { hookStdin, shellInvocation } from './core/shell.js';
 import { worktreeRoot } from './core/worktrees.js';
 import { READ_TOOLS, installPermissionGate, parseRule, type AllowRule, type AskFn, type PermissionMode } from './core/permissions.js';
 import { SessionStore, shortId } from './core/session.js';
@@ -63,7 +63,8 @@ export interface PermState {
 function runHook(script: string, payload: unknown): void {
   // async spawn keeps the event loop (and interrupts) alive during hooks
   const sh = shellInvocation(script, { sh: true, stdin: true });
-  const child = spawn(sh.file, sh.args, { stdio: ['pipe', 'ignore', 'pipe'], windowsHide: true });
+  const stdin = hookStdin(JSON.stringify(payload));
+  const child = spawn(sh.file, sh.args, { stdio: ['pipe', 'ignore', 'pipe'], windowsHide: true, env: { ...process.env, ...stdin.env } });
   const kill = setTimeout(() => child.kill('SIGKILL'), 5000);
   child.on('error', (e) => {
     clearTimeout(kill);
@@ -73,10 +74,10 @@ function runHook(script: string, payload: unknown): void {
   child.stderr?.on('data', (d) => (err += d));
   child.on('close', (code) => {
     clearTimeout(kill);
+    stdin.cleanup();
     if (code !== 0) process.stderr.write(`[hook] exit ${code}: ${err}`.slice(0, 500) + '\n');
   });
-  child.stdin.write(JSON.stringify(payload));
-  child.stdin.end();
+  stdin.write?.(child.stdin);
 }
 
 /** Local plugins (~/.tango/plugins/<name>/plugin.json): hooks chain in, enabled:false skips. */

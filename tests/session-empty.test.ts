@@ -82,14 +82,16 @@ test('sweepEmpty removes old empty files and spares fresh, used and kept ones', 
     assert.equal(await SessionStore.sweepEmpty(dir, { keepAgeMs: 0 }), 0);
     assert.equal(await SessionStore.sweepEmpty(join(dir, 'no-such-dir')), 0);
 
-    // an unreadable file is left alone rather than failing the sweep
-    await w('z.jsonl', meta('z'));
-    await chmod(join(dir, 'z.jsonl'), 0o000);
-    try {
-      assert.equal(await SessionStore.sweepEmpty(dir, { keepAgeMs: 0 }), 0);
-      assert.ok(existsSync(join(dir, 'z.jsonl')));
-    } finally {
-      await chmod(join(dir, 'z.jsonl'), 0o600);
+    // an unreadable file is left alone rather than failing the sweep (a mode Windows lacks)
+    if (process.platform !== 'win32') {
+      await w('z.jsonl', meta('z'));
+      await chmod(join(dir, 'z.jsonl'), 0o000);
+      try {
+        assert.equal(await SessionStore.sweepEmpty(dir, { keepAgeMs: 0 }), 0);
+        assert.ok(existsSync(join(dir, 'z.jsonl')));
+      } finally {
+        await chmod(join(dir, 'z.jsonl'), 0o600);
+      }
     }
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -115,7 +117,7 @@ test('append() after a sweep restarts the log with its meta line, so the session
   }
 });
 
-test('cli: a bare -r hands the TUI the pick flag; with an id it resumes that one', async () => {
+test('cli: a bare -r hands the TUI the pick flag; with an id it resumes that one', { skip: process.platform === 'win32' && 'the stand-in TUI is a shell script' }, async () => {
   const dir = await mkdtemp(join(tmpdir(), 'tango-pick-'));
   const fake = join(dir, 'fake-tui');
   try {

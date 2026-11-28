@@ -78,12 +78,22 @@ PATH):
 curl -fsSL https://raw.githubusercontent.com/cnshsliu/tango/main/install.sh | sh
 ```
 
+Windows (PowerShell; Node 20 or newer on the PATH):
+
+```powershell
+irm https://raw.githubusercontent.com/cnshsliu/tango/main/install.ps1 | iex
+```
+
 `install.sh` picks the latest GitHub Release and the package for this machine, checks its
 SHA-256 against the release's `SHA256SUMS`, unpacks it under `~/.tango/releases/` and links
 `tango` (and `tang`) into `~/.local/bin`. `TANGO_VERSION=v0.2.0` installs a given release,
 `TANGO_INSTALL_DIR` another bin directory, `TANGO_HOME` another tango home, `GITHUB_TOKEN` is
 optional for the latest-release lookup; `TANGO_NO_SHA=1` skips the checksum (not recommended).
 Running it again upgrades in place: each version sits in its own directory and the link moves.
+`install.ps1` is its Windows counterpart: the package is a zip, it lands under
+`%USERPROFILE%\.tango\releases\`, and `tango.cmd` / `tang.cmd` shims go into `%LOCALAPPDATA%\tango\bin`,
+which is added to the user PATH once. The same variables apply (`TANGO_VERSION`, `TANGO_INSTALL_DIR`,
+`TANGO_HOME`, `TANGO_RELEASES_URL`, `TANGO_NO_SHA`, `GITHUB_TOKEN`).
 
 From source:
 

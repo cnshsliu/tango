@@ -1648,7 +1648,9 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
             keyed: hasKey(m),
             contextWindow: m.contextWindow ?? 0,
             platform: displayPlatform(m),
-            region: m.region ?? null
+            region: m.region ?? null,
+            // what /effort may take on it: the model picker offers the level next to the model
+            efforts: effortsFor(m)
           }))
         });
         return;
@@ -1656,10 +1658,16 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
       case 'set_model': {
         try {
           const model = pickModel(await loadModels(), {}, String(cmd.modelId ?? ''));
-          // a level chosen for the previous model may not exist on this one: then it is off, and said
           const efforts = effortsFor(model);
+          // an `effort` rides along (the model picker's ←→): it must be one this model takes, and
+          // is refused before anything changes
+          const wanted = cmd.effort === undefined ? undefined : String(cmd.effort).trim().toLowerCase();
+          if (wanted !== undefined && wanted !== 'off' && !efforts.includes(wanted))
+            return reply(cmd, false, undefined, `effort "${wanted}": ${model.id} takes ${efforts.join(' | ') || 'none'} | off`);
+          // a level chosen for the previous model may not exist on this one: then it is off, and said
           const effortDropped = agent.effort && !efforts.includes(agent.effort) ? agent.effort : undefined;
-          if (effortDropped) agent.effort = undefined;
+          if (effortDropped || wanted !== undefined) agent.effort = undefined;
+          if (wanted && wanted !== 'off') agent.effort = wanted;
           agent.setModel(model);
           // same as the REPL: an explicit switch becomes the default for new sessions
           await saveConfig({ ...(await loadConfig()), model: model.id });
@@ -1669,7 +1677,7 @@ ${rows('按会话', '<tr><th>会话</th><th>名称</th><th class=num>消息</th>
             contextWindow: model.contextWindow ?? 128_000,
             effort: agent.effort ?? 'off',
             efforts,
-            ...(effortDropped ? { effortDropped } : {})
+            ...(effortDropped && wanted === undefined ? { effortDropped } : {})
           });
         } catch (e: any) {
           reply(cmd, false, undefined, e.message);

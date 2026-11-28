@@ -23,6 +23,9 @@ test('typescript diagnostics reach the tool result after an edit', async () => {
   await writeFile(join(proj, 'tsconfig.json'), JSON.stringify({ compilerOptions: { strict: true, noEmit: true } }));
   await mkdir(join(proj, 'node_modules'), { recursive: true });
   await symlink(join(REPO, 'node_modules/.bin'), join(proj, 'node_modules/.bin'), 'dir');
+  // Windows runs npm's commands through their package's entry script (npm-bin.ts): the packages too
+  for (const pkg of ['typescript-language-server', 'typescript', 'pyright'])
+    await symlink(join(REPO, 'node_modules', pkg), join(proj, 'node_modules', pkg), 'dir');
   const bad = join(proj, 'bad.ts');
   await writeFile(bad, 'export const a: number = "s";\n');
 

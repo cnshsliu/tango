@@ -1,25 +1,37 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { IS_WINDOWS, PATH_SEP, killProcessTree, shellInvocation } from '../src/core/shell.js';
+import { IS_WINDOWS, PATH_SEP, hookStdin, killProcessTree, shellInvocation } from '../src/core/shell.js';
 import { processCommandLine, processStarts } from '../src/core/liveness.js';
 import { decide, suggestRules } from '../src/core/permissions.js';
 import { grepTool } from '../src/core/tools/search.js';
 import type { ToolCallBlock } from '../src/core/types.js';
 
-/** Run `command` through the platform's shell, as the bash tool and hooks do. */
-function runShell(command: string, opts: { stdin?: string; sh?: boolean } = {}): Promise<{ out: string; err: string; code: number | null }> {
+type ShellRun = { out: string; err: string; code: number | null };
+
+/** Run `command` through the platform's shell, as the bash tool and hooks do: plain, or the
+ *  way the bash tool spawns it (detached, hidden). A stdin payload goes the way hooks send one. */
+function runShell(command: string, opts: { stdin?: string; sh?: boolean; detached?: boolean } = {}): Promise<ShellRun> {
   const sh = shellInvocation(command, { sh: opts.sh, stdin: opts.stdin !== undefined });
+  const stdin = opts.stdin !== undefined ? hookStdin(opts.stdin) : undefined;
   return new Promise((done) => {
-    const child = spawn(sh.file, sh.args, { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+    const child = spawn(sh.file, sh.args, {
+      stdio: [opts.stdin !== undefined ? 'pipe' : 'ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+      detached: opts.detached ?? false,
+      env: stdin ? { ...process.env, ...stdin.env } : process.env
+    });
     let out = '';
     let err = '';
-    child.stdout.on('data', (b: Buffer) => (out += b.toString('utf8')));
-    child.stderr.on('data', (b: Buffer) => (err += b.toString('utf8')));
+    child.stdout!.on('data', (b: Buffer) => (out += b.toString('utf8')));
+    child.stderr!.on('data', (b: Buffer) => (err += b.toString('utf8')));
     child.on('error', (e) => done({ out, err: String(e.message), code: -1 }));
-    child.on('close', (code) => done({ out, err, code }));
-    if (opts.stdin !== undefined) child.stdin.end(opts.stdin);
-    else child.stdin.end();
+    child.on('close', (code) => {
+      stdin?.cleanup();
+      done({ out, err, code });
+    });
+    if (stdin?.write) stdin.write(child.stdin!);
+    else child.stdin?.end();
   });
 }
 
@@ -32,11 +44,10 @@ test('shellInvocation: bash on macOS and Linux, PowerShell on Windows', () => {
     const script = cmd.args.at(-1)!;
     assert.match(script, /chcp\.com 65001/);
     assert.match(script, /OutputEncoding = \[Text\.Encoding\]::UTF8/);
-    assert.match(script, /\n git status\n/);
+    assert.match(script, /^git status$/m);
     assert.match(script, /exit \$LASTEXITCODE/);
     const hookScript = hook.args.at(-1)!;
-    assert.match(hookScript, /\$input \| & \{\n/);
-    assert.match(hookScript, /\njq \.type\n\}\n/);
+    assert.match(hookScript, /Get-Content -Raw -LiteralPath \$env:TANGO_HOOK_STDIN \| jq \.type/);
   } else {
     assert.deepEqual(cmd, { file: '/bin/bash', args: ['-lc', 'git status'] });
     assert.deepEqual(hook, { file: 'sh', args: ['-c', 'jq .type'] });
@@ -64,14 +75,23 @@ test('killProcessTree ends a shell command and what it started', { timeout: 60_0
   // the shell, node, and a child node that would run for a minute
   const sh = shellInvocation(`node -e "require('child_process').spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], { stdio: 'inherit'}); setTimeout(() => {}, 60000)"`);
   const child = spawn(sh.file, sh.args, { stdio: ['ignore', 'pipe', 'pipe'], detached: true, windowsHide: true });
+  // listened for before the kill: the exit may be reported while taskkill still runs
+  const exited = new Promise<number | null>((done) => child.once('close', done));
+  child.on('error', (e) => assert.fail(String(e.message)));
   await new Promise<void>((done) => child.once('spawn', done));
   // give the grandchild a moment to exist, then take the tree down
   await new Promise((r) => setTimeout(r, 1500));
   const t0 = Date.now();
   killProcessTree(child.pid);
-  const code = await new Promise<number | null>((done) => child.once('close', done));
+  const code = await exited;
   assert.ok(Date.now() - t0 < 10_000, 'it did not wait for the minute to pass');
   assert.notEqual(code, 0, 'killed, not exited normally');
+});
+
+test('the way the bash tool spawns a command (detached, hidden) still gives its output and exit code', { timeout: 60_000 }, async () => {
+  const r = await runShell(`node -e "process.stdout.write('detached ok'); process.exit(4)"`, { detached: true });
+  assert.equal(r.code, 4, `out=${JSON.stringify(r.out)} err=${JSON.stringify(r.err)}`);
+  assert.ok(r.out.includes('detached ok'), `out=${JSON.stringify(r.out)} err=${JSON.stringify(r.err)}`);
 });
 
 test('liveness: this process has a command line and a start time on every platform', { timeout: 60_000 }, () => {

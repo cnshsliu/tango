@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { killProcessTree, shellInvocation } from './shell.js';
+import { hookStdin, killProcessTree, shellInvocation } from './shell.js';
 /**
  * Lifecycle hooks (Claude Code / grok-cli style). Config:
  *   "hooks": { "PreToolUse": [{ "matcher": "bash|edit", "command": "./check.sh", "timeout": 10 }] }
@@ -123,8 +123,9 @@ function runOne(cmd: HookCommand, payload: unknown, cwd: string, env: NodeJS.Pro
   return new Promise((resolve) => {
     // own process group: on timeout the whole tree dies, not just sh (a leftover child
     // would hold the stderr pipe open and stall the turn until it exits on its own)
-    const sh = shellInvocation(cmd.command, { sh: true, stdin: true }); // the payload JSON is on stdin
-    const child = spawn(sh.file, sh.args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'], detached: true, windowsHide: true });
+    const sh = shellInvocation(cmd.command, { sh: true, stdin: true }); // the payload JSON is the command's stdin
+    const stdin = hookStdin(JSON.stringify(payload));
+    const child = spawn(sh.file, sh.args, { cwd, env: { ...env, ...stdin.env }, stdio: ['pipe', 'pipe', 'pipe'], detached: true, windowsHide: true });
     let stderr = '';
     let stdout = '';
     let settled = false;
@@ -132,6 +133,7 @@ function runOne(cmd: HookCommand, payload: unknown, cwd: string, env: NodeJS.Pro
       if (settled) return;
       settled = true;
       clearTimeout(kill);
+      stdin.cleanup();
       resolve({ code, stdout, stderr });
     };
     const kill = setTimeout(() => {
@@ -150,7 +152,7 @@ function runOne(cmd: HookCommand, payload: unknown, cwd: string, env: NodeJS.Pro
     });
     child.on('close', (code) => finish(code));
     child.stdin.on('error', () => {}); // a hook that never reads stdin must not crash us
-    child.stdin.end(JSON.stringify(payload));
+    stdin.write?.(child.stdin);
   });
 }
 

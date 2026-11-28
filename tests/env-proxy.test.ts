@@ -81,7 +81,7 @@ test('relaunch: the copy runs with the switch on, quietly, and its exit status i
   assert.ok(seen.execArgv.includes('--import') && seen.execArgv.some((a: string) => a.startsWith('--disable-warning')), 'node options travel with the copy');
 });
 
-test('relaunch: a signal sent to the launcher reaches the copy, which can clean up first', { skip: proxyPlan({ HTTP_PROXY: 'x' }) !== 'relaunch' }, async () => {
+test('relaunch: a signal sent to the launcher reaches the copy, which can clean up first', { skip: process.platform === 'win32' ? 'Windows has no signals to send the launcher' : proxyPlan({ HTTP_PROXY: 'x' }) !== 'relaunch' }, async () => {
   const dir = tmp('tango-proxy-signal-');
   const note = join(dir, 'note');
   const r = runTango(

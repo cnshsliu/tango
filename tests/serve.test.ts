@@ -1729,7 +1729,7 @@ test('loop: repeats a prompt on an interval, off and interrupt stop it', async (
   }
 });
 
-test('hooks: beforeTool runs with the call JSON on stdin; failures never block', async () => {
+test('hooks: beforeTool runs with the call JSON on stdin; failures never block', { skip: process.platform === 'win32' && 'the hook commands are POSIX shell scripts' }, async () => {
   const mock = await startMock();
   const home = await mkdtemp(join(tmpdir(), 'tango-serve-home-'));
   const work = await mkdtemp(join(tmpdir(), 'tango-serve-work-'));
@@ -1762,7 +1762,7 @@ test('hooks: beforeTool runs with the call JSON on stdin; failures never block',
   }
 });
 
-test('lifecycle hooks: PreToolUse exit 2 blocks, PostToolUse talks back, UserPromptSubmit rejects, Stop continues once', async () => {
+test('lifecycle hooks: PreToolUse exit 2 blocks, PostToolUse talks back, UserPromptSubmit rejects, Stop continues once', { skip: process.platform === 'win32' && 'the hook commands are POSIX shell scripts' }, async () => {
   const mock = await startMock();
   const home = await mkdtemp(join(tmpdir(), 'tango-serve-home-'));
   const work = await mkdtemp(join(tmpdir(), 'tango-serve-work-'));
@@ -1815,7 +1815,7 @@ test('lifecycle hooks: PreToolUse exit 2 blocks, PostToolUse talks back, UserPro
   }
 });
 
-test('Stop hook: a hook that always says no is honored at most 3 times per prompt', async () => {
+test('Stop hook: a hook that always says no is honored at most 3 times per prompt', { skip: process.platform === 'win32' && 'the hook commands are POSIX shell scripts' }, async () => {
   const mock = await startMock();
   const home = await mkdtemp(join(tmpdir(), 'tango-serve-home-'));
   const work = await mkdtemp(join(tmpdir(), 'tango-serve-work-'));

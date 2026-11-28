@@ -158,11 +158,11 @@ jobs:
       - name: checksums
         run: |
           cd out
-          sha256sum tango-*.tar.gz > SHA256SUMS
+          sha256sum tango-*.tar.gz tango-*.zip > SHA256SUMS
           cat SHA256SUMS
       - name: GitHub release
         run: |
           version="${GITHUB_REF_NAME#v}"
-          gh release create "$GITHUB_REF_NAME" out/tango-*.tar.gz out/SHA256SUMS \
+          gh release create "$GITHUB_REF_NAME" out/tango-*.tar.gz out/tango-*.zip out/SHA256SUMS \
             --title "tango $version" --generate-notes \
             --notes "Install: \`curl -fsSL https://raw.githubusercontent.com/cnshsliu/tango/main/install.sh | sh\` — or download the package for your platform below and unpack it (needs Node 20+)."

@@ -19,7 +19,8 @@ function binEntry(mods: string, name: string): string | undefined {
   const candidates: string[] = [join(mods, name)];
   try {
     for (const d of readdirSync(mods, { withFileTypes: true })) {
-      if (!d.isDirectory() || d.name.startsWith('.')) continue;
+      // pnpm and others link package directories: a symlink is a package here too
+      if (!(d.isDirectory() || d.isSymbolicLink()) || d.name.startsWith('.')) continue;
       if (d.name.startsWith('@')) {
         for (const s of readdirSync(join(mods, d.name))) candidates.push(join(mods, d.name, s));
       } else {

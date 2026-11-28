@@ -31,7 +31,7 @@ test('launch directory fine: no move, no notice', () => {
   assert.equal(process.cwd(), realCwd);
 });
 
-test('launch directory deleted (macOS: cwd() throws): move to the home directory and say so', () => {
+test('launch directory deleted (macOS: cwd() throws): move to the home directory and say so', { skip: process.platform === 'win32' && 'POSIX cwd semantics' }, () => {
   process.env.HOME = fakeHome;
   process.cwd = (() => {
     throw Object.assign(new Error('ENOENT: no such file or directory, uv_cwd'), { code: 'ENOENT' });
@@ -46,7 +46,7 @@ test('launch directory deleted (macOS: cwd() throws): move to the home directory
   process.chdir(realCwd);
 });
 
-test('launch directory deleted (Linux: cwd() still answers with a path that is gone)', () => {
+test('launch directory deleted (Linux: cwd() still answers with a path that is gone)', { skip: process.platform === 'win32' && 'POSIX cwd semantics' }, () => {
   process.env.HOME = fakeHome;
   process.cwd = () => join(fakeHome, 'gone');
   const text = notice();
