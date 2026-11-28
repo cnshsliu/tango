@@ -97,17 +97,25 @@ async function turn(s: Serve, dir: string, id: number) {
   s.send({ id, cmd: 'prompt', text: '删一下' });
   let asked = false;
   let toolRan = false;
+  lastTool = '';
   await s.until((f) => {
     if (f.type === 'permission_request') {
       asked = true;
       s.send({ cmd: 'permission', request: f.request, allow: false });
     }
-    if (f.type === 'tool_result' && f.isError === false) toolRan = true;
+    if (f.type === 'tool_result') {
+      if (f.isError === false) toolRan = true;
+      lastTool = `${f.name}: ${String(f.output ?? '').slice(0, 200)}`;
+    }
     return f.type === 'result' && f.id === id;
   });
   await new Promise((r) => setTimeout(r, 150));
   return { asked, toolRan, markerGone: !existsSync(join(dir, 'marker')) };
 }
+
+/** What the last tool of the last turn said — part of every assertion message here. */
+let lastTool = '';
+const withTool = (msg: string) => `${msg}${lastTool ? ` · last tool: ${lastTool}` : ''}`;
 
 async function project(rules?: string) {
   const dir = await mkdtemp(join(tmpdir(), 'tango-proj-'));
@@ -121,15 +129,15 @@ test("a rule saved by another window applies to a session that is already open",
   const s = startServe(work);
   try {
     assert.equal((await s.until((f) => f.type === 'hello')).type, 'hello');
-    assert.deepEqual(await turn(s, work, 1), { asked: true, toolRan: false, markerGone: false }, 'no rule yet: asks');
+    assert.deepEqual(await turn(s, work, 1), { asked: true, toolRan: false, markerGone: false }, withTool('no rule yet: asks'));
 
     // another window's "always allow": the file changes under the running session
     await writeFile(join(work, '.tango', 'config.local.json'), RULE);
-    assert.deepEqual(await turn(s, work, 2), { asked: false, toolRan: true, markerGone: true }, 'picked up without a restart');
+    assert.deepEqual(await turn(s, work, 2), { asked: false, toolRan: true, markerGone: true }, withTool('picked up without a restart'));
 
     // and a rule taken away is gone just as fast
     await writeFile(join(work, '.tango', 'config.local.json'), JSON.stringify({ permissions: { allow: [] } }, null, 2));
-    assert.deepEqual(await turn(s, work, 3), { asked: true, toolRan: false, markerGone: false }, 'asks again once the rule is removed');
+    assert.deepEqual(await turn(s, work, 3), { asked: true, toolRan: false, markerGone: false }, withTool('asks again once the rule is removed'));
   } finally {
     s.child.kill();
     await rm(work, { recursive: true, force: true });
@@ -142,7 +150,7 @@ test('after /cd the rules of the directory the session is in now apply', async (
   const s = startServe(plain);
   try {
     assert.equal((await s.until((f) => f.type === 'hello')).type, 'hello');
-    assert.deepEqual(await turn(s, plain, 1), { asked: true, toolRan: false, markerGone: false }, 'a directory without rules: asks');
+    assert.deepEqual(await turn(s, plain, 1), { asked: true, toolRan: false, markerGone: false }, withTool('a directory without rules: asks'));
 
     s.send({ id: 10, cmd: 'cd', dir: withRules });
     const cd = await s.until((f) => f.type === 'result' && f.id === 10);
