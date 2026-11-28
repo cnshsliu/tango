@@ -48,11 +48,10 @@ jobs:
       - run: cargo test --release --locked
         working-directory: tui
 
-  # The Windows port in progress: the same checks on windows-2025. It is not in the build's
-  # `needs` yet, and it does not fail the run — its log is the to-do list of the port.
+  # The same checks on Windows. The TypeScript tests run with a per-test timeout (the suite is
+  # slower there); 5 minutes is above any real test and only ends a hang.
   check-windows:
-    name: check and test (windows, port in progress)
-    continue-on-error: true
+    name: check and test (windows)
     runs-on: windows-2025
     timeout-minutes: 45
     steps:
@@ -66,10 +65,8 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run typecheck
-        continue-on-error: true
-      # a per-test timeout: a test that hangs on Windows fails in two minutes instead of holding the run
-      - run: node --import tsx --test --test-timeout=120000 "tests/*.test.ts"
-        continue-on-error: true
+      # a per-test timeout: a test that hangs on Windows fails in minutes instead of holding the run
+      - run: node --import tsx --test --test-timeout=300000 "tests/*.test.ts"
       - uses: dtolnay/rust-toolchain@v1
         with:
           toolchain: stable
@@ -78,11 +75,10 @@ jobs:
           workspaces: tui
       - run: cargo test --release --locked
         working-directory: tui
-        continue-on-error: true
 
   build:
     name: package ${{ matrix.platform }}
-    needs: check
+    needs: [check, check-windows]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false

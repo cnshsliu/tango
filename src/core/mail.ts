@@ -1,4 +1,5 @@
 import { mkdir, readFile, readdir, rename, unlink, writeFile } from 'node:fs/promises';
+import { renameRetry } from './fs-retry.js';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -39,7 +40,7 @@ export async function sendMail(targetId: string, m: Omit<QueuedMail, 'queuedAt'>
   const name = `${stamp}-${randomUUID().slice(0, 8)}`;
   // write then rename: a draining reader never sees a half-written file
   await writeFile(join(dir, `${name}.tmp`), JSON.stringify({ ...m, queuedAt: new Date().toISOString() }), 'utf8');
-  await rename(join(dir, `${name}.tmp`), join(dir, `${name}.json`));
+  await renameRetry(join(dir, `${name}.tmp`), join(dir, `${name}.json`));
 }
 
 /** A message older than this is discarded (with a notice) instead of merged. */
@@ -66,7 +67,7 @@ export async function drainMail(store: SessionStore, now = Date.now()): Promise<
     // claim first: a concurrent drain (same session opened twice) skips what we hold
     const claimed = path.replace(/\.json$/, '.claimed');
     try {
-      await rename(path, claimed);
+      await renameRetry(path, claimed);
     } catch {
       continue;
     }
@@ -74,7 +75,7 @@ export async function drainMail(store: SessionStore, now = Date.now()): Promise<
     try {
       m = JSON.parse(await readFile(claimed, 'utf8'));
     } catch {
-      await rename(claimed, path).catch(() => {}); // unreadable: leave it for a human
+      await renameRetry(claimed, path).catch(() => {}); // unreadable: leave it for a human
       continue;
     }
     if (expired(m, now)) {

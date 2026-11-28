@@ -1,5 +1,6 @@
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises';
+import { renameRetry } from './fs-retry.js';
 import { join, isAbsolute } from 'node:path';
 import { tangoDir } from './config.js';
 import type { Message } from './types.js';
@@ -126,7 +127,7 @@ export async function promoteDraft(draftFile: string, root: string): Promise<Pro
   await mkdir(dir, { recursive: true });
   const file = join(dir, 'SKILL.md');
   await writeFile(file, body, 'utf8');
-  await rename(src, src + '.done');
+  await renameRetry(src, src + '.done');
   return { dir, file };
 }
 

@@ -6,6 +6,7 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, realpathSync } from 'node:fs';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { renameRetry } from './fs-retry.js';
 import { join, sep } from 'node:path';
 import { sessionsDir, tangoDir } from './config.js';
 import { liveSessionLocks } from './session-lock.js';
@@ -40,7 +41,7 @@ async function writeRegistry(entries: WorktreeEntry[]): Promise<void> {
   await mkdir(tangoDir(), { recursive: true });
   const tmp = registryFile() + '.tmp';
   await writeFile(tmp, JSON.stringify(entries, null, 2), 'utf8');
-  await rename(tmp, registryFile());
+  await renameRetry(tmp, registryFile());
 }
 
 export function isGitRepo(cwd: string): boolean {

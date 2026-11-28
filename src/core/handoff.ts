@@ -1,4 +1,5 @@
 import { mkdir, readFile, readdir, rename, unlink, writeFile } from 'node:fs/promises';
+import { renameRetry } from './fs-retry.js';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -27,7 +28,7 @@ export async function queueHandoff(targetId: string, h: Omit<QueuedHandoff, 'que
   const name = `${Date.now()}-${queueId}`;
   // write then rename: a draining reader never sees a half-written file
   await writeFile(join(dir, `${name}.tmp`), JSON.stringify({ ...h, queuedAt: new Date().toISOString() }), 'utf8');
-  await rename(join(dir, `${name}.tmp`), join(dir, `${name}.json`));
+  await renameRetry(join(dir, `${name}.tmp`), join(dir, `${name}.json`));
   return queueId;
 }
 
@@ -54,7 +55,7 @@ export async function drainHandoffs(store: SessionStore, now = Date.now()): Prom
     // claim first: a concurrent /handoff cancel either wins (we skip) or loses (ENOENT for it)
     const claimed = path.replace(/\.json$/, '.claimed');
     try {
-      await rename(path, claimed);
+      await renameRetry(path, claimed);
     } catch {
       continue;
     }
@@ -62,7 +63,7 @@ export async function drainHandoffs(store: SessionStore, now = Date.now()): Prom
     try {
       h = JSON.parse(await readFile(claimed, 'utf8'));
     } catch {
-      await rename(claimed, path).catch(() => {}); // unreadable: leave it for a human
+      await renameRetry(claimed, path).catch(() => {}); // unreadable: leave it for a human
       continue;
     }
     if (expired(h, now)) {

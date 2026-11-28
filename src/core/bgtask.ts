@@ -9,6 +9,7 @@ import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import { createReadStream, createWriteStream, readFileSync } from 'node:fs';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { renameRetry } from './fs-retry.js';
 import { join, resolve } from 'node:path';
 import { tangoDir } from './config.js';
 import { worktreeCreate, worktreeRemove, type WorktreeEntry } from './worktrees.js';
@@ -52,7 +53,7 @@ async function writeAll(tasks: BgTask[]): Promise<void> {
   // command) must not rename each other's temp file away
   const tmp = `${registryFile()}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
   await writeFile(tmp, JSON.stringify(tasks, null, 2), 'utf8');
-  await rename(tmp, registryFile());
+  await renameRetry(tmp, registryFile());
 }
 
 export async function findTask(idOrName: string): Promise<BgTask | undefined> {
