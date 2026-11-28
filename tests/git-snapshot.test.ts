@@ -112,7 +112,7 @@ test('restoreSnapshot: smart delete — agent leftovers removed, user files kept
     assert.ok(report.deleted.includes('leftover.txt'));
     // user's hand-made file kept on disk and reported
     assert.equal(await readFile(join(repo, 'handmade.txt'), 'utf8'), 'user made this\n');
-    assert.ok(report.kept.includes('handmade.txt'));
+    assert.ok(report.kept.includes('handmade.txt'), JSON.stringify(report));
     // ignored file untouched
     assert.equal(await readFile(join(repo, '.env'), 'utf8'), 'SECRET=1\n');
   } finally {
@@ -136,7 +136,7 @@ test('restoreSnapshot: tar snapshots get the same smart-delete semantics', async
     const report = await restoreSnapshot(dir, t1!, [t2!]);
     assert.equal(await readFile(join(dir, 'a.txt'), 'utf8'), 'one\n');
     assert.ok(!existsSync(join(dir, 'b.txt')));
-    assert.ok(report.kept.includes('mine.txt'));
+    assert.ok(report.kept.includes('mine.txt'), JSON.stringify(report));
     assert.equal(await readFile(join(dir, 'mine.txt'), 'utf8'), 'user\n');
   } finally {
     process.env.TANGO_HOME = prevHome;

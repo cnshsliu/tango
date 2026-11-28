@@ -111,7 +111,7 @@ test('e2e A+B+D: real undo/redo round-trip, user file survives, abandoned future
     assert.equal((await readFile(join(repo, 'work.txt'), 'utf8')).trim(), 'v1');
     assert.ok(!existsSync(join(repo, 'junk.txt')), 'agent leftover deleted');
     // B: the user's file survives and is reported
-    assert.ok(undo.data.kept.includes('handmade.txt'));
+    assert.ok(undo.data.kept.includes('handmade.txt'), JSON.stringify(undo.data));
     assert.equal(await readFile(join(repo, 'handmade.txt'), 'utf8'), 'user data\n');
 
     // D: the abandoned future is findable

@@ -9,7 +9,7 @@ import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:chil
 import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname, extname, join } from 'node:path';
+import { delimiter, dirname, extname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { npmBinCommand } from './npm-bin.js';
 import { IS_WINDOWS } from './shell.js';
@@ -103,8 +103,17 @@ export function findRoot(file: string, markers: string[], stop?: string): string
  */
 export function searchDirs(): string[] {
   const home = homedir();
-  const extra = [join(home, '.cargo', 'bin'), join(process.env.GOPATH ?? join(home, 'go'), 'bin'), join(home, '.local', 'bin'), '/opt/homebrew/bin', '/usr/local/bin'];
-  const dirs = [...(process.env.PATH ?? '').split(':'), ...extra].filter(Boolean);
+  const extra = [
+    join(home, '.cargo', 'bin'),
+    join(process.env.GOPATH ?? join(home, 'go'), 'bin'),
+    join(home, '.local', 'bin'),
+    '/opt/homebrew/bin',
+    '/usr/local/bin',
+    // a global npm install on Windows (%APPDATA%\npm on PATH in most shells; here even when it is not)
+    ...(process.env.APPDATA ? [join(process.env.APPDATA, 'npm')] : [])
+  ];
+  // PATH is `:`-separated on macOS and Linux, `;` on Windows: the platform's delimiter
+  const dirs = [...(process.env.PATH ?? '').split(delimiter), ...extra].filter(Boolean);
   return dirs.filter((d, i) => dirs.indexOf(d) === i);
 }
 

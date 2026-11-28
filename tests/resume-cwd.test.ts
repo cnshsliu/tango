@@ -137,6 +137,16 @@ test('serve: resuming a session whose directory is gone → one notice, and a pr
     assert.ok(prompts >= 1, 'the model was reached');
   } finally {
     child.kill();
-    await rm(launch, { recursive: true, force: true });
+    // Windows keeps a directory busy while a process that ran in it is still leaving
+    await new Promise<void>((r) => child.once('exit', () => r()));
+    for (let i = 0; i < 20; i++) {
+      try {
+        await rm(launch, { recursive: true, force: true });
+        break;
+      } catch (e: any) {
+        if (e?.code !== 'EBUSY' || i === 19) throw e;
+        await new Promise((r) => setTimeout(r, 250));
+      }
+    }
   }
 });
