@@ -130,8 +130,8 @@ export function shellInvocation(command: string, opts: { sh?: boolean; stdin?: b
           'Remove-Item Alias:rm -ErrorAction SilentlyContinue',
           'function rm {',
           '  [CmdletBinding()] param(',
-          '    [Alias("f", "force")] [switch] $Force,', // parameter aliases are case-insensitive: f is F
-          '    [Alias("r", "recurse", "recursive")] [switch] $Recurse,',
+          '    [Alias("f")] [switch] $Force,', // a parameter alias is case-insensitive: `force` would be `Force` twice
+          '    [Alias("r")] [switch] $Recurse,',
           '    [switch] $rf, [switch] $fr,',
           '    [Parameter(ValueFromRemainingArguments = $true)] [string[]] $Path)',
           '  Remove-Item -Path $Path -Force:($Force -or $rf -or $fr) -Recurse:($Recurse -or $rf -or $fr) -ErrorAction SilentlyContinue',
