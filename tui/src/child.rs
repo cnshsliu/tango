@@ -42,9 +42,9 @@ impl Serve {
     ) -> std::io::Result<Self> {
         // TANGO_BIN can hold args too, e.g. `node /path/to/bin/tango.js` for dev builds.
         let bin = std::env::var("TANGO_BIN").unwrap_or_else(|_| "tango".into());
-        let mut parts = bin.split_whitespace();
-        let mut cmd = Command::new(parts.next().unwrap_or("tango"));
-        for a in parts {
+        let parts = split_bin(&bin);
+        let mut cmd = Command::new(parts.first().map(String::as_str).unwrap_or("tango"));
+        for a in parts.iter().skip(1) {
             cmd.arg(a);
         }
         cmd.arg("serve")
@@ -112,7 +112,14 @@ impl Serve {
 
     #[cfg(test)]
     pub fn mock() -> Self {
-        let mut child = Command::new("cat")
+        // a child that says nothing and never leaves until it is killed
+        #[cfg(unix)]
+        let mut command = Command::new("cat");
+        #[cfg(windows)]
+        let mut command = Command::new("cmd");
+        #[cfg(windows)]
+        command.args(["/c", "pause"]);
+        let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -181,10 +188,46 @@ impl Drop for Serve {
     }
 }
 
+/// Split a `TANGO_BIN` value into program and arguments. A part may be double-quoted: a
+/// Windows install lives under `C:\Program Files`, or in a user directory with a space in its
+/// name, and the launcher quotes such paths when it writes the variable.
+fn split_bin(bin: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut cur = String::new();
+    let mut quoted = false;
+    for c in bin.chars() {
+        match c {
+            '"' => quoted = !quoted,
+            c if c.is_whitespace() && !quoted => {
+                if !cur.is_empty() {
+                    parts.push(std::mem::take(&mut cur));
+                }
+            }
+            c => cur.push(c),
+        }
+    }
+    if !cur.is_empty() {
+        parts.push(cur);
+    }
+    parts
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    #[test]
+    fn tango_bin_parts_may_be_quoted() {
+        assert_eq!(split_bin("node /opt/t/bin/tango.js"), ["node", "/opt/t/bin/tango.js"]);
+        assert_eq!(split_bin("tango"), ["tango"]);
+        assert_eq!(split_bin("  "), Vec::<String>::new());
+        assert_eq!(
+            split_bin(r#""C:\Program Files\nodejs\node.exe" "C:\Users\L Wang\tango\bin\tango.js""#),
+            [r"C:\Program Files\nodejs\node.exe", r"C:\Users\L Wang\tango\bin\tango.js"]
+        );
+    }
+
+    #[cfg(unix)] // `kill -0` is how it looks for the zombie
     #[test]
     fn dropping_serve_reaps_the_child() {
         let serve = Serve::mock();

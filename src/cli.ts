@@ -24,6 +24,7 @@ import { effortsFor } from './core/models/reasoning.js';
 import { SessionStore, shortId, type SessionSummary } from './core/session.js';
 import { resolveConfig, updateLocalConfig, type Resolved } from './core/project-config.js';
 import { runDoctor } from './core/doctor.js';
+import { tangoBinValue } from './core/shell.js';
 import { suggestRules, type AskFn, type PermissionMode } from './core/permissions.js';
 import { addTask, daemonLoop, feishuWebhook, lastRunAt, loadTasks, parseInterval, removeTask, runDueOnce, sendFeishu, summarizeOutput } from './core/scheduler.js';
 import type { Message, ModelSpec, ToolCallBlock } from './core/types.js';
@@ -600,7 +601,7 @@ async function launchTui(args: Args): Promise<void> {
     throw new Error(`TUI not built: ${bin}\n  build it with: cd ${join(root, 'tui')} && cargo build --release`);
   }
   const env: NodeJS.ProcessEnv = { ...process.env };
-  env.TANGO_BIN ??= `${process.execPath} ${join(root, 'bin', 'tango.js')}`;
+  env.TANGO_BIN ??= tangoBinValue(process.execPath, join(root, 'bin', 'tango.js'));
   if (args.resume) env.TANGO_RESUME = args.resume;
   else if (args.pick) env.TANGO_PICK_SESSION = '1'; // the TUI opens /resume once serve says hello
   else if (args.continue) {

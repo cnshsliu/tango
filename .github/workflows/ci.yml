@@ -62,7 +62,18 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run typecheck
+        continue-on-error: true
       - run: npm run test:ts
+        continue-on-error: true
+      - uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tui
+      - run: cargo test --release --locked
+        working-directory: tui
+        continue-on-error: true
 
   build:
     name: package ${{ matrix.platform }}

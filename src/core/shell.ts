@@ -57,6 +57,14 @@ export function shellInvocation(command: string, opts: { sh?: boolean; stdin?: b
   };
 }
 
+/** The `TANGO_BIN` value the TUI spawns (program, then script), each double-quoted when it has
+ *  a space: a Windows install lives under `C:\Program Files`, or in a user directory with a
+ *  space in its name, and the TUI's split_bin honors the quotes. */
+export function tangoBinValue(node: string, cli: string): string {
+  const quote = (s: string) => (/\s/.test(s) ? `"${s}"` : s);
+  return `${quote(node)} ${quote(cli)}`;
+}
+
 /**
  * End a shell command and everything it started. `pid` is a detached child's: on macOS and
  * Linux that is a process group leader, and the signal reaches the whole group; killing the

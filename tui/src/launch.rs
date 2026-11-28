@@ -135,7 +135,7 @@ pub fn apply(o: &Opts, root: Option<&Path>) -> Result<(), String> {
         && std::env::var_os("TANGO_BIN").is_none()
     {
         let (node, cli) = node_cli(root);
-        unsafe { std::env::set_var("TANGO_BIN", format!("{node} {}", cli.display())) };
+        unsafe { std::env::set_var("TANGO_BIN", tango_bin_value(&node, &cli)) };
     }
     let resume = match (&o.resume, o.cont) {
         (Some(id), _) => Some(id.clone()),
@@ -162,6 +162,20 @@ pub fn apply(o: &Opts, root: Option<&Path>) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// The `TANGO_BIN` value the TUI spawns: the program and the script, each double-quoted
+/// when it has a space (a Windows install under `C:\Program Files`, a user directory with a
+/// space in its name). The TUI's split_bin honors the quotes.
+pub fn tango_bin_value(node: &str, cli: &Path) -> String {
+    let quote = |s: &str| {
+        if s.contains(char::is_whitespace) {
+            format!("\"{s}\"")
+        } else {
+            s.to_string()
+        }
+    };
+    format!("{} {}", quote(node), quote(&cli.display().to_string()))
 }
 
 /// Replace this process with the Node CLI, passing the original args through.
@@ -237,6 +251,15 @@ mod tests {
             p(&["--weird"], true),
             None,
             "unknown flags are prompt text in Node"
+        );
+    }
+
+    #[test]
+    fn tango_bin_quotes_paths_with_spaces() {
+        assert_eq!(tango_bin_value("node", Path::new("/opt/t/bin/tango.js")), "node /opt/t/bin/tango.js");
+        assert_eq!(
+            tango_bin_value("C:\\Program Files\\nodejs\\node.exe", Path::new("C:\\Users\\L Wang\\tango\\bin\\tango.js")),
+            "\"C:\\Program Files\\nodejs\\node.exe\" \"C:\\Users\\L Wang\\tango\\bin\\tango.js\""
         );
     }
 

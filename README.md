@@ -798,7 +798,9 @@ staged: with text in the input it clears the input first; with an empty input it
 running turn (as often as you like, it never quits mid-turn); when idle, the first press shows
 "再按一次 Ctrl+C 退出" on the input rule and a second one within 2s quits (any other key cancels);
 Esc closes popups, else does the same (OpenCode-style): with a dialog open (picker, completion list, `/todo`, `/queue`, `/problems`, a `?choice` panel), the first Esc only closes it, even mid-turn, and the next Esc interrupts. `TANGO_BIN` overrides the server binary (e.g. `TANGO_BIN="node bin/tango.js"`
-for dev builds). Bare `/model` and `/resume` open centered pickers (`/resume <id or prefix>` switches directly); picking a session kills the
+for dev builds; the value is a program and its arguments, and a part with a space in its path may be
+double-quoted, as the launcher writes it on Windows: `"C:\Program Files\nodejs\node.exe" "C:\Users\My Name\tango\bin\tango.js"`).
+Bare `/model` and `/resume` open centered pickers (`/resume <id or prefix>` switches directly); picking a session kills the
 serve child and respawns it with `TANGO_RESUME`, so both the model context and the visible
 transcript come back. `/new` starts fresh while keeping the current model and permission mode.
 `/back` and `/forward` step through the sessions this TUI switched between, browser-style

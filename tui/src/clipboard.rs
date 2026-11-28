@@ -61,7 +61,9 @@ pub fn copy(text: &str) -> io::Result<()> {
 fn native(text: &str) -> io::Result<()> {
     #[cfg(target_os = "macos")]
     let candidates = ["pbcopy"];
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    let candidates = ["clip"]; // clip.exe: the clipboard of every Windows since Vista
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     let candidates = [
         "wl-copy",
         "xclip -selection clipboard",
