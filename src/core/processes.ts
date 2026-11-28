@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
+import { killProcessTree, shellInvocation } from './shell.js';
 
 /**
  * Background shell processes started by `bash` with background: true.
@@ -50,11 +51,7 @@ export function getProcess(id: string): BgProcess | undefined {
 }
 
 function killGroup(p: BgProcess, sig: NodeJS.Signals): void {
-  try {
-    process.kill(-p.pid, sig);
-  } catch {
-    try { p.child.kill(sig); } catch {}
-  }
+  killProcessTree(p.pid, sig); // the process group here, the tree on Windows
 }
 
 /** Start `command` in the background. Throws when MAX_RUNNING are already running. */
@@ -67,11 +64,13 @@ export function startProcess(command: string, cwd: string): BgProcess {
     // background work never outlives tango: no orphaned dev servers
     process.on('exit', () => running().forEach((p) => killGroup(p, 'SIGKILL')));
   }
-  const child = spawn('/bin/bash', ['-lc', command], {
+  const shell = shellInvocation(command);
+  const child = spawn(shell.file, shell.args, {
     cwd,
     env: process.env,
     stdio: ['ignore', 'pipe', 'pipe'],
-    detached: true
+    detached: true,
+    windowsHide: true
   });
   const id = `p${++seq}`;
   let resolveExit!: () => void;

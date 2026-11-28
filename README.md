@@ -960,6 +960,19 @@ hunts.
 Unlike `/bg` and `/subagent`, `task` sub-agents work in the current directory without a
 worktree, and the model starts them itself.
 
+## The shell behind the `bash` tool
+
+macOS and Linux: `bash -lc`, a login shell, so PATH carries rustup, cargo and homebrew. Windows:
+PowerShell, the shell every Windows has — the tool's description tells the model which one it is
+writing for, and the same rules that make `rm -rf` or `git push` ask first recognise
+`Remove-Item -Recurse`, `Format-Volume`, `iwr … | iex` and their kind. For a PowerShell call the
+console is switched to UTF-8 (a Chinese Windows console is GBK), a failing cmdlet ends the command
+with exit 1, a native command's exit code is the command's own, and a command that reads stdin gets
+it forwarded (PowerShell reads a redirected stdin itself and hands nothing to the commands inside).
+A killed command takes everything it started with it: the process group here, the process tree on
+Windows. `grep` and `find` need ripgrep there — Windows has no POSIX `grep`, and its `find` searches
+strings.
+
 ## Background processes
 
 `bash` with `background: true` starts the command detached in its own process group and returns
@@ -971,7 +984,7 @@ characters of combined stdout+stderr.
 | tool           | input                 | what it does                                                         |
 | -------------- | --------------------- | -------------------------------------------------------------------- |
 | `process_logs` | `id`, `lines` (50)    | last N output lines plus state (`running Ns`, `exited N`, `killed`)  |
-| `process_stop` | `id`                  | SIGTERM to the process group, SIGKILL 3 s later if it is still alive |
+| `process_stop` | `id`                  | SIGTERM to the process group (the process tree on Windows), SIGKILL 3 s later if it is still alive |
 | `process_list` | none                  | every background process this tango started, running or finished     |
 
 `process_logs` and `process_list` count as reads. `process_stop` never asks in `ask` mode, since

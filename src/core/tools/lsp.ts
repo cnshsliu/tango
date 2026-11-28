@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import type { Tool } from '../types.js';
 import { spawn } from 'node:child_process';
 import { clientFor, forgetProbes, installCommand, searchDirs, serverFor, type LspClient } from '../lsp.js';
+import { PATH_SEP, killProcessTree, shellInvocation } from '../shell.js';
 import { error, text, truncate } from './registry.js';
 
 const OPS = ['install', 'definition', 'references', 'hover', 'symbols', 'workspace_symbols', 'implementation', 'incoming_calls', 'outgoing_calls'] as const;
@@ -170,16 +171,13 @@ async function install(file: string, signal: AbortSignal) {
   if (!cmd) return error(`no installer found for the ${def.language} server (tried ${def.install.map((r) => r.needs).join(', ')}); the user has to install it`);
   const { out, code } = await new Promise<{ out: string; code: number | null }>((done) => {
     // the installer itself may live in a toolchain dir that PATH lacks (rustup in ~/.cargo/bin)
-    const env = { ...process.env, PATH: searchDirs().join(':') };
-    const child = spawn('/bin/bash', ['-lc', cmd], { stdio: ['ignore', 'pipe', 'pipe'], detached: true, env });
+    const env = { ...process.env, PATH: searchDirs().join(PATH_SEP) };
+    const shell = shellInvocation(cmd);
+    const child = spawn(shell.file, shell.args, { stdio: ['ignore', 'pipe', 'pipe'], detached: true, windowsHide: true, env });
     let out = '';
     child.stdout.on('data', (b: Buffer) => (out = (out + b.toString()).slice(-6000)));
     child.stderr.on('data', (b: Buffer) => (out = (out + b.toString()).slice(-6000)));
-    const kill = () => {
-      try {
-        process.kill(-child.pid!, 'SIGKILL');
-      } catch {}
-    };
+    const kill = () => killProcessTree(child.pid);
     signal.addEventListener('abort', kill, { once: true });
     const timer = setTimeout(kill, 10 * 60_000);
     child.on('error', (e) => done({ out: e.message, code: -1 }));
@@ -193,7 +191,7 @@ async function install(file: string, signal: AbortSignal) {
   const tail = out.trim().split('\n').slice(-15).join('\n');
   if (code !== 0) return error(`\`${cmd}\` failed (exit ${code}):\n${tail}`);
   const now = clientFor(file, dirname(file));
-  if ('error' in now) return error(`\`${cmd}\` finished, but the server still isn't found (searched: ${searchDirs().join(':')}).\n${tail}`);
+  if ('error' in now) return error(`\`${cmd}\` finished, but the server still isn't found (searched: ${searchDirs().join(PATH_SEP)}).\n${tail}`);
   return text(`installed with \`${cmd}\`; the ${def.language} language server is ready.`);
 }
 

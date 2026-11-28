@@ -2,13 +2,17 @@ import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import type { Tool } from '../types.js';
 import { describe, startProcess, startup, tail } from '../processes.js';
+import { IS_WINDOWS, killProcessTree, shellInvocation } from '../shell.js';
+
+/** What the model writes commands for: PowerShell on Windows, a login bash elsewhere. */
+const SHELL_NAME = IS_WINDOWS ? 'PowerShell' : 'bash, a login shell';
 import { error, text, truncate } from './registry.js';
 
 export const bashTool: Tool<{ command: string; timeout?: number; background?: boolean }> = {
   name: 'bash',
   writeEffect: true,
   description:
-    'Run a shell command in cwd and return stdout+stderr. Use for ls, grep, find, git, tests, etc. Long output is truncated. ' +
+    `Run a shell command in cwd and return stdout+stderr (${SHELL_NAME}); write the command for that shell. Use for ls, grep, find, git, tests, etc. Long output is truncated. ` +
     'Set background: true for dev servers, watchers and other long-running commands: it returns a process id at once ' +
     '(read output with process_logs, end it with process_stop, see all with process_list; at most 8 run at a time).',
   input: {
@@ -41,19 +45,15 @@ export const bashTool: Tool<{ command: string; timeout?: number; background?: bo
       // Killing only the bash wrapper orphans them and they keep the output pipe
       // open, so the tool only "finishes" when the grandchild exits naturally —
       // the interrupt/timeout appeared to do nothing for whole downloads.
-      const child = spawn('/bin/bash', ['-lc', command], {
+      const shell = shellInvocation(command); // bash -lc, PowerShell on Windows
+      const child = spawn(shell.file, shell.args, {
         cwd: ctx.cwd,
         env: process.env,
         stdio: ['ignore', 'pipe', 'pipe'],
-        detached: true
+        detached: true,
+        windowsHide: true
       });
-      const killGroup = () => {
-        try {
-          process.kill(-child.pid!, 'SIGKILL');
-        } catch {
-          try { child.kill('SIGKILL'); } catch {}
-        }
-      };
+      const killGroup = () => killProcessTree(child.pid);
       let out = '';
       const push = (b: Buffer) => {
         out += b.toString();

@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import { IS_WINDOWS } from './shell.js';
 
 /**
  * Who is really behind a recorded pid. A pid alone is not an identity: once a process dies the
@@ -36,13 +37,52 @@ export function parseEtime(s: string): number {
 }
 
 /**
- * When each of these processes started (ms since epoch), from one `ps` call. A pid that is gone,
- * or whose age could not be read (no `ps` on this OS), is left out.
+ * The command line of `pid` as the OS reports it: `ps` here, CIM on Windows. Empty when there is
+ * no such process or nothing on this OS tells.
+ */
+export function processCommandLine(pid: number): string[] {
+  try {
+    if (IS_WINDOWS) {
+      const r = spawnSync(
+        'powershell.exe',
+        ['-NoProfile', '-NonInteractive', '-Command', `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").CommandLine`],
+        { encoding: 'utf8', timeout: 10_000 }
+      );
+      return r.status === 0 ? r.stdout.split('\n').map((l) => l.trim()).filter(Boolean) : [];
+    }
+    const r = spawnSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf8', timeout: 3000 });
+    return r.status === 0 ? r.stdout.split('\n').map((l) => l.trim()).filter(Boolean) : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * When each of these processes started (ms since epoch), from one `ps` call on macOS and Linux
+ * and one CIM query on Windows. A pid that is gone, or whose age could not be read (no `ps`, no
+ * PowerShell on this OS), is left out.
  */
 export function processStarts(pids: number[]): Map<number, number> {
   const out = new Map<number, number>();
   const want = [...new Set(pids)].filter(pidAlive);
   if (!want.length) return out;
+  if (IS_WINDOWS) {
+    try {
+      const filter = want.map((p) => `ProcessId=${p}`).join(' or ');
+      const r = spawnSync(
+        'powershell.exe',
+        ['-NoProfile', '-NonInteractive', '-Command', `Get-CimInstance Win32_Process -Filter "${filter}" | ForEach-Object { "$($_.ProcessId) $($_.CreationDate.ToUniversalTime().ToString('o'))" }`],
+        { encoding: 'utf8', timeout: 10_000 }
+      );
+      for (const line of (r.stdout ?? '').split('\n')) {
+        const m = /^\s*(\d+)\s+(\S+)\s*$/.exec(line);
+        if (!m) continue;
+        const ms = Date.parse(m[2]);
+        if (Number.isFinite(ms)) out.set(Number(m[1]), ms);
+      }
+    } catch {}
+    return out;
+  }
   const ask = (list: number[]) => {
     try {
       const r = spawnSync('ps', ['-o', 'pid=,etime=', '-p', list.join(',')], { encoding: 'utf8', timeout: 3000 });

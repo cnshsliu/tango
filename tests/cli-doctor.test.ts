@@ -76,6 +76,36 @@ test('tango doctor: a missing key and a non-git directory are reported as ✗; -
   }
 });
 
+/** An environment without a single API key in it. */
+function keylessEnv(home: string): NodeJS.ProcessEnv {
+  const keep = /^(PATH|HOME|USER|LOGNAME|SHELL|TERM|TMPDIR|TEMP|LANG|LANGUAGE|LC_[A-Z]+|SystemRoot|ComSpec|APPDATA|LOCALAPPDATA|USERPROFILE|PATHEXT|PROGRAMFILES|PROGRAMDATA|windir)$/i;
+  const env: NodeJS.ProcessEnv = Object.fromEntries(Object.entries(process.env).filter(([k]) => keep.test(k)));
+  env.TANGO_HOME = home;
+  return env;
+}
+
+test('tango doctor with no key anywhere reports it as the model finding and still runs every check', { timeout: 60_000 }, async () => {
+  const home = await mkdtemp(join(tmpdir(), 'tango-doctor-'));
+  try {
+    const r = spawnSync(process.execPath, ['--import', 'tsx', 'src/cli.ts', 'doctor'], {
+      cwd: process.cwd(),
+      encoding: 'utf8',
+      env: keylessEnv(home)
+    });
+    assert.equal(r.status, 0, r.stderr);
+    const out = plain(r.stdout);
+    assert.match(out, /✗ model key\s+\(default model\): no model configured and no API key found/);
+    assert.match(out, /✓ node\s+v\d+/, 'the rest of the checks still ran');
+    assert.match(out, /lsp typescript/);
+    // an unknown -m is a finding too
+    const u = spawnSync(process.execPath, ['--import', 'tsx', 'src/cli.ts', 'doctor', '-m', 'nope/x'], { cwd: process.cwd(), encoding: 'utf8', env: keylessEnv(home) });
+    assert.equal(u.status, 0, u.stderr);
+    assert.match(plain(u.stdout), /✗ model key\s+nope\/x: unknown model "nope\/x"/);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
 test('runDoctor and formatDoctor: the same checks serve sends to /doctor', { timeout: 60_000 }, async () => {
   const home = await mkdtemp(join(tmpdir(), 'tango-doctor-unit-'));
   process.env.TANGO_HOME = home;

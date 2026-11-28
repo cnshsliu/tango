@@ -21,8 +21,9 @@ export interface DoctorCheck {
 export interface DoctorInput {
   /** the directory the session runs (or would run) in */
   cwd: string;
-  /** the resolved model: its key is what gets checked */
-  model: ModelSpec;
+  /** the resolved model (its key is what gets checked), or a model that could not be chosen —
+   *  no key anywhere, an unknown id — with the reason, which doctor reports as the finding */
+  model: ModelSpec | { id: string; problem: string };
   /** the merged config, project layers included */
   config: { redactSecrets?: boolean; lspDiagnostics?: boolean };
 }
@@ -53,10 +54,14 @@ export async function runDoctor({ cwd, model, config }: DoctorInput): Promise<Do
   add('TANGO_HOME writable', homeWritable);
   add('sessions dir', homeWritable, sessionsDir());
 
-  // keyProblem's text starts with the id; the line has it already
-  const issue = keyProblem(model);
-  const why = issue?.startsWith(`${model.id}: `) ? issue.slice(model.id.length + 2) : issue;
-  add('model key', !issue, issue ? `${model.id}: no api key configured (${why})` : `${model.id} ready`);
+  if ('problem' in model) {
+    add('model key', false, `${model.id}: ${model.problem}`);
+  } else {
+    // keyProblem's text starts with the id; the line has it already
+    const issue = keyProblem(model);
+    const why = issue?.startsWith(`${model.id}: `) ? issue.slice(model.id.length + 2) : issue;
+    add('model key', !issue, issue ? `${model.id}: no api key configured (${why})` : `${model.id} ready`);
+  }
 
   // how http(s)_proxy is being handled in this process
   add('proxy', true, proxyStatus());

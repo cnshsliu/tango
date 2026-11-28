@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { constants as osConstants } from 'node:os';
 import * as http from 'node:http';
+import { pidAlive } from './liveness.js';
 
 /**
  * Node's fetch ignores `http(s)_proxy` unless told to; users behind a proxy need every model
@@ -93,7 +94,9 @@ export function watchLauncher(env: NodeJS.ProcessEnv = process.env): void {
   const launcher = Number(env[LAUNCHER_PID]);
   if (!launcher) return;
   const timer = setInterval(() => {
-    if (process.ppid !== launcher) process.exit(0);
+    // macOS and Linux reparent an orphan (the ppid changes); Windows keeps the dead number,
+    // so there the launcher's liveness is asked directly
+    if (process.ppid !== launcher || !pidAlive(launcher)) process.exit(0);
   }, 2000);
   timer.unref(); // a check, not a reason to stay alive
 }

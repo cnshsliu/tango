@@ -48,6 +48,22 @@ jobs:
       - run: cargo test --release --locked
         working-directory: tui
 
+  # The Windows port in progress: the same checks on windows-2025. It is not in the build's
+  # `needs` yet, and it does not fail the run — its log is the to-do list of the port.
+  check-windows:
+    name: check and test (windows, port in progress)
+    continue-on-error: true
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run test:ts
+
   build:
     name: package ${{ matrix.platform }}
     needs: check

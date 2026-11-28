@@ -579,7 +579,13 @@ async function runTask(t: Task, args: Args): Promise<{ ok: boolean; output: stri
 async function printDoctor(args: Args): Promise<void> {
   const cwd = args.cwd ?? process.cwd();
   const { config } = await resolveConfig(cwd);
-  const model = pickModel(await loadModels(), config, args.model);
+  let model: Parameters<typeof runDoctor>[0]['model'];
+  try {
+    model = pickModel(await loadModels(), config, args.model);
+  } catch (e: any) {
+    // no key anywhere, an unknown -m: a finding for doctor to report, not a reason to stop
+    model = { id: args.model ?? '(default model)', problem: String(e?.message ?? e).split('\n')[0] };
+  }
   for (const c of await runDoctor({ cwd, model, config })) {
     console.log(`${c.ok ? cyan('✓') : red('✗')} ${c.name}${c.detail ? `  ${dim(c.detail)}` : ''}`);
   }

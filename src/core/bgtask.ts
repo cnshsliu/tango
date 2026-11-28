@@ -4,13 +4,15 @@
  * work, then leave). The session file lands in the shared TANGO_HOME sessions dir,
  * so /resume can open any completed background task.
  */
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { createReadStream, createWriteStream, readFileSync } from 'node:fs';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { tangoDir } from './config.js';
 import { worktreeCreate, worktreeRemove, type WorktreeEntry } from './worktrees.js';
+import { processCommandLine } from './liveness.js';
+import { killProcessTree } from './shell.js';
 
 export interface BgTask {
   id: string;
@@ -80,14 +82,7 @@ function alive(pid: number): boolean {
  *  so kill(-pid) can never hit an unrelated process group (limitation B). */
 function isOurChild(task: BgTask): boolean {
   if (!task.command) return false; // no recorded identity (legacy entry): refuse to group-kill
-  try {
-    const r = spawnSync('ps', ['-o', 'command=', '-p', String(task.pid)], { encoding: 'utf8', timeout: 3000 });
-    if (r.status !== 0) return false;
-    const cmd = r.stdout.trim();
-    return cmd.includes('serve') && cmd.includes(task.worktree);
-  } catch {
-    return false;
-  }
+  return processCommandLine(task.pid).some((cmd) => cmd.includes('serve') && cmd.includes(task.worktree));
 }
 
 /** Parse the child's log for its session id and final result. */
@@ -166,6 +161,7 @@ export async function startBgTask(args: {
   const child = spawn(process.execPath, [...interp, cliEntry, 'serve', '-m', model, '--cwd', entry.path], {
     cwd: args.mainCwd,
     detached: true, // survives the parent serve; reaped via pid checks
+    windowsHide: true,
     stdio: ['pipe', 'pipe', 'pipe'],
     env
   });
@@ -202,13 +198,7 @@ export async function stopTask(id: string, mainCwd: string): Promise<BgTask> {
   if (!task) throw new Error(`no such task: ${id}`);
   if (task.status !== 'running') return task; // done/failed history is not rewritten
   if (alive(task.pid)) {
-    if (isOurChild(task)) {
-      try {
-        process.kill(-task.pid, 'SIGTERM'); // process group (detached)
-      } catch {
-        try { process.kill(task.pid, 'SIGKILL'); } catch {}
-      }
-    }
+    if (isOurChild(task)) killProcessTree(task.pid, 'SIGTERM'); // the process group, the tree on Windows
     // identity mismatch (pid reuse / hand-written registry entry): never group-kill strangers
   }
   await updateTask(task.id, { status: 'stopped', endedAt: new Date().toISOString() });

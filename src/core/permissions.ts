@@ -41,7 +41,20 @@ const RISKY_BASH: [RegExp, string][] = [
   // Raw devices (of=/dev/sda, > /dev/disk…) are the real danger.
   [/>\s*\/(etc|usr|bin|System)\//, 'writes to a system path'],
   [/>\s*\/dev\/(?!null\b)\S*/, 'writes to a device'],
-  [/of=\/dev\/(?!null\b)\S*/, 'writes to a raw device']
+  [/of=\/dev\/(?!null\b)\S*/, 'writes to a raw device'],
+  // PowerShell and cmd, the shells behind the same tool on Windows (`rm`, `rmdir`, `mv` and
+  // the git lines above already cover their aliases; `git push` is `git push` everywhere)
+  [/(^|[\s;&|({.])(Remove-Item|ri|del|erase|rd|Remove-ItemProperty)\b/, 'deletes files'],
+  [/(^|[\s;&|({.])(Move-Item|Clear-RecycleBin)\b/, 'deletes or moves files'],
+  [/(^|[\s;&|({.])(Format-Volume|Clear-Disk|Initialize-Disk|diskpart)\b/, 'erases a disk'],
+  [/(^|[\s;&|({.])(Stop-Process|spps?|taskkill|Stop-Computer|Restart-Computer|shutdown)\b/, 'stops processes or the machine'],
+  [/(^|[\s;&|({.])(Set-ExecutionPolicy|Set-Acl|icacls|takeown|Set-ItemProperty|Set-MpPreference)\b/, 'changes system or security settings'],
+  [/(^|[\s;&|({.])reg(\.exe)?\s+(delete|add|import|restore|unload)\b/, 'edits the registry'],
+  [/(^|[\s;&|({.])(Start-Process|Start)\b[^|\n]*-Verb\s+RunAs|(^|[\s;&|({.])(gsudo|runas)\b/, 'runs with elevated rights'],
+  [/(Invoke-WebRequest|iwr|Invoke-RestMethod|irm|curl|wget)[^|\n]*\|\s*(iex|Invoke-Expression)\b/, 'runs downloaded code'],
+  [/\biex\s*\([^)]*(DownloadString|DownloadData|DownloadFile|Invoke-WebRequest|iwr|Invoke-RestMethod|irm)\b/, 'runs downloaded code'],
+  [/(^|[\s;&|({.])(net\s+(user|localgroup)|New-LocalUser|Set-LocalUser)\b/, 'changes accounts'],
+  [/(Set-Content|Out-File|Add-Content)\b[^|\n]*\b(windir|SystemRoot|C:\\Windows)\b/i, 'writes to a system path']
 ];
 
 /** Drop heredoc payloads from a command: the body is data written to a file,
@@ -132,7 +145,8 @@ const SUBCOMMAND_TOOLS = new Set([
 /** Shell grammar words: they lead a segment but name no command (`do echo x` runs echo). */
 const SHELL_KEYWORDS = new Set([
   'for', 'in', 'do', 'done', 'while', 'until', 'if', 'then', 'else', 'elif', 'fi',
-  'case', 'esac', 'select', 'function', 'time', '!', '{', '}', '(', ')', '((', '))', '[[', ']]'
+  'case', 'esac', 'select', 'function', 'time', '!', '{', '}', '(', ')', '((', '))', '[[', ']]',
+  '&' // PowerShell's call operator: `& "C:\tools\x.exe" …` names no command of its own
 ]);
 
 function bashSegmentRule(seg: string): string | null {

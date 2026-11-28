@@ -2,9 +2,12 @@ import { spawn, spawnSync } from 'node:child_process';
 import { readdir, stat } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import type { Tool, ToolContext } from '../types.js';
+import { IS_WINDOWS } from '../shell.js';
 import { error, text, truncate } from './registry.js';
 
 const hasRg = spawnSync('rg', ['--version'], { stdio: 'ignore' }).status === 0;
+/** Windows has no grep, and its `find` searches strings, not files: there ripgrep is required. */
+const NEED_RG = IS_WINDOWS && !hasRg ? 'grep and find need ripgrep on Windows: install it with `winget install BurntSushi.ripgrep.MSVC`' : '';
 
 /** Run a command without a shell (no quoting issues); resolve with stdout, stderr and exit code. */
 function run(cmd: string, args: string[], ctx: ToolContext): Promise<{ out: string; err: string; code: number | null }> {
@@ -65,6 +68,7 @@ export const grepTool: Tool<{ pattern: string; path?: string; glob?: string; ign
     if (ignoreCase) args.push('-i');
     if (glob) args.push(hasRg ? '-g' : '--include', glob);
     args.push('-e', pattern, path);
+    if (NEED_RG) return error(NEED_RG);
     const r = await run(hasRg ? 'rg' : 'grep', args, ctx);
     return searchOutcome('grep', r, 'no matches', (out) => truncate(limitLines(out, limit)));
   }
@@ -84,6 +88,7 @@ export const findTool: Tool<{ pattern: string; path?: string; limit?: number }> 
     required: ['pattern']
   },
   async execute({ pattern, path = '.', limit = 500 }, ctx) {
+    if (NEED_RG) return error(NEED_RG);
     const r = hasRg
       ? await run('rg', ['--files', '--color', 'never', '-g', pattern], { ...ctx, cwd: resolve(ctx.cwd, path) })
       : await run('find', [path, '-path', '*/node_modules', '-prune', '-o', '-path', '*/.git', '-prune', '-o', '-type', 'f', '-name', pattern.split('/').pop() ?? pattern, '-print'], ctx);

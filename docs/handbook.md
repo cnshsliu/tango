@@ -213,6 +213,9 @@ that the edit caused still come from the project checker, in the tool output the
 
 ### Long-running commands (dev servers, watchers)
 
+The `bash` tool runs PowerShell on Windows and a login bash everywhere else; its description tells
+the model which one it is writing for. Either way, stopping a command stops everything it started.
+
 A normal `bash` call waits for the command and is killed after 120 seconds. For `npm run dev`,
 `cargo watch` or anything else that keeps running, ask the model to start it in the background
 ("start the dev server in the background"). It calls `bash` with `background: true` and gets an
